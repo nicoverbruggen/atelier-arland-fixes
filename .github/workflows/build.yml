@@ -15,5 +15,5 @@ jobs:
       - run: ninja -C build
       - uses: actions/upload-artifact@v4
         with:
-          name: atelier-arland-menu-fix
-          path: build/dinput8.dll
+          name: atelier-arland-fixes
+          path: build/d3d11.dll

@@ -1,3 +1,0 @@
-LIBRARY DINPUT8.DLL
-EXPORTS
-    DirectInput8Create

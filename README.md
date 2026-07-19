@@ -1,57 +1,54 @@
-# Atelier Arland Menu Fix
+# Atelier Arland Fixes
 
-A minimal `dinput8.dll` proxy that removes the severe English menu hitches in Atelier Rorona DX, Atelier Totori DX, and Atelier Meruru DX.
+Atelier Arland Fixes significantly improves performance in the English Steam releases of Atelier Rorona DX, Atelier Totori DX, and Atelier Meruru DX. It removes severe menu hitches, reduces costly D3D11 synchronization stalls, and prevents the text corruption caused by earlier synchronization fixes.
 
-It works on its own; `atelier-sync-fix` is not required. It can optionally coexist with TellowKrinkle's [`atelier-sophie-20231022` atelier-sync-fix release](https://github.com/TellowKrinkle/atelier-sync-fix/releases/tag/atelier-sophie-20231022), which remains installed as `d3d11.dll` while this fix is installed as `dinput8.dll`.
+The mod ships as one `d3d11.dll` combining the synchronization fix required by the Arland ports with the Arland-specific menu fixes discovered during this project. No separate `atelier-sync-fix` or `dinput8.dll` is required.
 
-A unified version that integrates both mods into a single `d3d11.dll` is also in development.
+For newer Atelier games, use the upstream [atelier-sync-fix](https://github.com/doitsujin/atelier-sync-fix) or an appropriate maintained fork instead. This project deliberately contains only Arland-specific code.
 
-The games repeatedly validate the same immutable `.PSSG` resource paths while building menus. Rorona and Meruru perform a metadata lookup and filename-case directory scan on every successful lookup; Totori repeatedly performs the metadata lookup. This proxy caches only successful validation results, keyed by the complete path. Failed checks, non-PSSG paths, and actual archive reads are unchanged.
+## Benefits
+
+- Much faster opening of text-heavy menus, including the worst-affected Status, Quest, Container, Basket, and crafting screens.
+- Fewer pauses caused by the games repeatedly waiting for graphics work to finish.
+- Correct text rendering without the corruption produced by older synchronization fixes in these games.
+- One installation covering the relevant performance fixes for the complete Arland trilogy.
+
+The mod is intended for the Steam versions of the games. See [TECHNICAL.md](TECHNICAL.md) for implementation details and tested executable fingerprints.
 
 ## Install
 
-Place this project's `dinput8.dll` beside the game's English executable. If you are on Linux with Wine or Proton, enable its native DLL override:
+Place `d3d11.dll` beside the game's English executable. Remove older copies of this mod's `dinput8.dll` and do not install another `d3d11.dll` wrapper alongside it.
+
+On Wine or Proton, use:
 
 ```text
-WINEDLLOVERRIDES="dinput8=n,b" %command%
+WINEDLLOVERRIDES="d3d11=n,b" %command%
 ```
 
-Installing `atelier-sync-fix` is optional. To use TellowKrinkle's release alongside this fix, place its `d3d11.dll` in the same directory and enable both overrides:
-
-```text
-WINEDLLOVERRIDES="d3d11=n,b;dinput8=n,b" %command%
-```
-
-The fix is enabled by default. Set `ARLAND_MENU_FIX=0` to disable it. This setting is intentionally separate from `atelier-sync-fix` configuration so each DLL can be controlled independently.
-
-Only the exact tested 64-bit English builds are modified:
-
-| Game | Executable SHA-256 | Hook RVA |
-|---|---|---:|
-| Rorona | `2afd19db0cef3e3f0888fb62e02c9ca5929264ff5ee8c780af06213642988276` | `0x12cc70` |
-| Totori | `38c41df799b207786a11c08d6bf83cec8ac10414757f935311549f74474bfd90` | `0x18b140` |
-| Meruru | `d69cad45700457128cc8805ea3cf80dfaea0e155e6dfd2d1123277f4ebd7c19b` | `0x1533c0` |
-
-The executable name, `.text` size, and function prologue must all match. Unknown builds are passed through without modification.
+The fixes are enabled by default. `ARLAND_MENU_FIX=0` disables the executable-specific menu hooks while retaining D3D11 forwarding and synchronization. `ARLAND_ATLAS_CACHE=0` disables only Rorona's per-menu atlas-read cache.
 
 ## Build
 
-On Windows, install Visual Studio 2022 with the Desktop development with C++ workload, Python, Meson, and Ninja. Then use an x64 Native Tools Developer PowerShell:
+On Windows, install Visual Studio 2022 with the Desktop development with C++ workload, Python, Meson, and Ninja. From an x64 Native Tools Developer PowerShell:
 
 ```powershell
 meson setup build --buildtype release
 meson compile -C build
 ```
 
-On Fedora/Linux with MinGW, Meson, and Ninja:
+On Fedora or another Linux distribution with MinGW, Meson, and Ninja:
 
 ```sh
 meson setup build --cross-file build-win64.txt --buildtype release
 ninja -C build
 ```
 
-The output is `build/dinput8.dll`. GitHub Actions builds the same DLL and uploads it as a workflow artifact.
+The output is `build/d3d11.dll`. GitHub Actions produces the same DLL as a workflow artifact.
+
+## Credits
+
+Philip Rebohle created the original [`atelier-sync-fix`](https://github.com/doitsujin/atelier-sync-fix) CPU shadow-copy implementation. TellowKrinkle's [`atelier-sync-fix` fork](https://github.com/TellowKrinkle/atelier-sync-fix) later added Map/Unmap shadow coherence for Ayesha; this project replaces its single-map/immediate-upload implementation with per-resource tracking and deferred uploads suitable for the Arland workload. The `.PSSG` validation and per-menu atlas-read fixes come from the Arland menu-hitch investigation led by Nico, the author of this repository. [MinHook](https://github.com/TsudaKageyu/minhook) is by Tsuda Kageyu and contributors.
 
 ## License
 
-MIT. This mod was created with some assistance of LLMs (like GPT 5.6 Sol) for debugging purposes.
+See `LICENSE` for the MIT and zlib license terms that apply to the respective source files.
