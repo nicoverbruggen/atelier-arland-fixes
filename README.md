@@ -1,6 +1,6 @@
 # Atelier Arland Fixes
 
-Atelier Arland Fixes significantly improves performance in the English Steam releases of Atelier Rorona DX, Atelier Totori DX, and Atelier Meruru DX. It removes severe menu hitches, reduces costly D3D11 synchronization stalls, and prevents the text corruption caused by earlier synchronization fixes.
+This mod significantly improves performance in the English Steam releases of Atelier Rorona DX, Atelier Totori DX, and Atelier Meruru DX. It removes severe menu hitches, reduces costly D3D11 synchronization stalls, and prevents the text corruption caused by earlier synchronization fixes.
 
 The mod ships as one `d3d11.dll` combining the synchronization fix required by the Arland ports with the Arland-specific menu fixes discovered during this project. No separate `atelier-sync-fix` or `dinput8.dll` is required.
 
