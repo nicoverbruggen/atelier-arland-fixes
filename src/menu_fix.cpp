@@ -159,11 +159,16 @@ bool atlasStatsEnabled() {
 }
 
 void cachedQueueDrain(void* manager) {
-  const auto started = std::chrono::steady_clock::now();
-  const uint64_t candidatesBefore = atlasCandidateLocks.load(
-    std::memory_order_relaxed);
-  const uint64_t hitsBefore = atlasCacheHits.load(std::memory_order_relaxed);
-  const uint64_t missesBefore = atlasCacheMisses.load(std::memory_order_relaxed);
+  const bool collectStats = atlasStatsEnabled();
+  const auto started = collectStats
+    ? std::chrono::steady_clock::now()
+    : std::chrono::steady_clock::time_point();
+  const uint64_t candidatesBefore = collectStats
+    ? atlasCandidateLocks.load(std::memory_order_relaxed) : 0;
+  const uint64_t hitsBefore = collectStats
+    ? atlasCacheHits.load(std::memory_order_relaxed) : 0;
+  const uint64_t missesBefore = collectStats
+    ? atlasCacheMisses.load(std::memory_order_relaxed) : 0;
   const bool outermost =
     atlasDrainDepth.fetch_add(1, std::memory_order_acq_rel) == 0;
   if (outermost) {
@@ -179,7 +184,7 @@ void cachedQueueDrain(void* manager) {
     std::lock_guard lock(atlasMutex);
     atlasReads.clear();
   }
-  if (outermost && atlasStatsEnabled()) {
+  if (outermost && collectStats) {
     const uint64_t candidates = atlasCandidateLocks.load(
       std::memory_order_relaxed) - candidatesBefore;
     if (candidates) {
@@ -214,7 +219,8 @@ uintptr_t cachedAtlasLock(uintptr_t texture, uintptr_t output,
 
   const bool inCandidateScope = renderTextDepth && output && width == 512 &&
     height == 512 && atlasCacheActive.load(std::memory_order_acquire);
-  if (inCandidateScope)
+  const bool collectStats = atlasStatsEnabled();
+  if (inCandidateScope && collectStats)
     atlasCandidateLocks.fetch_add(1, std::memory_order_relaxed);
   const bool candidate = inCandidateScope && atlasCacheEnabled();
   if (candidate) {
@@ -223,13 +229,14 @@ uintptr_t cachedAtlasLock(uintptr_t texture, uintptr_t output,
     if (found != atlasReads.end() && !found->second.bytes.empty()) {
       *reinterpret_cast<void**>(output) = found->second.bytes.data();
       syntheticAtlasLocks.push_back(texture);
-      atlasCacheHits.fetch_add(1, std::memory_order_relaxed);
+      if (collectStats)
+        atlasCacheHits.fetch_add(1, std::memory_order_relaxed);
       return found->second.pitch;
     }
   }
 
   const uintptr_t pitch = originalAtlasLock(texture, output, level, face);
-  if (inCandidateScope)
+  if (inCandidateScope && collectStats)
     atlasCacheMisses.fetch_add(1, std::memory_order_relaxed);
   if (candidate && pitch && pitch <= 16384) {
     const void* mapped = *reinterpret_cast<void* const*>(output);
