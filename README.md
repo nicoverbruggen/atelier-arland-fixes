@@ -1,6 +1,8 @@
 # Atelier Arland Menu Fix
 
-A minimal `dinput8.dll` proxy that removes the severe English menu hitches in Atelier Rorona DX, Atelier Totori DX, and Atelier Meruru DX. It is designed to coexist with TellowKrinkle's [`atelier-sophie-20231022` atelier-sync-fix release](https://github.com/TellowKrinkle/atelier-sync-fix/releases/tag/atelier-sophie-20231022), which remains installed as `d3d11.dll` while this fix is installed as `dinput8.dll`.
+A minimal `dinput8.dll` proxy that removes the severe English menu hitches in Atelier Rorona DX, Atelier Totori DX, and Atelier Meruru DX.
+
+It works on its own; `atelier-sync-fix` is not required. It can optionally coexist with TellowKrinkle's [`atelier-sophie-20231022` atelier-sync-fix release](https://github.com/TellowKrinkle/atelier-sync-fix/releases/tag/atelier-sophie-20231022), which remains installed as `d3d11.dll` while this fix is installed as `dinput8.dll`.
 
 A unified version that integrates both mods into a single `d3d11.dll` is also in development.
 
@@ -8,7 +10,13 @@ The games repeatedly validate the same immutable `.PSSG` resource paths while bu
 
 ## Install
 
-Place TellowKrinkle's `d3d11.dll` and this project's `dinput8.dll` beside the game's English executable, then enable both native DLL overrides under Wine/Proton:
+Place this project's `dinput8.dll` beside the game's English executable. If you are on Linux with Wine or Proton, enable its native DLL override:
+
+```text
+WINEDLLOVERRIDES="dinput8=n,b" %command%
+```
+
+Installing `atelier-sync-fix` is optional. To use TellowKrinkle's release alongside this fix, place its `d3d11.dll` in the same directory and enable both overrides:
 
 ```text
 WINEDLLOVERRIDES="d3d11=n,b;dinput8=n,b" %command%
