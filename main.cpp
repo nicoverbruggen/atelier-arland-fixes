@@ -1,6 +1,6 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
-#include <d3d11.h>
+#include <unknwn.h>
 
 #include <array>
 #include <cstdint>
@@ -12,15 +12,8 @@
 
 namespace {
 
-using CreateDeviceProc = HRESULT (WINAPI*)(
-  IDXGIAdapter*, D3D_DRIVER_TYPE, HMODULE, UINT,
-  const D3D_FEATURE_LEVEL*, UINT, UINT, ID3D11Device**,
-  D3D_FEATURE_LEVEL*, ID3D11DeviceContext**);
-using CreateDeviceAndSwapChainProc = HRESULT (WINAPI*)(
-  IDXGIAdapter*, D3D_DRIVER_TYPE, HMODULE, UINT,
-  const D3D_FEATURE_LEVEL*, UINT, UINT, const DXGI_SWAP_CHAIN_DESC*,
-  IDXGISwapChain**, ID3D11Device**, D3D_FEATURE_LEVEL*,
-  ID3D11DeviceContext**);
+using DirectInput8CreateProc = HRESULT (WINAPI*)(
+  HINSTANCE, DWORD, REFIID, LPVOID*, LPUNKNOWN);
 using PathCheckProc = bool (*)(void*, void*);
 
 struct Game {
@@ -36,8 +29,7 @@ constexpr Game games[] = {
   { "A13V_x64_Release_EN.exe", 0x61ecec, 0x1533c0, 0x57 },
 };
 
-CreateDeviceProc realCreateDevice = nullptr;
-CreateDeviceAndSwapChainProc realCreateDeviceAndSwapChain = nullptr;
+DirectInput8CreateProc realDirectInput8Create = nullptr;
 PathCheckProc originalPathCheck = nullptr;
 std::once_flag initialization;
 std::mutex cacheMutex;
@@ -132,9 +124,8 @@ bool installDetour(BYTE* target) {
 }
 
 void installMenuFix() {
-  const char* disabled = std::getenv("ATFIX_NO_PSSG_PATH_CACHE");
-  const char* enabled = std::getenv("ATFIX_PSSG_PATH_CACHE");
-  if ((disabled && disabled[0] == '1') || (enabled && enabled[0] == '0'))
+  const char* enabled = std::getenv("ARLAND_MENU_FIX");
+  if (enabled && enabled[0] == '0')
     return;
 
   HMODULE module = GetModuleHandleW(nullptr);
@@ -162,42 +153,23 @@ void initialize() {
     if (!GetSystemDirectoryW(systemDirectory, MAX_PATH))
       return;
     std::wstring path(systemDirectory);
-    path += L"\\d3d11.dll";
-    HMODULE systemD3D11 = LoadLibraryW(path.c_str());
-    if (!systemD3D11)
+    path += L"\\dinput8.dll";
+    HMODULE systemDinput8 = LoadLibraryW(path.c_str());
+    if (!systemDinput8)
       return;
-    realCreateDevice = reinterpret_cast<CreateDeviceProc>(
-      GetProcAddress(systemD3D11, "D3D11CreateDevice"));
-    realCreateDeviceAndSwapChain = reinterpret_cast<CreateDeviceAndSwapChainProc>(
-      GetProcAddress(systemD3D11, "D3D11CreateDeviceAndSwapChain"));
+    realDirectInput8Create = reinterpret_cast<DirectInput8CreateProc>(
+      GetProcAddress(systemDinput8, "DirectInput8Create"));
     installMenuFix();
   });
 }
 
 } // namespace
 
-extern "C" HRESULT WINAPI D3D11CreateDevice(
-    IDXGIAdapter* adapter, D3D_DRIVER_TYPE driverType, HMODULE software,
-    UINT flags, const D3D_FEATURE_LEVEL* featureLevels, UINT featureLevelCount,
-    UINT sdkVersion, ID3D11Device** device, D3D_FEATURE_LEVEL* featureLevel,
-    ID3D11DeviceContext** immediateContext) {
+extern "C" HRESULT WINAPI DirectInput8Create(
+    HINSTANCE instance, DWORD version, REFIID interfaceId,
+    LPVOID* output, LPUNKNOWN outer) {
   initialize();
-  return realCreateDevice
-    ? realCreateDevice(adapter, driverType, software, flags, featureLevels,
-        featureLevelCount, sdkVersion, device, featureLevel, immediateContext)
-    : E_FAIL;
-}
-
-extern "C" HRESULT WINAPI D3D11CreateDeviceAndSwapChain(
-    IDXGIAdapter* adapter, D3D_DRIVER_TYPE driverType, HMODULE software,
-    UINT flags, const D3D_FEATURE_LEVEL* featureLevels, UINT featureLevelCount,
-    UINT sdkVersion, const DXGI_SWAP_CHAIN_DESC* swapChainDesc,
-    IDXGISwapChain** swapChain, ID3D11Device** device,
-    D3D_FEATURE_LEVEL* featureLevel, ID3D11DeviceContext** immediateContext) {
-  initialize();
-  return realCreateDeviceAndSwapChain
-    ? realCreateDeviceAndSwapChain(adapter, driverType, software, flags,
-        featureLevels, featureLevelCount, sdkVersion, swapChainDesc, swapChain,
-        device, featureLevel, immediateContext)
+  return realDirectInput8Create
+    ? realDirectInput8Create(instance, version, interfaceId, output, outer)
     : E_FAIL;
 }
