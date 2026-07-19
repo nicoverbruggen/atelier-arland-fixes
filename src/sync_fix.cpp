@@ -49,6 +49,10 @@ using PFN_ID3D11DeviceContext_Map = HRESULT (STDMETHODCALLTYPE *) (ID3D11DeviceC
   ID3D11Resource*, UINT, D3D11_MAP, UINT, D3D11_MAPPED_SUBRESOURCE*);
 using PFN_ID3D11DeviceContext_Unmap = void (STDMETHODCALLTYPE *) (ID3D11DeviceContext*,
   ID3D11Resource*, UINT);
+using PFN_ID3D11DeviceContext_RSSetViewports = void (STDMETHODCALLTYPE *) (ID3D11DeviceContext*,
+  UINT, const D3D11_VIEWPORT*);
+using PFN_ID3D11DeviceContext_RSSetScissorRects = void (STDMETHODCALLTYPE *) (ID3D11DeviceContext*,
+  UINT, const D3D11_RECT*);
 using PFN_ID3D11DeviceContext_Draw = void (STDMETHODCALLTYPE *) (ID3D11DeviceContext*, UINT, UINT);
 using PFN_ID3D11DeviceContext_DrawIndexed = void (STDMETHODCALLTYPE *) (ID3D11DeviceContext*, UINT, UINT, INT);
 using PFN_ID3D11DeviceContext_DrawInstanced = void (STDMETHODCALLTYPE *) (ID3D11DeviceContext*, UINT, UINT, UINT, UINT);
@@ -80,6 +84,8 @@ struct ContextProcs {
   PFN_ID3D11DeviceContext_UpdateSubresource             UpdateSubresource             = nullptr;
   PFN_ID3D11DeviceContext_Map                           Map                           = nullptr;
   PFN_ID3D11DeviceContext_Unmap                         Unmap                         = nullptr;
+  PFN_ID3D11DeviceContext_RSSetViewports                 RSSetViewports                = nullptr;
+  PFN_ID3D11DeviceContext_RSSetScissorRects              RSSetScissorRects             = nullptr;
   PFN_ID3D11DeviceContext_Draw                          Draw                          = nullptr;
   PFN_ID3D11DeviceContext_DrawIndexed                   DrawIndexed                   = nullptr;
   PFN_ID3D11DeviceContext_DrawInstanced                 DrawInstanced                 = nullptr;
@@ -103,6 +109,28 @@ constexpr uint32_t HOOK_DEF_CTX = (1u << 2);
 
 uint32_t      g_installedHooks = 0u;
 
+// Resolution behavior ported from TellowKrinkle's atelier-sync-fix rendering
+// fork and adapted to this project's vtable-hook architecture.
+// The old Arland renderers create the main depth target at the requested
+// resolution, then create several render/depth targets at a hard-coded 1080p.
+// Remember the former so those later targets can follow it.
+static std::atomic<UINT> g_mainRtWidth  = { 0 };
+static std::atomic<UINT> g_mainRtHeight = { 0 };
+
+// The games also submit a hard-coded 1080p viewport and scissor. Keep separate
+// state for the immediate and deferred context paths; atomics keep the hooks
+// safe if the engine records or submits state from another thread.
+struct RasterState {
+  std::atomic<UINT> viewportWidth  = { 0 };
+  std::atomic<UINT> viewportHeight = { 0 };
+  std::atomic<UINT> scissorWidth   = { 0 };
+  std::atomic<UINT> scissorHeight  = { 0 };
+  std::atomic<bool> dirty          = { false };
+};
+
+static RasterState g_immRasterState;
+static RasterState g_defRasterState;
+
 const DeviceProcs* getDeviceProcs(ID3D11Device* pDevice) {
   return &g_deviceProcs;
 }
@@ -111,6 +139,12 @@ const ContextProcs* getContextProcs(ID3D11DeviceContext* pContext) {
   return pContext->GetType() == D3D11_DEVICE_CONTEXT_IMMEDIATE
     ? &g_immContextProcs
     : &g_defContextProcs;
+}
+
+RasterState* getRasterState(ID3D11DeviceContext* pContext) {
+  return pContext->GetType() == D3D11_DEVICE_CONTEXT_IMMEDIATE
+    ? &g_immRasterState
+    : &g_defRasterState;
 }
 
 void flushDirtyShadows(ID3D11DeviceContext* pContext);
@@ -614,13 +648,134 @@ HRESULT STDMETHODCALLTYPE ID3D11Device_CreateTexture2D(
   auto procs = getDeviceProcs(pDevice);
   D3D11_TEXTURE2D_DESC desc;
 
-  if (pDesc && pDesc->Usage == D3D11_USAGE_STAGING) {
+  if (pDesc) {
     desc = *pDesc;
-    desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ | D3D11_CPU_ACCESS_WRITE;
-    pDesc = &desc;
+    bool changed = false;
+
+    if (desc.Usage == D3D11_USAGE_STAGING) {
+      desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ | D3D11_CPU_ACCESS_WRITE;
+      changed = true;
+    }
+
+    UINT mainWidth = g_mainRtWidth.load(std::memory_order_relaxed);
+    UINT mainHeight = g_mainRtHeight.load(std::memory_order_relaxed);
+    if (!mainWidth && (desc.BindFlags & D3D11_BIND_DEPTH_STENCIL)) {
+      // The trilogy creates its main depth target before the hard-coded
+      // 1920x1080 auxiliary targets. Only arm the override for resolutions
+      // above 1080p; 1080p and lower retain the game's original behavior.
+      if (desc.Width > 1920 && desc.Height > 1080) {
+        g_mainRtWidth.store(desc.Width, std::memory_order_relaxed);
+        g_mainRtHeight.store(desc.Height, std::memory_order_relaxed);
+        mainWidth = desc.Width;
+        mainHeight = desc.Height;
+        log("Detected main render size ", std::dec, mainWidth, "x", mainHeight);
+      }
+    } else if (mainWidth && !pData &&
+               (desc.BindFlags & (D3D11_BIND_RENDER_TARGET | D3D11_BIND_DEPTH_STENCIL)) &&
+               desc.Width == 1920 && desc.Height == 1080) {
+      desc.Width = mainWidth;
+      desc.Height = mainHeight;
+      changed = true;
+      log("Resizing hard-coded 1920x1080 target to ", std::dec,
+          mainWidth, "x", mainHeight);
+    }
+
+    if (changed)
+      pDesc = &desc;
   }
 
   return procs->CreateTexture2D(pDevice, pDesc, pData, ppTexture);
+}
+
+void STDMETHODCALLTYPE ID3D11DeviceContext_RSSetViewports(
+        ID3D11DeviceContext* pContext,
+        UINT                 NumViewports,
+  const D3D11_VIEWPORT*      pViewports) {
+  auto procs = getContextProcs(pContext);
+  RasterState* state = getRasterState(pContext);
+  state->dirty.store(true, std::memory_order_release);
+  if (NumViewports && pViewports) {
+    state->viewportWidth.store(static_cast<UINT>(pViewports[0].Width), std::memory_order_relaxed);
+    state->viewportHeight.store(static_cast<UINT>(pViewports[0].Height), std::memory_order_relaxed);
+  }
+  procs->RSSetViewports(pContext, NumViewports, pViewports);
+}
+
+void STDMETHODCALLTYPE ID3D11DeviceContext_RSSetScissorRects(
+        ID3D11DeviceContext* pContext,
+        UINT                 NumRects,
+  const D3D11_RECT*          pRects) {
+  auto procs = getContextProcs(pContext);
+  RasterState* state = getRasterState(pContext);
+  state->dirty.store(true, std::memory_order_release);
+  if (NumRects && pRects) {
+    state->scissorWidth.store(static_cast<UINT>(pRects[0].right - pRects[0].left), std::memory_order_relaxed);
+    state->scissorHeight.store(static_cast<UINT>(pRects[0].bottom - pRects[0].top), std::memory_order_relaxed);
+  }
+  procs->RSSetScissorRects(pContext, NumRects, pRects);
+}
+
+void updateViewportScissor(ID3D11DeviceContext* pContext) {
+  RasterState* state = getRasterState(pContext);
+  if (!state->dirty.exchange(false, std::memory_order_acq_rel))
+    return;
+
+  const UINT viewportWidth = state->viewportWidth.load(std::memory_order_relaxed);
+  const UINT viewportHeight = state->viewportHeight.load(std::memory_order_relaxed);
+  const UINT scissorWidth = state->scissorWidth.load(std::memory_order_relaxed);
+  const UINT scissorHeight = state->scissorHeight.load(std::memory_order_relaxed);
+  const bool is1080State = viewportWidth == 1920 && viewportHeight == 1080 &&
+    scissorWidth == 1920 && scissorHeight == 1080;
+  if (!is1080State)
+    return;
+
+  UINT viewportCount = 1;
+  UINT scissorCount = 1;
+  D3D11_VIEWPORT viewport = { };
+  D3D11_RECT scissor = { };
+  pContext->RSGetViewports(&viewportCount, &viewport);
+  pContext->RSGetScissorRects(&scissorCount, &scissor);
+  if (viewportCount != 1 || scissorCount != 1 ||
+      viewport.TopLeftX != 0.0f || viewport.TopLeftY != 0.0f ||
+      scissor.left != 0 || scissor.top != 0)
+    return;
+
+  viewport.Width = static_cast<FLOAT>(viewportWidth);
+  viewport.Height = static_cast<FLOAT>(viewportHeight);
+  scissor.right = static_cast<LONG>(scissorWidth);
+  scissor.bottom = static_cast<LONG>(scissorHeight);
+
+  ID3D11RenderTargetView* rtv = nullptr;
+  ID3D11DepthStencilView* dsv = nullptr;
+  ID3D11Resource* resource = nullptr;
+  pContext->OMGetRenderTargets(1, &rtv, &dsv);
+  if (rtv) {
+    rtv->GetResource(&resource);
+    rtv->Release();
+  }
+  if (dsv) {
+    if (!resource)
+      dsv->GetResource(&resource);
+    dsv->Release();
+  }
+  if (resource) {
+    ID3D11Texture2D* texture = nullptr;
+    const HRESULT hr = resource->QueryInterface(IID_PPV_ARGS(&texture));
+    resource->Release();
+    if (SUCCEEDED(hr)) {
+      D3D11_TEXTURE2D_DESC desc = { };
+      texture->GetDesc(&desc);
+      texture->Release();
+      viewport.Width = static_cast<FLOAT>(desc.Width);
+      viewport.Height = static_cast<FLOAT>(desc.Height);
+      scissor.right = static_cast<LONG>(desc.Width);
+      scissor.bottom = static_cast<LONG>(desc.Height);
+    }
+  }
+
+  auto procs = getContextProcs(pContext);
+  procs->RSSetViewports(pContext, 1, &viewport);
+  procs->RSSetScissorRects(pContext, 1, &scissor);
 }
 
 HRESULT STDMETHODCALLTYPE ID3D11Device_CreateTexture3D(
@@ -937,6 +1092,7 @@ void STDMETHODCALLTYPE ID3D11DeviceContext_OMSetRenderTargets(
         ID3D11DepthStencilView*   pDSV) {
   auto procs = getContextProcs(pContext);
   updateRtvShadowResources(pContext);
+  getRasterState(pContext)->dirty.store(true, std::memory_order_release);
 
   procs->OMSetRenderTargets(pContext, RTVCount, ppRTVs, pDSV);
 }
@@ -952,6 +1108,7 @@ void STDMETHODCALLTYPE ID3D11DeviceContext_OMSetRenderTargetsAndUnorderedAccessV
   const UINT*                     pUAVClearValues) {
   auto procs = getContextProcs(pContext);
   updateRtvShadowResources(pContext);
+  getRasterState(pContext)->dirty.store(true, std::memory_order_release);
 
   procs->OMSetRenderTargetsAndUnorderedAccessViews(pContext,
     RTVCount, ppRTVs, pDSV, UAVIndex, UAVCount, ppUAVs, pUAVClearValues);
@@ -1147,6 +1304,7 @@ void STDMETHODCALLTYPE ID3D11DeviceContext_Draw(
         UINT StartVertexLocation) {
   auto procs = getContextProcs(pContext);
   flushDirtyShadows(pContext);
+  updateViewportScissor(pContext);
   procs->Draw(pContext, VertexCount, StartVertexLocation);
 }
 
@@ -1155,6 +1313,7 @@ void STDMETHODCALLTYPE ID3D11DeviceContext_DrawIndexed(
         UINT StartIndexLocation, INT BaseVertexLocation) {
   auto procs = getContextProcs(pContext);
   flushDirtyShadows(pContext);
+  updateViewportScissor(pContext);
   procs->DrawIndexed(pContext, IndexCount, StartIndexLocation, BaseVertexLocation);
 }
 
@@ -1164,6 +1323,7 @@ void STDMETHODCALLTYPE ID3D11DeviceContext_DrawInstanced(
         UINT StartInstanceLocation) {
   auto procs = getContextProcs(pContext);
   flushDirtyShadows(pContext);
+  updateViewportScissor(pContext);
   procs->DrawInstanced(pContext, VertexCountPerInstance, InstanceCount,
     StartVertexLocation, StartInstanceLocation);
 }
@@ -1174,6 +1334,7 @@ void STDMETHODCALLTYPE ID3D11DeviceContext_DrawIndexedInstanced(
         INT BaseVertexLocation, UINT StartInstanceLocation) {
   auto procs = getContextProcs(pContext);
   flushDirtyShadows(pContext);
+  updateViewportScissor(pContext);
   procs->DrawIndexedInstanced(pContext, IndexCountPerInstance, InstanceCount,
     StartIndexLocation, BaseVertexLocation, StartInstanceLocation);
 }
@@ -1181,6 +1342,7 @@ void STDMETHODCALLTYPE ID3D11DeviceContext_DrawIndexedInstanced(
 void STDMETHODCALLTYPE ID3D11DeviceContext_DrawAuto(ID3D11DeviceContext* pContext) {
   auto procs = getContextProcs(pContext);
   flushDirtyShadows(pContext);
+  updateViewportScissor(pContext);
   procs->DrawAuto(pContext);
 }
 
@@ -1189,6 +1351,7 @@ void STDMETHODCALLTYPE ID3D11DeviceContext_DrawInstancedIndirect(
         UINT AlignedByteOffsetForArgs) {
   auto procs = getContextProcs(pContext);
   flushDirtyShadows(pContext);
+  updateViewportScissor(pContext);
   procs->DrawInstancedIndirect(pContext, pBufferForArgs, AlignedByteOffsetForArgs);
 }
 
@@ -1197,6 +1360,7 @@ void STDMETHODCALLTYPE ID3D11DeviceContext_DrawIndexedInstancedIndirect(
         UINT AlignedByteOffsetForArgs) {
   auto procs = getContextProcs(pContext);
   flushDirtyShadows(pContext);
+  updateViewportScissor(pContext);
   procs->DrawIndexedInstancedIndirect(pContext, pBufferForArgs,
     AlignedByteOffsetForArgs);
 }
@@ -1288,6 +1452,8 @@ void hookContext(ID3D11DeviceContext* pContext) {
   HOOK_PROC(ID3D11DeviceContext, pContext, procs, 58, ExecuteCommandList);
   HOOK_PROC(ID3D11DeviceContext, pContext, procs, 14, Map);
   HOOK_PROC(ID3D11DeviceContext, pContext, procs, 15, Unmap);
+  HOOK_PROC(ID3D11DeviceContext, pContext, procs, 44, RSSetViewports);
+  HOOK_PROC(ID3D11DeviceContext, pContext, procs, 45, RSSetScissorRects);
   HOOK_PROC(ID3D11DeviceContext, pContext, procs, 33, OMSetRenderTargets);
   HOOK_PROC(ID3D11DeviceContext, pContext, procs, 34, OMSetRenderTargetsAndUnorderedAccessViews);
   HOOK_PROC(ID3D11DeviceContext, pContext, procs, 48, UpdateSubresource);

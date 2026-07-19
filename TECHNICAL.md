@@ -7,6 +7,7 @@ This repository combines established synchronization work with new Arland-specif
 - Philip Rebohle created `atelier-sync-fix` in 2022. Its central technique—replacing eligible GPU-to-CPU copies with copies through CPU-accessible shadow resources—is the foundation of `src/sync_fix.cpp`. The proxy loading, MinHook-based native D3D11 interception, staging-resource access correction, and direct-source unmap fixes also originate there.
 - TellowKrinkle identified that direct game writes through `Map` and `Unmap` must update the shadow and implemented that correction for Atelier Ayesha in commit `98b5c9b`. That implementation stored one global last mapping and uploaded the complete resource on every `Unmap`.
 - This project refines the Map/Unmap solution for the Arland workload: mappings are keyed by resource and subresource, references are lifetime-safe, dirty shadows are coalesced, uploads are deferred until the GPU can observe the resource, and deferred contexts cannot perform invalid staging reads. This refinement fixed the corrupted-text case encountered during the investigation while avoiding thousands of redundant atlas uploads.
+- TellowKrinkle's rendering fork also established the old-Arland render-target and viewport/scissor correction ported into this project. The implementation here retains only that resolution logic and excludes the fork's shader replacement, MSAA, anisotropic filtering, and LOD-bias features.
 - Nico, the author of this repository, led the reverse-engineering and runtime investigation of the Arland English menu slowdown. The successful `.PSSG` validation cache and the queue-scoped font-atlas read cache are results of that work; they are not features of the original `atelier-sync-fix`.
 - MinHook is an independent library by Tsuda Kageyu and contributors, bundled unchanged under `vendor/minhook`.
 
@@ -67,6 +68,24 @@ The atlas cache is scoped to one invocation of each game's resource-event queue 
 In the Totori measurement, 2,328 of 2,331 candidate reads were served from snapshots. In repeated Meruru Status-class drains, 3,027 of 3,030 reads were served from snapshots. Both therefore reduced the operation to three real atlas reads, matching Rorona.
 
 A process-lifetime snapshot was rejected because the atlases are mutable. Clearing the cache for every rendered string was also rejected because it regressed the same operation to roughly 2.5 seconds.
+
+## High-resolution rendering
+
+The Arland settings launcher contains canonical 1280×720, 1366×768, 1600×900, 1920×1080, and 3840×2160 entries, then filters and merges them with modes reported by DXGI. It omits 2560×1440 and can hide 3840×2160 on a lower-resolution desktop even though the games accept both dimensions in `ArlandDX_Settings.ini`.
+
+The companion 32-bit `winmm.dll` is loaded only by `ArlandDXEnv.exe`. After verifying the launcher filename, PE architecture, image size, complete canonical table, ASLR-adjusted table operands, and mode-builder prologue, it hooks the builder in memory. The hook appends any missing canonical modes, including 2560×1440 and 3840×2160, removes duplicates, and sorts the result. It also expands the launcher's two mode-array allocations from five fallback entries to six. The launcher executable is never edited.
+
+All three tested Steam launchers share the relevant code and table layout, although their complete files have different hashes:
+
+| Game launcher | Original SHA-256 | Resolution table file offset |
+|---|---|---:|
+| Rorona DX | `167e1c141d0faa03e7baca0034a672f6d8023b446473a6daad6c10b71d5b9667` | `0x1a0888` |
+| Totori DX | `c251c7e747e027f75d6e37e4e317cfb599b0db378db9e27ba09043619e02c226` | `0x1a0888` |
+| Meruru DX | `fa64db36c92c34429c6c2709ab2126c1ce48f839d9eddd2de1a992564182c732` | `0x1a0888` |
+
+Selecting a larger backbuffer is not sufficient by itself. The old render path creates the main depth target at the requested dimensions but later creates auxiliary render/depth targets and submits viewport/scissor state hard-coded to 1920×1080. It also records rendering through a deferred D3D11 context. Correcting only the immediate context therefore produces genuinely large targets with a 1920×1080 image confined to their upper-left corner.
+
+The D3D11 layer learns the larger main-target size and resizes only later exact-1920×1080 render/depth targets created without initial data. Raster state is tracked independently for the immediate and deferred context paths. When an affected target is bound, exact full-screen 1920×1080 viewport and scissor state is replaced with that target's dimensions before drawing on the same context. This produces direct native 2560×1440 and 3840×2160 rendering; neither mode is a 1080p upscale, and 1440p is not implemented by rendering at 4K and downsampling. Ordinary 1920×1080 and lower-resolution operation remains unchanged.
 
 ## Hook boundaries
 

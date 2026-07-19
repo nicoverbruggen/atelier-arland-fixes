@@ -9,24 +9,28 @@ permissions:
   contents: write
 
 jobs:
-  windows-dll:
+  windows-dlls:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: sudo apt-get update && sudo apt-get install -y g++-mingw-w64-x86-64 meson ninja-build
-      - run: meson setup build --cross-file build-win64.txt --buildtype release
-      - run: ninja -C build
+      - run: sudo apt-get update && sudo apt-get install -y g++-mingw-w64-x86-64 g++-mingw-w64-i686 meson ninja-build
+      - run: meson setup build64 --cross-file build-win64.txt --buildtype release
+      - run: ninja -C build64
+      - run: meson setup build32 --cross-file build-win32.txt --buildtype release
+      - run: ninja -C build32
       - uses: actions/upload-artifact@v4
         with:
           name: atelier-arland-fixes
-          path: build/d3d11.dll
+          path: |
+            build64/d3d11.dll
+            build32/winmm.dll
       - name: Publish tagged release
         if: startsWith(github.ref, 'refs/tags/v')
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
-            gh release upload "${GITHUB_REF_NAME}" build/d3d11.dll --clobber
+            gh release upload "${GITHUB_REF_NAME}" build64/d3d11.dll build32/winmm.dll --clobber
           else
-            gh release create "${GITHUB_REF_NAME}" build/d3d11.dll --verify-tag --generate-notes --title "Atelier Arland Fixes ${GITHUB_REF_NAME}"
+            gh release create "${GITHUB_REF_NAME}" build64/d3d11.dll build32/winmm.dll --verify-tag --generate-notes --title "Atelier Arland Fixes ${GITHUB_REF_NAME}"
           fi
