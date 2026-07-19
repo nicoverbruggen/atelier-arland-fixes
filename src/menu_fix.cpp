@@ -4,7 +4,6 @@
 
 #include <array>
 #include <atomic>
-#include <chrono>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
@@ -15,11 +14,6 @@
 #include <vector>
 
 #include "../vendor/minhook/include/MinHook.h"
-#include "log.h"
-
-namespace atfix {
-extern Log log;
-}
 
 namespace {
 
@@ -79,9 +73,6 @@ std::mutex atlasMutex;
 std::unordered_map<uintptr_t, AtlasRead> atlasReads;
 std::atomic<uint32_t> atlasDrainDepth = { 0 };
 std::atomic<bool> atlasCacheActive = { false };
-std::atomic<uint64_t> atlasCandidateLocks = { 0 };
-std::atomic<uint64_t> atlasCacheHits = { 0 };
-std::atomic<uint64_t> atlasCacheMisses = { 0 };
 thread_local uint32_t renderTextDepth = 0;
 thread_local std::vector<uintptr_t> syntheticAtlasLocks;
 
@@ -150,25 +141,7 @@ bool atlasCacheEnabled() {
   return enabled;
 }
 
-bool atlasStatsEnabled() {
-  static const bool enabled = [] {
-    const char* value = std::getenv("ARLAND_ATLAS_STATS");
-    return value && value[0] == '1';
-  }();
-  return enabled;
-}
-
 void cachedQueueDrain(void* manager) {
-  const bool collectStats = atlasStatsEnabled();
-  const auto started = collectStats
-    ? std::chrono::steady_clock::now()
-    : std::chrono::steady_clock::time_point();
-  const uint64_t candidatesBefore = collectStats
-    ? atlasCandidateLocks.load(std::memory_order_relaxed) : 0;
-  const uint64_t hitsBefore = collectStats
-    ? atlasCacheHits.load(std::memory_order_relaxed) : 0;
-  const uint64_t missesBefore = collectStats
-    ? atlasCacheMisses.load(std::memory_order_relaxed) : 0;
   const bool outermost =
     atlasDrainDepth.fetch_add(1, std::memory_order_acq_rel) == 0;
   if (outermost) {
@@ -183,19 +156,6 @@ void cachedQueueDrain(void* manager) {
     atlasCacheActive.store(false, std::memory_order_release);
     std::lock_guard lock(atlasMutex);
     atlasReads.clear();
-  }
-  if (outermost && collectStats) {
-    const uint64_t candidates = atlasCandidateLocks.load(
-      std::memory_order_relaxed) - candidatesBefore;
-    if (candidates) {
-      const auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(
-        std::chrono::steady_clock::now() - started).count();
-      atfix::log("Atlas drain: ", elapsed, " us; candidate locks ", candidates,
-        "; cache hits ",
-        atlasCacheHits.load(std::memory_order_relaxed) - hitsBefore,
-        "; real reads ",
-        atlasCacheMisses.load(std::memory_order_relaxed) - missesBefore);
-    }
   }
 }
 
@@ -219,9 +179,6 @@ uintptr_t cachedAtlasLock(uintptr_t texture, uintptr_t output,
 
   const bool inCandidateScope = renderTextDepth && output && width == 512 &&
     height == 512 && atlasCacheActive.load(std::memory_order_acquire);
-  const bool collectStats = atlasStatsEnabled();
-  if (inCandidateScope && collectStats)
-    atlasCandidateLocks.fetch_add(1, std::memory_order_relaxed);
   const bool candidate = inCandidateScope && atlasCacheEnabled();
   if (candidate) {
     std::lock_guard lock(atlasMutex);
@@ -229,15 +186,11 @@ uintptr_t cachedAtlasLock(uintptr_t texture, uintptr_t output,
     if (found != atlasReads.end() && !found->second.bytes.empty()) {
       *reinterpret_cast<void**>(output) = found->second.bytes.data();
       syntheticAtlasLocks.push_back(texture);
-      if (collectStats)
-        atlasCacheHits.fetch_add(1, std::memory_order_relaxed);
       return found->second.pitch;
     }
   }
 
   const uintptr_t pitch = originalAtlasLock(texture, output, level, face);
-  if (inCandidateScope && collectStats)
-    atlasCacheMisses.fetch_add(1, std::memory_order_relaxed);
   if (candidate && pitch && pitch <= 16384) {
     const void* mapped = *reinterpret_cast<void* const*>(output);
     const size_t size = size_t(pitch) * height;
@@ -315,8 +268,7 @@ bool installMinHookDetour(BYTE* target, const void* replacement,
 }
 
 bool installAtlasCache(BYTE* base, const Game& game) {
-  if ((!atlasCacheEnabled() && !atlasStatsEnabled()) ||
-      game.atlasVariant == AtlasNone)
+  if (!atlasCacheEnabled() || game.atlasVariant == AtlasNone)
     return false;
 
   auto* queue = base + game.queueDrainRva;
