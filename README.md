@@ -43,3 +43,7 @@ ninja -C build
 ```
 
 The output is `build/dinput8.dll`. GitHub Actions builds the same DLL and uploads it as a workflow artifact.
+
+## License
+
+MIT. This mod was created with some assistance of LLMs (like GPT 5.6 Sol) for debugging purposes.
