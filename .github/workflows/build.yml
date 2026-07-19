@@ -1,0 +1,19 @@
+name: build
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  windows-dll:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y g++-mingw-w64-x86-64 meson ninja-build
+      - run: meson setup build --cross-file build-win64.txt --buildtype release
+      - run: ninja -C build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: atelier-arland-menu-fix
+          path: build/d3d11.dll
