@@ -7,7 +7,7 @@ This repository combines established synchronization work with new Arland-specif
 - Philip Rebohle created `atelier-sync-fix` in 2022. Its central technique—replacing eligible GPU-to-CPU copies with copies through CPU-accessible shadow resources—is the foundation of `src/sync_fix.cpp`. The proxy loading, MinHook-based native D3D11 interception, staging-resource access correction, and direct-source unmap fixes also originate there.
 - TellowKrinkle identified that direct game writes through `Map` and `Unmap` must update the shadow and implemented that correction for Atelier Ayesha in commit `98b5c9b`. That implementation stored one global last mapping and uploaded the complete resource on every `Unmap`.
 - This project refines the Map/Unmap solution for the Arland workload: mappings are keyed by resource and subresource, references are lifetime-safe, dirty shadows are coalesced, uploads are deferred until the GPU can observe the resource, and deferred contexts cannot perform invalid staging reads. This refinement fixed the corrupted-text case encountered during the investigation while avoiding thousands of redundant atlas uploads.
-- Nico, the author of this repository, led the reverse-engineering and runtime investigation of the Arland English menu slowdown. The successful `.PSSG` validation cache and the queue-scoped Rorona font-atlas read cache are results of that work; they are not features of the original `atelier-sync-fix`.
+- Nico, the author of this repository, led the reverse-engineering and runtime investigation of the Arland English menu slowdown. The successful `.PSSG` validation cache and the queue-scoped font-atlas read cache are results of that work; they are not features of the original `atelier-sync-fix`.
 - MinHook is an independent library by Tsuda Kageyu and contributors, bundled unchanged under `vendor/minhook`.
 
 The current code supports only the exact tested English Arland DX executables and contains the validated D3D11 synchronization and menu-performance fixes described below.
@@ -54,14 +54,17 @@ These desktop measurements were captured on an AMD Ryzen 7 5800X3D, Radeon RX 79
 
 ## Repeated font-atlas reads
 
-After the PSSG fix, Rorona still read the same three 512×512 font atlases once per text operation. A representative Status build made about 3,642 candidate reads even though the atlases did not change during that synchronous build.
+After the PSSG fix, the games still read the same three 512×512 font atlases once per text operation. A representative Rorona Status build made about 3,642 candidate reads even though the atlases did not change during that synchronous build. Totori and Meruru use the same middleware behavior.
 
-The Rorona atlas cache is scoped to one invocation of the resource-event queue drain. It performs the first real read of each candidate atlas, takes a CPU snapshot, serves later reads from that snapshot, and discards all snapshots when the outermost drain returns. It is additionally restricted to atlas locks made from the known text renderer.
+The atlas cache is scoped to one invocation of each game's resource-event queue drain. It performs the first real read of each candidate atlas, takes a CPU snapshot, serves later reads from that snapshot, and discards all snapshots when the outermost drain returns. It is additionally restricted to atlas locks made from each game's known text renderer.
 
-| Rorona Status build after PSSG caching | Without atlas cache | With atlas cache | Saving |
+| Workload after PSSG caching | Without atlas cache | With atlas cache | Saving |
 |---|---:|---:|---:|
-| Queue-drain wall time | 103–117 ms | 67–69 ms | 34–43% |
-| Real candidate atlas reads | About 3,642 | 3 | More than 99.9% |
+| Rorona Status queue drain | 103–117 ms | 67–69 ms | 34–43% |
+| Totori 2,331-read menu drain | 119.7–126.3 ms | 94.0–99.8 ms | About 21% |
+| Meruru Status queue drain | 82–87 ms | 45–46 ms | 44–48% |
+
+In the Totori measurement, 2,328 of 2,331 candidate reads were served from snapshots. In repeated Meruru Status-class drains, 3,027 of 3,030 reads were served from snapshots. Both therefore reduced the operation to three real atlas reads, matching Rorona.
 
 A process-lifetime snapshot was rejected because the atlases are mutable. Clearing the cache for every rendered string was also rejected because it regressed the same operation to roughly 2.5 seconds.
 
@@ -72,9 +75,17 @@ D3D11 hooks are installed only after the process is recognized as one of the thr
 | Game | Executable | SHA-256 | Path-check RVA | Validation behavior | Atlas-read cache |
 |---|---|---|---:|---|---|
 | Rorona DX | `A11R_x64_Release_en.exe` | `2afd19db0cef3e3f0888fb62e02c9ca5929264ff5ee8c780af06213642988276` | `0x12cc70` | Metadata plus filename-case enumeration | Yes |
-| Totori DX | `A12V_x64_Release_en.exe` | `38c41df799b207786a11c08d6bf83cec8ac10414757f935311549f74474bfd90` | `0x18b140` | Repeated metadata validation | Not yet |
-| Meruru DX | `A13V_x64_Release_EN.exe` | `d69cad45700457128cc8805ea3cf80dfaea0e155e6dfd2d1123277f4ebd7c19b` | `0x1533c0` | Metadata plus filename-case enumeration | Not yet |
+| Totori DX | `A12V_x64_Release_en.exe` | `38c41df799b207786a11c08d6bf83cec8ac10414757f935311549f74474bfd90` | `0x18b140` | Repeated metadata validation | Yes |
+| Meruru DX | `A13V_x64_Release_EN.exe` | `d69cad45700457128cc8805ea3cf80dfaea0e155e6dfd2d1123277f4ebd7c19b` | `0x1533c0` | Metadata plus filename-case enumeration | Yes |
 
-Rorona's atlas cache verifies four independent entry points: queue drain `0x08d4b0`, text renderer `0x5613b0`, atlas lock `0x3eea10`, and atlas unlock `0x3eea60`. A lock is eligible only while both the verified text renderer and the outermost verified queue drain are active and the middleware texture reports 512×512 dimensions. Synthetic locks are tracked per thread so only their matching unlock is suppressed. Installation order keeps partially installed atlas hooks inert.
+The atlas cache verifies four independent entry points per game:
 
-The D3D11 synchronization hooks and the game-code menu detours are independent layers in one proxy. `ARLAND_MENU_FIX=0` skips the executable detours but leaves the synchronization layer active for a recognized Arland executable. `ARLAND_ATLAS_CACHE=0` disables only the second Rorona cache.
+| Game | Queue drain | Text renderer | Atlas lock | Atlas unlock |
+|---|---:|---:|---:|---:|
+| Rorona | `0x08d4b0` | `0x5613b0` | `0x3eea10` | `0x3eea60` |
+| Totori | `0x038a00` | `0x430bf0` | `0x4c2080` | `0x4c20c0` |
+| Meruru | `0x0d6210` | `0x5115d0` | `0x3ea7d0` | `0x3ea7f0` |
+
+A lock is eligible only while both the verified text renderer and the outermost verified queue drain are active and the middleware texture reports 512×512 dimensions. Synthetic locks are tracked per thread so only their matching unlock is suppressed. Installation order keeps partially installed atlas hooks inert. MinHook is used for these four entry points because Totori and Meruru expose atlas unlock through a short relative-jump thunk; every target is still checked against its complete expected prologue before MinHook is invoked.
+
+The D3D11 synchronization hooks and the game-code menu detours are independent layers in one proxy. `ARLAND_MENU_FIX=0` skips the executable detours but leaves the synchronization layer active for a recognized Arland executable. `ARLAND_ATLAS_CACHE=0` disables only the atlas cache. `ARLAND_ATLAS_STATS=1` adds per-drain timing and hit/read counters for diagnostics.

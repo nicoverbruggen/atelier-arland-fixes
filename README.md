@@ -25,7 +25,7 @@ On Wine or Proton, use:
 WINEDLLOVERRIDES="d3d11=n,b" %command%
 ```
 
-The fixes are enabled by default. `ARLAND_MENU_FIX=0` disables the executable-specific menu hooks while retaining D3D11 forwarding and synchronization. `ARLAND_ATLAS_CACHE=0` disables only Rorona's per-menu atlas-read cache.
+The fixes are enabled by default. `ARLAND_MENU_FIX=0` disables the executable-specific menu hooks while retaining D3D11 forwarding and synchronization. `ARLAND_ATLAS_CACHE=0` disables the queue-scoped atlas-read cache.
 
 ## Build
 

@@ -4,6 +4,7 @@
 
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
@@ -12,6 +13,13 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
+
+#include "../vendor/minhook/include/MinHook.h"
+#include "log.h"
+
+namespace atfix {
+extern Log log;
+}
 
 namespace {
 
@@ -33,15 +41,23 @@ struct Game {
   uintptr_t renderTextRva;
   uintptr_t atlasLockRva;
   uintptr_t atlasUnlockRva;
+  uint8_t atlasVariant;
+};
+
+enum : uint8_t {
+  AtlasNone,
+  AtlasRorona,
+  AtlasTotori,
+  AtlasLaterArland,
 };
 
 constexpr Game games[] = {
   { "A11R_x64_Release_en.exe", 0x709a9c, 0x12cc70, 0x57,
-    0x08d4b0, 0x5613b0, 0x3eea10, 0x3eea60 },
+    0x08d4b0, 0x5613b0, 0x3eea10, 0x3eea60, AtlasRorona },
   { "A12V_x64_Release_en.exe", 0x67da5c, 0x18b140, 0x56,
-    0, 0, 0, 0 },
+    0x038a00, 0x430bf0, 0x4c2080, 0x4c20c0, AtlasTotori },
   { "A13V_x64_Release_EN.exe", 0x61ecec, 0x1533c0, 0x57,
-    0, 0, 0, 0 },
+    0x0d6210, 0x5115d0, 0x3ea7d0, 0x3ea7f0, AtlasLaterArland },
 };
 
 PathCheckProc originalPathCheck = nullptr;
@@ -63,6 +79,9 @@ std::mutex atlasMutex;
 std::unordered_map<uintptr_t, AtlasRead> atlasReads;
 std::atomic<uint32_t> atlasDrainDepth = { 0 };
 std::atomic<bool> atlasCacheActive = { false };
+std::atomic<uint64_t> atlasCandidateLocks = { 0 };
+std::atomic<uint64_t> atlasCacheHits = { 0 };
+std::atomic<uint64_t> atlasCacheMisses = { 0 };
 thread_local uint32_t renderTextDepth = 0;
 thread_local std::vector<uintptr_t> syntheticAtlasLocks;
 
@@ -124,11 +143,27 @@ bool cachedPathCheck(void* context, void* pathString) {
 }
 
 bool atlasCacheEnabled() {
-  const char* enabled = std::getenv("ARLAND_ATLAS_CACHE");
-  return !enabled || enabled[0] != '0';
+  static const bool enabled = [] {
+    const char* value = std::getenv("ARLAND_ATLAS_CACHE");
+    return !value || value[0] != '0';
+  }();
+  return enabled;
+}
+
+bool atlasStatsEnabled() {
+  static const bool enabled = [] {
+    const char* value = std::getenv("ARLAND_ATLAS_STATS");
+    return value && value[0] == '1';
+  }();
+  return enabled;
 }
 
 void cachedQueueDrain(void* manager) {
+  const auto started = std::chrono::steady_clock::now();
+  const uint64_t candidatesBefore = atlasCandidateLocks.load(
+    std::memory_order_relaxed);
+  const uint64_t hitsBefore = atlasCacheHits.load(std::memory_order_relaxed);
+  const uint64_t missesBefore = atlasCacheMisses.load(std::memory_order_relaxed);
   const bool outermost =
     atlasDrainDepth.fetch_add(1, std::memory_order_acq_rel) == 0;
   if (outermost) {
@@ -143,6 +178,19 @@ void cachedQueueDrain(void* manager) {
     atlasCacheActive.store(false, std::memory_order_release);
     std::lock_guard lock(atlasMutex);
     atlasReads.clear();
+  }
+  if (outermost && atlasStatsEnabled()) {
+    const uint64_t candidates = atlasCandidateLocks.load(
+      std::memory_order_relaxed) - candidatesBefore;
+    if (candidates) {
+      const auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(
+        std::chrono::steady_clock::now() - started).count();
+      atfix::log("Atlas drain: ", elapsed, " us; candidate locks ", candidates,
+        "; cache hits ",
+        atlasCacheHits.load(std::memory_order_relaxed) - hitsBefore,
+        "; real reads ",
+        atlasCacheMisses.load(std::memory_order_relaxed) - missesBefore);
+    }
   }
 }
 
@@ -164,19 +212,25 @@ uintptr_t cachedAtlasLock(uintptr_t texture, uintptr_t output,
     std::memcpy(&height, bytes + 0x42, sizeof(height));
   }
 
-  const bool candidate = renderTextDepth && output && width == 512 &&
+  const bool inCandidateScope = renderTextDepth && output && width == 512 &&
     height == 512 && atlasCacheActive.load(std::memory_order_acquire);
+  if (inCandidateScope)
+    atlasCandidateLocks.fetch_add(1, std::memory_order_relaxed);
+  const bool candidate = inCandidateScope && atlasCacheEnabled();
   if (candidate) {
     std::lock_guard lock(atlasMutex);
     const auto found = atlasReads.find(texture);
     if (found != atlasReads.end() && !found->second.bytes.empty()) {
       *reinterpret_cast<void**>(output) = found->second.bytes.data();
       syntheticAtlasLocks.push_back(texture);
+      atlasCacheHits.fetch_add(1, std::memory_order_relaxed);
       return found->second.pitch;
     }
   }
 
   const uintptr_t pitch = originalAtlasLock(texture, output, level, face);
+  if (inCandidateScope)
+    atlasCacheMisses.fetch_add(1, std::memory_order_relaxed);
   if (candidate && pitch && pitch <= 16384) {
     const void* mapped = *reinterpret_cast<void* const*>(output);
     const size_t size = size_t(pitch) * height;
@@ -244,17 +298,35 @@ bool matches(const BYTE* target, const std::array<BYTE, N>& expected) {
   return !std::memcmp(target, expected.data(), expected.size());
 }
 
+bool installMinHookDetour(BYTE* target, const void* replacement,
+                          void** original) {
+  const MH_STATUS created = MH_CreateHook(
+    target, const_cast<void*>(replacement), original);
+  if (created != MH_OK)
+    return false;
+  return MH_EnableHook(target) == MH_OK;
+}
+
 bool installAtlasCache(BYTE* base, const Game& game) {
-  if (!atlasCacheEnabled() || !game.queueDrainRva)
+  if ((!atlasCacheEnabled() && !atlasStatsEnabled()) ||
+      game.atlasVariant == AtlasNone)
     return false;
 
   auto* queue = base + game.queueDrainRva;
   auto* render = base + game.renderTextRva;
   auto* lock = base + game.atlasLockRva;
   auto* unlock = base + game.atlasUnlockRva;
-  const std::array<BYTE, 16> queueExpected = {
+  const std::array<BYTE, 16> roronaQueueExpected = {
     0x48, 0x8b, 0xc4, 0x55, 0x41, 0x54, 0x41, 0x55,
     0x41, 0x56, 0x41, 0x57, 0x48, 0x8d, 0x68, 0x88,
+  };
+  const std::array<BYTE, 16> laterQueueExpected = {
+    0x48, 0x8b, 0xc4, 0x55, 0x41, 0x54, 0x41, 0x55,
+    0x41, 0x56, 0x41, 0x57, 0x48, 0x8d, 0x68, 0x98,
+  };
+  const std::array<BYTE, 16> totoriQueueExpected = {
+    0x48, 0x8b, 0xc4, 0x55, 0x41, 0x54, 0x41, 0x55,
+    0x41, 0x56, 0x41, 0x57, 0x48, 0x8d, 0x68, 0xb8,
   };
   const std::array<BYTE, 15> renderExpected = {
     0x48, 0x8b, 0xc4, 0x48, 0x89, 0x50, 0x10, 0x53,
@@ -264,31 +336,41 @@ bool installAtlasCache(BYTE* base, const Game& game) {
     0x48, 0x83, 0xec, 0x38, 0x44, 0x89, 0x4c, 0x24,
     0x20, 0x45, 0x8b, 0xc8, 0x45, 0x33, 0xc0,
   };
-  const std::array<BYTE, 15> unlockExpected = {
+  const std::array<BYTE, 15> roronaUnlockExpected = {
     0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x6c,
     0x24, 0x10, 0x48, 0x89, 0x74, 0x24, 0x18,
   };
-  if (!matches(queue, queueExpected) || !matches(render, renderExpected) ||
-      !matches(lock, lockExpected) || !matches(unlock, unlockExpected))
+  const std::array<BYTE, 14> laterUnlockExpected = {
+    0x44, 0x8b, 0xc2, 0x33, 0xd2, 0xe9, 0x06, 0x00,
+    0x00, 0x00, 0xcc, 0xcc, 0xcc, 0xcc,
+  };
+  const bool signaturesMatch = game.atlasVariant == AtlasRorona
+    ? matches(queue, roronaQueueExpected) &&
+      matches(unlock, roronaUnlockExpected)
+    : (game.atlasVariant == AtlasTotori
+      ? matches(queue, totoriQueueExpected)
+      : matches(queue, laterQueueExpected)) &&
+      matches(unlock, laterUnlockExpected);
+  if (!signaturesMatch || !matches(render, renderExpected) ||
+      !matches(lock, lockExpected))
     return false;
 
   /* This order keeps every partial-install outcome inert: synthetic locks
    * require the render hook and an active drain, installed last. */
-  if (!installDetour(unlock, reinterpret_cast<void*>(&cachedAtlasUnlock),
-                     unlockExpected.size(),
-                     reinterpret_cast<void**>(&originalAtlasUnlock)))
+  if (!installMinHookDetour(unlock,
+      reinterpret_cast<void*>(&cachedAtlasUnlock),
+      reinterpret_cast<void**>(&originalAtlasUnlock)))
     return false;
-  if (!installDetour(lock, reinterpret_cast<void*>(&cachedAtlasLock),
-                     lockExpected.size(),
-                     reinterpret_cast<void**>(&originalAtlasLock)))
+  if (!installMinHookDetour(lock, reinterpret_cast<void*>(&cachedAtlasLock),
+      reinterpret_cast<void**>(&originalAtlasLock)))
     return false;
-  if (!installDetour(render, reinterpret_cast<void*>(&cachedRenderText),
-                     renderExpected.size(),
-                     reinterpret_cast<void**>(&originalRenderText)))
+  if (!installMinHookDetour(render,
+      reinterpret_cast<void*>(&cachedRenderText),
+      reinterpret_cast<void**>(&originalRenderText)))
     return false;
-  return installDetour(queue, reinterpret_cast<void*>(&cachedQueueDrain),
-                       queueExpected.size(),
-                       reinterpret_cast<void**>(&originalQueueDrain));
+  return installMinHookDetour(queue,
+    reinterpret_cast<void*>(&cachedQueueDrain),
+    reinterpret_cast<void**>(&originalQueueDrain));
 }
 
 void detectAndInstallGameHooks() {

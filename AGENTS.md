@@ -9,7 +9,7 @@ The current tree contains:
 - D3D11 CPU shadow-copy synchronization;
 - coherent Map/Unmap handling with deferred shadow uploads;
 - successful `.PSSG` path-validation caching for all three Arland games;
-- a queue-scoped font-atlas read cache for Rorona.
+- a queue-scoped font-atlas read cache for all three games.
 
 Consult `TODO.md` for work in progress and features under consideration.
 
