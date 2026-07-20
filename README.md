@@ -101,7 +101,7 @@ The outputs are `build64/d3d11.dll` and `build32/msimg32.dll`. GitHub Actions pr
 
 ## Known limitations
 
-Blurred 3D backgrounds used during dialogue scenes are corrected to cover the full output at 2560×1440 and 3840×2160. Optional MSAA has been exercised in Rorona, but has not received the same coverage across Totori and Meruru; leave it disabled if you encounter rendering problems.
+Blurred 3D backgrounds used during dialogue scenes cover the full output at higher resolutions. Rorona's additional fixed-size snapshot and composite assumptions are corrected without affecting portraits or other cutscene layers. Totori and Meruru use different blur paths that already follow the resized targets. Optional MSAA has been validated at 2560×1440 in all three games; leave it disabled if you encounter rendering problems on other hardware or drivers.
 
 ## Credits
 

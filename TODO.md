@@ -4,7 +4,6 @@ This file tracks work in progress and ideas under consideration. Items here are 
 
 ## Rendering enhancements under consideration
 
-- Complete the core MSAA implementation and assess it independently in Rorona, Totori, and Meruru before documenting it as supported.
 - Investigate sharper font outlines through a font-only atlas or sampling improvement without sharpening other UI textures.
 - Add a signature-gated Borderless checkbox to the settings launcher and implement the corresponding game-window mode.
 - Evaluate anisotropic filtering and configurable texture LOD bias, including UI and shimmering regressions.
