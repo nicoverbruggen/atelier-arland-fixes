@@ -2,6 +2,7 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <chrono>
@@ -162,11 +163,41 @@ struct RenderTextBitmap {
   std::vector<uint8_t> bytes;
 };
 
+struct RenderTextOutputSignature {
+  int32_t width = 0;
+  int32_t height = 0;
+  std::array<uint32_t, 4> metrics = {};
+  uintptr_t result = 0;
+  uint64_t byteCount = 0;
+  uint64_t byteHash = 0;
+
+  bool operator==(const RenderTextOutputSignature& other) const {
+    return width == other.width && height == other.height &&
+      metrics == other.metrics && result == other.result &&
+      byteCount == other.byteCount && byteHash == other.byteHash;
+  }
+};
+
+struct RenderTextKeyTiming {
+  int recordType = -1;
+  uint64_t calls = 0;
+  uint64_t totalNanos = 0;
+  uint64_t minimumNanos = UINT64_MAX;
+  uint64_t maximumNanos = 0;
+};
+
 std::mutex atlasMutex;
 std::unordered_map<uintptr_t, AtlasRead> atlasReads;
 std::mutex renderBitmapMutex;
 std::unordered_map<RenderTextKey, RenderTextBitmap, RenderTextKeyHash>
   renderBitmapCache;
+std::unordered_map<RenderTextKey, RenderTextOutputSignature, RenderTextKeyHash>
+  renderOutputSignatures;
+std::unordered_map<RenderTextKey, RenderTextKeyTiming, RenderTextKeyHash>
+  renderKeyTimings;
+uint64_t renderOutputRepeatMatches = 0;
+uint64_t renderOutputRepeatConflicts = 0;
+uint64_t renderOutputInvalidSamples = 0;
 std::atomic<uint32_t> atlasDrainDepth = { 0 };
 std::atomic<bool> atlasCacheActive = { false };
 std::atomic<bool> frameAtlasCacheDefault = { false };
@@ -185,12 +216,23 @@ thread_local std::unordered_set<uintptr_t> layoutBuildResults;
 thread_local std::unordered_set<uintptr_t> layoutTemplateResults;
 thread_local std::unordered_set<uint64_t> renderTextKeys;
 thread_local std::unordered_set<uint64_t> renderTextExactKeys;
+thread_local std::array<std::unordered_set<uint64_t>, 2>
+  renderTextExactKeysByRecordType;
 thread_local std::unordered_set<uintptr_t> renderTextPointers;
 thread_local std::unordered_set<uintptr_t> renderTextRenderers;
 constexpr size_t recordTypeCount = 40;
 constexpr size_t recordDepthLimit = 128;
 thread_local size_t recordDepth = 0;
 thread_local uint32_t type19Depth = 0;
+thread_local int activeTextRecordType = -1;
+struct ActiveRenderTrace {
+  bool active = false;
+  uint64_t atlasNanos = 0;
+  uint64_t atlasCalls = 0;
+  uint64_t atlasCached = 0;
+  uint64_t atlasReal = 0;
+};
+thread_local ActiveRenderTrace activeRenderTrace;
 thread_local std::array<uint64_t, recordDepthLimit> recordChildNanos = {};
 std::atomic<bool> recordTimingActive = { false };
 
@@ -234,6 +276,11 @@ struct DeepMenuCounters {
   std::atomic<uint64_t> renderTextCalls = { 0 };
   std::atomic<uint64_t> renderTextNanos = { 0 };
   std::atomic<uint64_t> renderTextBytes = { 0 };
+  std::array<std::atomic<uint64_t>, 2> renderTextRecordCalls = {};
+  std::array<std::atomic<uint64_t>, 2> renderTextRecordNanos = {};
+  std::array<std::atomic<uint64_t>, 2> renderTextRecordBytes = {};
+  std::array<std::atomic<uint64_t>, 2> renderTextRecordOutputBytes = {};
+  std::array<std::atomic<uint64_t>, 2> renderTextRecordMaxOutputBytes = {};
   std::atomic<uint64_t> renderBitmapHits = { 0 };
   std::atomic<uint64_t> renderBitmapMisses = { 0 };
   std::atomic<uint64_t> renderBitmapCapacityFallbacks = { 0 };
@@ -367,13 +414,18 @@ uintptr_t timedRecord(uintptr_t context, uintptr_t record,
   const auto started = std::chrono::steady_clock::now();
   const size_t depth = recordDepth++;
   const bool isTextRecord = type == 19 || type == 20;
-  if (isTextRecord)
+  const int previousTextRecordType = activeTextRecordType;
+  if (isTextRecord) {
     ++type19Depth;
+    activeTextRecordType = type;
+  }
   if (depth < recordDepthLimit)
     recordChildNanos[depth] = 0;
   const uintptr_t result = originalRecord(context, record, id, extra);
-  if (isTextRecord)
+  if (isTextRecord) {
+    activeTextRecordType = previousTextRecordType;
     --type19Depth;
+  }
   const uint64_t elapsed = uint64_t(
     std::chrono::duration_cast<std::chrono::nanoseconds>(
       std::chrono::steady_clock::now() - started).count());
@@ -756,6 +808,17 @@ void cachedQueueDrain(void* manager) {
     deepMenu.renderTextCalls.store(0, std::memory_order_relaxed);
     deepMenu.renderTextNanos.store(0, std::memory_order_relaxed);
     deepMenu.renderTextBytes.store(0, std::memory_order_relaxed);
+    for (size_t i = 0; i < 2; i++) {
+      deepMenu.renderTextRecordCalls[i].store(0, std::memory_order_relaxed);
+      deepMenu.renderTextRecordNanos[i].store(0, std::memory_order_relaxed);
+      deepMenu.renderTextRecordBytes[i].store(0, std::memory_order_relaxed);
+      deepMenu.renderTextRecordOutputBytes[i].store(0,
+        std::memory_order_relaxed);
+      deepMenu.renderTextRecordMaxOutputBytes[i].store(0,
+        std::memory_order_relaxed);
+      renderTextExactKeysByRecordType[i].clear();
+      renderTextExactKeysByRecordType[i].reserve(64);
+    }
     deepMenu.renderBitmapHits.store(0, std::memory_order_relaxed);
     deepMenu.renderBitmapMisses.store(0, std::memory_order_relaxed);
     deepMenu.renderBitmapCapacityFallbacks.store(0, std::memory_order_relaxed);
@@ -767,6 +830,14 @@ void cachedQueueDrain(void* manager) {
     renderTextExactKeys.clear();
     renderTextPointers.clear();
     renderTextRenderers.clear();
+    {
+      std::lock_guard bitmapLock(renderBitmapMutex);
+      renderOutputSignatures.clear();
+      renderKeyTimings.clear();
+      renderOutputRepeatMatches = 0;
+      renderOutputRepeatConflicts = 0;
+      renderOutputInvalidSamples = 0;
+    }
     layoutBuildKeys.reserve(1024);
     layoutBuildResults.reserve(1024);
     layoutTemplateResults.reserve(1024);
@@ -906,6 +977,24 @@ void cachedQueueDrain(void* manager) {
           " exact_unique_keys=", renderTextExactKeys.size(),
           " unique_string_pointers=", renderTextPointers.size(),
           " unique_renderers=", renderTextRenderers.size());
+        for (size_t i = 0; i < 2; i++) {
+          atfix::log("MENU text-render record_type=", i + 19,
+            " calls=",
+            deepMenu.renderTextRecordCalls[i].load(std::memory_order_relaxed),
+            " us=",
+            deepMenu.renderTextRecordNanos[i].load(
+              std::memory_order_relaxed) / 1000,
+            " bytes=",
+            deepMenu.renderTextRecordBytes[i].load(
+              std::memory_order_relaxed),
+            " output_bytes=",
+            deepMenu.renderTextRecordOutputBytes[i].load(
+              std::memory_order_relaxed),
+            " max_output_bytes=",
+            deepMenu.renderTextRecordMaxOutputBytes[i].load(
+              std::memory_order_relaxed),
+            " unique_keys=", renderTextExactKeysByRecordType[i].size());
+        }
         atfix::log("MENU text-bitmap-cache hits=",
           deepMenu.renderBitmapHits.load(std::memory_order_relaxed),
           " misses=", deepMenu.renderBitmapMisses.load(std::memory_order_relaxed),
@@ -913,6 +1002,28 @@ void cachedQueueDrain(void* manager) {
           deepMenu.renderBitmapCapacityFallbacks.load(std::memory_order_relaxed),
           " reallocations=",
           deepMenu.renderBitmapReallocations.load(std::memory_order_relaxed));
+        {
+          std::lock_guard bitmapLock(renderBitmapMutex);
+          atfix::log("MENU text-output unique=", renderOutputSignatures.size(),
+            " repeat_matches=", renderOutputRepeatMatches,
+            " repeat_conflicts=", renderOutputRepeatConflicts,
+            " invalid_samples=", renderOutputInvalidSamples);
+          for (const auto& [key, timing] : renderKeyTimings) {
+            if (timing.recordType != 20)
+              continue;
+            std::string preview = key.text.substr(0, 96);
+            for (char& character : preview) {
+              const unsigned char value = static_cast<unsigned char>(character);
+              if (value < 0x20 || value > 0x7e)
+                character = '?';
+            }
+            atfix::log("MENU text-key record_type=20 calls=", timing.calls,
+              " total_us=", timing.totalNanos / 1000,
+              " min_us=", timing.minimumNanos / 1000,
+              " max_us=", timing.maximumNanos / 1000,
+              " length=", key.text.size(), " text=\"", preview, "\"");
+          }
+        }
         const uintptr_t inputTarget = deepMenu.layoutInputTarget.load(
           std::memory_order_relaxed);
         const uintptr_t objectE8 = deepMenu.layoutObjectE8Target.load(
@@ -987,8 +1098,9 @@ uintptr_t cachedRenderText(uintptr_t a, uintptr_t b,
   }
 
   RenderTextKey cacheKey;
-  const bool validCacheKey = cache && length < 4096;
-  if (validCacheKey) {
+  const bool validSemanticKey = (profile || cache) && a && b && length < 4096;
+  const bool validCacheKey = cache && validSemanticKey;
+  if (validSemanticKey) {
     cacheKey.renderer = a;
     cacheKey.font = font;
     cacheKey.atlas = atlas;
@@ -1058,9 +1170,85 @@ uintptr_t cachedRenderText(uintptr_t a, uintptr_t b,
   }
 
   if (!replayed) {
+    const ActiveRenderTrace previousRenderTrace = activeRenderTrace;
+    if (profile)
+      activeRenderTrace = { true, 0, 0, 0, 0 };
     ++renderTextDepth;
     result = originalRenderText(a, b, c, d);
     --renderTextDepth;
+    const ActiveRenderTrace completedRenderTrace = activeRenderTrace;
+    activeRenderTrace = previousRenderTrace;
+
+    if (profile && validSemanticKey) {
+      const uint64_t elapsed = uint64_t(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+          std::chrono::steady_clock::now() - started).count());
+      if (activeTextRecordType == 20 && elapsed >= 1000000) {
+        std::string preview = cacheKey.text.substr(0, 96);
+        for (char& character : preview) {
+          const unsigned char value = static_cast<unsigned char>(character);
+          if (value < 0x20 || value > 0x7e)
+            character = '?';
+        }
+        atfix::log("MENU slow-text record_type=20 total_us=", elapsed / 1000,
+          " atlas_us=", completedRenderTrace.atlasNanos / 1000,
+          " atlas_calls=", completedRenderTrace.atlasCalls,
+          " atlas_cached=", completedRenderTrace.atlasCached,
+          " atlas_real=", completedRenderTrace.atlasReal,
+          " text=\"", preview, "\"");
+      }
+    }
+
+    if (profile && validSemanticKey) {
+      const auto* renderer = reinterpret_cast<const BYTE*>(a);
+      uintptr_t outputAddress = 0;
+      std::memcpy(&outputAddress, renderer + 0x1a0, sizeof(outputAddress));
+      const auto* output = reinterpret_cast<const BYTE*>(outputAddress);
+      RenderTextOutputSignature signature;
+      uintptr_t pixelsAddress = 0;
+      if (output) {
+        std::memcpy(&signature.width, output, sizeof(signature.width));
+        std::memcpy(&signature.height, output + 4, sizeof(signature.height));
+        std::memcpy(&pixelsAddress, output + 8, sizeof(pixelsAddress));
+        std::memcpy(signature.metrics.data(), output + 0x10,
+          sizeof(signature.metrics));
+      }
+      signature.result = result;
+      signature.byteCount = signature.width > 0 && signature.height > 0
+        ? uint64_t(uint32_t(signature.width)) * uint32_t(signature.height) : 0;
+      if (pixelsAddress && signature.byteCount &&
+          signature.byteCount <= 16 * 1024 * 1024) {
+        if (activeTextRecordType == 19 || activeTextRecordType == 20) {
+          const size_t bucket = size_t(activeTextRecordType - 19);
+          deepMenu.renderTextRecordOutputBytes[bucket].fetch_add(
+            signature.byteCount, std::memory_order_relaxed);
+          auto& maximum = deepMenu.renderTextRecordMaxOutputBytes[bucket];
+          uint64_t previous = maximum.load(std::memory_order_relaxed);
+          while (previous < signature.byteCount &&
+                 !maximum.compare_exchange_weak(previous, signature.byteCount,
+                   std::memory_order_relaxed)) { }
+        }
+        const auto* bytes = reinterpret_cast<const uint8_t*>(pixelsAddress);
+        uint64_t hash = 0xcbf29ce484222325ULL;
+        for (uint64_t i = 0; i < signature.byteCount; i++) {
+          hash ^= bytes[i];
+          hash *= 0x100000001b3ULL;
+        }
+        signature.byteHash = hash;
+        std::lock_guard lock(renderBitmapMutex);
+        const auto [found, inserted] = renderOutputSignatures.emplace(
+          cacheKey, signature);
+        if (!inserted) {
+          if (found->second == signature)
+            ++renderOutputRepeatMatches;
+          else
+            ++renderOutputRepeatConflicts;
+        }
+      } else {
+        std::lock_guard lock(renderBitmapMutex);
+        ++renderOutputInvalidSamples;
+      }
+    }
 
     if (validCacheKey && result == 0) {
       const auto* renderer = reinterpret_cast<const BYTE*>(a);
@@ -1096,6 +1284,27 @@ uintptr_t cachedRenderText(uintptr_t a, uintptr_t b,
     deepMenu.renderTextNanos.fetch_add(
       uint64_t(elapsed), std::memory_order_relaxed);
     deepMenu.renderTextBytes.fetch_add(length, std::memory_order_relaxed);
+    if (activeTextRecordType == 19 || activeTextRecordType == 20) {
+      const size_t bucket = size_t(activeTextRecordType - 19);
+      deepMenu.renderTextRecordCalls[bucket].fetch_add(
+        1, std::memory_order_relaxed);
+      deepMenu.renderTextRecordNanos[bucket].fetch_add(
+        uint64_t(elapsed), std::memory_order_relaxed);
+      deepMenu.renderTextRecordBytes[bucket].fetch_add(
+        length, std::memory_order_relaxed);
+      renderTextExactKeysByRecordType[bucket].insert(exactKey);
+      if (validSemanticKey) {
+        std::lock_guard lock(renderBitmapMutex);
+        auto& timing = renderKeyTimings[cacheKey];
+        timing.recordType = activeTextRecordType;
+        ++timing.calls;
+        timing.totalNanos += uint64_t(elapsed);
+        timing.minimumNanos = std::min(
+          timing.minimumNanos, uint64_t(elapsed));
+        timing.maximumNanos = std::max(
+          timing.maximumNanos, uint64_t(elapsed));
+      }
+    }
     renderTextKeys.insert(key);
     renderTextExactKeys.insert(exactKey);
     if (b)
@@ -1108,6 +1317,22 @@ uintptr_t cachedRenderText(uintptr_t a, uintptr_t b,
 
 uintptr_t cachedAtlasLock(uintptr_t texture, uintptr_t output,
                           uintptr_t level, uintptr_t face) {
+  const auto traceStarted = activeRenderTrace.active
+    ? std::chrono::steady_clock::now()
+    : std::chrono::steady_clock::time_point{};
+  const auto finishTrace = [&](bool cached) {
+    if (traceStarted == std::chrono::steady_clock::time_point{})
+      return;
+    const uint64_t elapsed = uint64_t(
+      std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::steady_clock::now() - traceStarted).count());
+    activeRenderTrace.atlasNanos += elapsed;
+    ++activeRenderTrace.atlasCalls;
+    if (cached)
+      ++activeRenderTrace.atlasCached;
+    else
+      ++activeRenderTrace.atlasReal;
+  };
   uint16_t width = 0;
   uint16_t height = 0;
   if (texture) {
@@ -1127,6 +1352,7 @@ uintptr_t cachedAtlasLock(uintptr_t texture, uintptr_t output,
         atlasCacheHits.fetch_add(1, std::memory_order_relaxed);
       *reinterpret_cast<void**>(output) = found->second.bytes.data();
       syntheticAtlasLocks.push_back(texture);
+      finishTrace(true);
       return found->second.pitch;
     }
   }
@@ -1148,6 +1374,7 @@ uintptr_t cachedAtlasLock(uintptr_t texture, uintptr_t output,
   }
   if (candidate && pitch)
     realCandidateAtlasLocks.push_back(texture);
+  finishTrace(false);
   return pitch;
 }
 

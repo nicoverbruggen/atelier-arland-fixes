@@ -12,7 +12,7 @@ This file tracks work in progress and ideas under consideration. Items here are 
 
 ## Performance work
 
-- Reduce the remaining per-record UI construction and layout cost after the path and atlas caches.
+- Revisit the remaining per-record UI construction and layout cost only if a safe optimization is identified; the residual Synthesis work includes eager construction of hidden recipe entries and is intentionally left unchanged for now.
 - Add an atlas-only fix for Atelier Ayesha DX without enabling the Arland-specific `.PSSG` cache there.
 
 ## Rename repository
