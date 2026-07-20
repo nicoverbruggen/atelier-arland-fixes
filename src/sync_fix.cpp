@@ -110,6 +110,8 @@ static mutex  g_globalMutex;
 DeviceProcs   g_deviceProcs;
 ContextProcs  g_immContextProcs;
 ContextProcs  g_defContextProcs;
+const DeviceProcs* getDeviceProcs(ID3D11Device* pDevice);
+const ContextProcs* getContextProcs(ID3D11DeviceContext* pContext);
 
 constexpr uint32_t HOOK_DEVICE  = (1u << 0);
 constexpr uint32_t HOOK_IMM_CTX = (1u << 1);
@@ -147,8 +149,218 @@ static RasterState g_defRasterState;
 static const GUID IID_MSAAResource = {0xe2728d94,0x9fdd,0x40d0,{0x87,0xa8,0x09,0xb6,0x2d,0xf3,0x14,0x9a}};
 static const GUID IID_MSAAState = {0xe2728d93,0x9fdd,0x40d0,{0x87,0xa8,0x09,0xb6,0x2d,0xf3,0x14,0x9a}};
 static const GUID IID_MSAABoundHost = {0xe2728d98,0x9fdd,0x40d0,{0x87,0xa8,0x09,0xb6,0x2d,0xf3,0x14,0x9a}};
+static const GUID IID_ResolutionTrace = {0xe2728d99,0x9fdd,0x40d0,{0x87,0xa8,0x09,0xb6,0x2d,0xf3,0x14,0x9a}};
+static const GUID IID_CompositeTraceRole = {0xe2728d9a,0x9fdd,0x40d0,{0x87,0xa8,0x09,0xb6,0x2d,0xf3,0x14,0x9a}};
+static const GUID IID_ResolutionBufferData = {0xe2728d9b,0x9fdd,0x40d0,{0x87,0xa8,0x09,0xb6,0x2d,0xf3,0x14,0x9a}};
+static const GUID IID_DialogSnapshotResource = {0xe2728d9c,0x9fdd,0x40d0,{0x87,0xa8,0x09,0xb6,0x2d,0xf3,0x14,0x9a}};
+static const GUID IID_DialogScaledVertexBuffer = {0xe2728d9d,0x9fdd,0x40d0,{0x87,0xa8,0x09,0xb6,0x2d,0xf3,0x14,0x9a}};
 
 enum class MSAAState : UINT { Clean, Dirty };
+
+struct ResolutionTraceState {
+  UINT id = 0;
+  UINT shaderBinds = 0;
+  UINT copies = 0;
+};
+
+static std::atomic<UINT> g_nextResolutionTraceId = { 1 };
+
+enum CompositeTraceRole : UINT {
+  CompositeVb0   = 1u << 0,
+  CompositeVb1   = 1u << 1,
+  CompositeVsCb0 = 1u << 2,
+  CompositeVsCb1 = 1u << 3,
+  CompositePsCb0 = 1u << 4,
+  CompositePsCb1 = 1u << 5,
+};
+
+struct CompositeMappedBuffer {
+  const void* data = nullptr;
+  UINT size = 0;
+  UINT roles = 0;
+};
+
+static mutex g_compositeMapMutex;
+static std::map<std::pair<ID3D11Resource*, UINT>, CompositeMappedBuffer>
+  g_compositeMaps;
+static std::atomic<UINT> g_compositeDumpCount = { 0 };
+
+bool resolutionTraceEnabled();
+
+void tagCompositeBuffer(ID3D11Buffer* buffer, UINT role) {
+  if (!buffer)
+    return;
+  UINT roles = 0;
+  UINT size = sizeof(roles);
+  buffer->GetPrivateData(IID_CompositeTraceRole, &size, &roles);
+  roles |= role;
+  buffer->SetPrivateData(IID_CompositeTraceRole, sizeof(roles), &roles);
+}
+
+UINT resolutionBufferData(ID3D11Buffer* buffer, uint32_t (&words)[16]) {
+  if (!buffer)
+    return 0;
+  UINT size = sizeof(words);
+  return SUCCEEDED(buffer->GetPrivateData(
+    IID_ResolutionBufferData, &size, words)) ? size : 0;
+}
+
+void trackCompositeMap(ID3D11Resource* resource, UINT subresource,
+                       const D3D11_MAPPED_SUBRESOURCE* mapped) {
+  if (!resolutionTraceEnabled() || !resource || !mapped || !mapped->pData)
+    return;
+  UINT roles = 0;
+  UINT roleSize = sizeof(roles);
+  if (FAILED(resource->GetPrivateData(
+        IID_CompositeTraceRole, &roleSize, &roles)) || !roles)
+    return;
+  ID3D11Buffer* buffer = nullptr;
+  if (FAILED(resource->QueryInterface(IID_PPV_ARGS(&buffer))))
+    return;
+  D3D11_BUFFER_DESC desc = { };
+  buffer->GetDesc(&desc);
+  buffer->Release();
+  std::lock_guard lock(g_compositeMapMutex);
+  g_compositeMaps[std::pair<ID3D11Resource*, UINT> { resource, subresource }] =
+    CompositeMappedBuffer { mapped->pData, desc.ByteWidth, roles };
+}
+
+void dumpCompositeMap(ID3D11Resource* resource, UINT subresource) {
+  CompositeMappedBuffer mapped = { };
+  {
+    std::lock_guard lock(g_compositeMapMutex);
+    const auto entry = g_compositeMaps.find(
+      std::pair<ID3D11Resource*, UINT> { resource, subresource });
+    if (entry == g_compositeMaps.end())
+      return;
+    mapped = entry->second;
+    g_compositeMaps.erase(entry);
+  }
+  if (g_compositeDumpCount.fetch_add(1, std::memory_order_relaxed) >= 512)
+    return;
+  uint32_t words[16] = { };
+  const UINT bytes = std::min<UINT>(mapped.size, sizeof(words));
+  std::memcpy(words, mapped.data, bytes);
+  log("RES composite-buffer roles=0x", std::hex, mapped.roles,
+      " resource=", resource,
+      " size=", std::dec, mapped.size,
+      " data=", std::hex,
+      words[0], ",", words[1], ",", words[2], ",", words[3], ",",
+      words[4], ",", words[5], ",", words[6], ",", words[7], ",",
+      words[8], ",", words[9], ",", words[10], ",", words[11], ",",
+      words[12], ",", words[13], ",", words[14], ",", words[15]);
+}
+
+void dumpCompositeUpdate(ID3D11Resource* resource, const void* data) {
+  if (!resolutionTraceEnabled() || !resource || !data)
+    return;
+  UINT roles = 0;
+  UINT roleSize = sizeof(roles);
+  if (FAILED(resource->GetPrivateData(
+        IID_CompositeTraceRole, &roleSize, &roles)) || !roles)
+    return;
+  if (g_compositeDumpCount.fetch_add(1, std::memory_order_relaxed) >= 512)
+    return;
+  ID3D11Buffer* buffer = nullptr;
+  if (FAILED(resource->QueryInterface(IID_PPV_ARGS(&buffer))))
+    return;
+  D3D11_BUFFER_DESC desc = { };
+  buffer->GetDesc(&desc);
+  buffer->Release();
+  uint32_t words[16] = { };
+  std::memcpy(words, data, std::min<UINT>(desc.ByteWidth, sizeof(words)));
+  log("RES composite-update roles=0x", std::hex, roles,
+      " resource=", resource,
+      " size=", std::dec, desc.ByteWidth,
+      " data=", std::hex,
+      words[0], ",", words[1], ",", words[2], ",", words[3], ",",
+      words[4], ",", words[5], ",", words[6], ",", words[7], ",",
+      words[8], ",", words[9], ",", words[10], ",", words[11], ",",
+      words[12], ",", words[13], ",", words[14], ",", words[15]);
+}
+
+bool resolutionTraceEnabled() {
+  static const bool enabled = [] {
+    const char* value = std::getenv("ARLAND_RESOLUTION_TRACE");
+    return value && value[0] != '0';
+  }();
+  return enabled;
+}
+
+bool texture2DDesc(ID3D11Resource* resource, D3D11_TEXTURE2D_DESC* desc) {
+  if (!resource || !desc)
+    return false;
+  ID3D11Texture2D* texture = nullptr;
+  if (FAILED(resource->QueryInterface(IID_PPV_ARGS(&texture))))
+    return false;
+  texture->GetDesc(desc);
+  texture->Release();
+  return true;
+}
+
+bool isUnscaled1080Resource(ID3D11Resource* resource,
+                            D3D11_TEXTURE2D_DESC* desc = nullptr) {
+  if (!resolutionTraceEnabled() ||
+      g_mainRtWidth.load(std::memory_order_relaxed) <= 1920 ||
+      g_mainRtHeight.load(std::memory_order_relaxed) <= 1080)
+    return false;
+  D3D11_TEXTURE2D_DESC local = { };
+  if (!texture2DDesc(resource, &local) ||
+      local.Width != 1920 || local.Height != 1080)
+    return false;
+  if (desc)
+    *desc = local;
+  return true;
+}
+
+bool resolutionTraceState(ID3D11Resource* resource,
+                          ResolutionTraceState* state) {
+  if (!resource || !state)
+    return false;
+  UINT size = sizeof(*state);
+  if (SUCCEEDED(resource->GetPrivateData(
+        IID_ResolutionTrace, &size, state)) && size == sizeof(*state))
+    return true;
+  if (!isUnscaled1080Resource(resource))
+    return false;
+  state->id = g_nextResolutionTraceId.fetch_add(1, std::memory_order_relaxed);
+  resource->SetPrivateData(IID_ResolutionTrace, sizeof(*state), state);
+  return true;
+}
+
+void traceResolutionCopy(const char* operation,
+                         ID3D11DeviceContext* context,
+                         ID3D11Resource* destination,
+                         ID3D11Resource* source) {
+  if (!resolutionTraceEnabled())
+    return;
+  ResolutionTraceState dstState = { };
+  ResolutionTraceState srcState = { };
+  const bool tracedDst = resolutionTraceState(destination, &dstState);
+  const bool tracedSrc = resolutionTraceState(source, &srcState);
+  if (!tracedDst && !tracedSrc)
+    return;
+  ResolutionTraceState* state = tracedDst ? &dstState : &srcState;
+  ++state->copies;
+  (tracedDst ? destination : source)->SetPrivateData(
+    IID_ResolutionTrace, sizeof(*state), state);
+  if (state->copies > 8 && (state->copies & (state->copies - 1)) != 0)
+    return;
+  D3D11_TEXTURE2D_DESC dstDesc = { };
+  D3D11_TEXTURE2D_DESC srcDesc = { };
+  const bool haveDst = texture2DDesc(destination, &dstDesc);
+  const bool haveSrc = texture2DDesc(source, &srcDesc);
+  log("RES copy op=", operation,
+      " context=", context->GetType() == D3D11_DEVICE_CONTEXT_IMMEDIATE ? "immediate" : "deferred",
+      " candidate=", state->id,
+      " count=", state->copies,
+      " dst=", destination,
+      " dst_size=", haveDst ? dstDesc.Width : 0, "x", haveDst ? dstDesc.Height : 0,
+      " dst_format=", haveDst ? dstDesc.Format : DXGI_FORMAT_UNKNOWN,
+      " src=", source,
+      " src_size=", haveSrc ? srcDesc.Width : 0, "x", haveSrc ? srcDesc.Height : 0,
+      " src_format=", haveSrc ? srcDesc.Format : DXGI_FORMAT_UNKNOWN);
+}
 
 const char* configPath() {
   static const std::array<char, MAX_PATH + 1> path = [] {
@@ -870,6 +1082,8 @@ HRESULT STDMETHODCALLTYPE ID3D11Device_CreateBuffer(
         ID3D11Buffer**            ppBuffer) {
   auto procs = getDeviceProcs(pDevice);
   D3D11_BUFFER_DESC desc;
+  std::array<float, 12> scaledFullscreenQuad = { };
+  bool createScaledDialogQuad = false;
 
   if (pDesc && pDesc->Usage == D3D11_USAGE_STAGING) {
     desc = *pDesc;
@@ -877,7 +1091,52 @@ HRESULT STDMETHODCALLTYPE ID3D11Device_CreateBuffer(
     pDesc = &desc;
   }
 
-  return procs->CreateBuffer(pDevice, pDesc, pData, ppBuffer);
+  const UINT mainWidth = g_mainRtWidth.load(std::memory_order_relaxed);
+  const UINT mainHeight = g_mainRtHeight.load(std::memory_order_relaxed);
+  if (mainWidth > 1920 && mainHeight > 1080 && pDesc && pData &&
+      pData->pSysMem && pDesc->ByteWidth == sizeof(scaledFullscreenQuad) &&
+      (pDesc->BindFlags & D3D11_BIND_VERTEX_BUFFER)) {
+    std::memcpy(scaledFullscreenQuad.data(), pData->pSysMem,
+                sizeof(scaledFullscreenQuad));
+    const std::array<float, 12> originalFullscreenQuad = {
+      0.0f, 1080.0f, 0.0f,
+      1920.0f, 1080.0f, 0.0f,
+      0.0f, 0.0f, 0.0f,
+      1920.0f, 0.0f, 0.0f,
+    };
+    if (scaledFullscreenQuad == originalFullscreenQuad) {
+      scaledFullscreenQuad[1] = static_cast<float>(mainHeight);
+      scaledFullscreenQuad[3] = static_cast<float>(mainWidth);
+      scaledFullscreenQuad[4] = static_cast<float>(mainHeight);
+      scaledFullscreenQuad[9] = static_cast<float>(mainWidth);
+      createScaledDialogQuad = true;
+    }
+  }
+
+  const HRESULT hr = procs->CreateBuffer(pDevice, pDesc, pData, ppBuffer);
+  if (createScaledDialogQuad && SUCCEEDED(hr) && ppBuffer && *ppBuffer) {
+    D3D11_SUBRESOURCE_DATA scaledData = *pData;
+    scaledData.pSysMem = scaledFullscreenQuad.data();
+    ID3D11Buffer* scaledBuffer = nullptr;
+    if (SUCCEEDED(procs->CreateBuffer(
+          pDevice, pDesc, &scaledData, &scaledBuffer)) && scaledBuffer) {
+      (*ppBuffer)->SetPrivateDataInterface(
+        IID_DialogScaledVertexBuffer, scaledBuffer);
+      scaledBuffer->Release();
+      log("Created targeted dialogue quad companion at ",
+          std::dec, mainWidth, "x", mainHeight);
+    } else {
+      log("Failed to create targeted dialogue quad companion at ",
+          std::dec, mainWidth, "x", mainHeight);
+    }
+  }
+  if (resolutionTraceEnabled() && SUCCEEDED(hr) && ppBuffer && *ppBuffer &&
+      pDesc && pData && pData->pSysMem && pDesc->ByteWidth <= 64 &&
+      (pDesc->BindFlags & D3D11_BIND_VERTEX_BUFFER)) {
+    (*ppBuffer)->SetPrivateData(
+      IID_ResolutionBufferData, pDesc->ByteWidth, pData->pSysMem);
+  }
+  return hr;
 }
 
 HRESULT STDMETHODCALLTYPE ID3D11Device_CreateDeferredContext(
@@ -917,8 +1176,11 @@ HRESULT STDMETHODCALLTYPE ID3D11Device_CreateTexture2D(
         ID3D11Texture2D**         ppTexture) {
   auto procs = getDeviceProcs(pDevice);
   D3D11_TEXTURE2D_DESC desc;
+  D3D11_TEXTURE2D_DESC originalDesc = { };
+  const bool haveOriginalDesc = pDesc != nullptr;
 
   if (pDesc) {
+    originalDesc = *pDesc;
     desc = *pDesc;
     bool changed = false;
 
@@ -956,21 +1218,73 @@ HRESULT STDMETHODCALLTYPE ID3D11Device_CreateTexture2D(
         mainHeight = desc.Height;
         log("Detected main render size ", std::dec, mainWidth, "x", mainHeight);
       }
-    } else if (mainWidth > 1920 && mainHeight > 1080 && !pData &&
-               (desc.BindFlags & (D3D11_BIND_RENDER_TARGET | D3D11_BIND_DEPTH_STENCIL)) &&
-               desc.Width == 1920 && desc.Height == 1080) {
-      desc.Width = mainWidth;
-      desc.Height = mainHeight;
-      changed = true;
-      log("Resizing hard-coded 1920x1080 target to ", std::dec,
-          mainWidth, "x", mainHeight);
+    } else if (mainWidth > 1920 && mainHeight > 1080 && !pData) {
+      const bool fullSizeTarget =
+        (desc.BindFlags & (D3D11_BIND_RENDER_TARGET | D3D11_BIND_DEPTH_STENCIL)) &&
+        desc.Width == 1920 && desc.Height == 1080;
+      const bool halfSizeBlurTarget =
+        (desc.BindFlags & D3D11_BIND_RENDER_TARGET) &&
+        (desc.BindFlags & D3D11_BIND_SHADER_RESOURCE) &&
+        desc.Format == DXGI_FORMAT_B8G8R8A8_TYPELESS &&
+        desc.Width == 960 && desc.Height == 540 &&
+        desc.MipLevels == 1 && desc.ArraySize == 1 &&
+        desc.SampleDesc.Count == 1;
+      if (fullSizeTarget || halfSizeBlurTarget) {
+        desc.Width = halfSizeBlurTarget ? mainWidth / 2 : mainWidth;
+        desc.Height = halfSizeBlurTarget ? mainHeight / 2 : mainHeight;
+        changed = true;
+        log("Resizing hard-coded ",
+            halfSizeBlurTarget ? "960x540 blur target" : "1920x1080 target",
+            " to ", std::dec, desc.Width, "x", desc.Height);
+      }
     }
 
     if (changed)
       pDesc = &desc;
   }
 
-  return procs->CreateTexture2D(pDevice, pDesc, pData, ppTexture);
+  const HRESULT hr = procs->CreateTexture2D(pDevice, pDesc, pData, ppTexture);
+  if (resolutionTraceEnabled() && SUCCEEDED(hr) && ppTexture && *ppTexture &&
+      haveOriginalDesc) {
+    D3D11_TEXTURE2D_DESC actual = { };
+    (*ppTexture)->GetDesc(&actual);
+    const bool resizedFull = originalDesc.Width == 1920 &&
+      originalDesc.Height == 1080 &&
+      (actual.Width != originalDesc.Width || actual.Height != originalDesc.Height);
+    const bool resizedHalf = originalDesc.Width == 960 &&
+      originalDesc.Height == 540 &&
+      (actual.Width != originalDesc.Width || actual.Height != originalDesc.Height);
+    if (resizedFull || resizedHalf) {
+      ResolutionTraceState trace = { };
+      trace.id = g_nextResolutionTraceId.fetch_add(1, std::memory_order_relaxed);
+      (*ppTexture)->SetPrivateData(IID_ResolutionTrace, sizeof(trace), &trace);
+      log("RES create resized candidate=", trace.id,
+          " resource=", *ppTexture,
+          " original=", originalDesc.Width, "x", originalDesc.Height,
+          " actual=", actual.Width, "x", actual.Height,
+          " format=", actual.Format,
+          " bind=0x", std::hex, actual.BindFlags);
+    }
+  }
+  if (SUCCEEDED(hr) && ppTexture && *ppTexture &&
+      isUnscaled1080Resource(*ppTexture)) {
+    ResolutionTraceState trace = { };
+    resolutionTraceState(*ppTexture, &trace);
+    D3D11_TEXTURE2D_DESC actual = { };
+    (*ppTexture)->GetDesc(&actual);
+    log("RES create candidate=", trace.id,
+        " resource=", *ppTexture,
+        " format=", actual.Format,
+        " usage=", actual.Usage,
+        " bind=0x", std::hex, actual.BindFlags,
+        " cpu=0x", actual.CPUAccessFlags,
+        " misc=0x", actual.MiscFlags,
+        " mips=", std::dec, actual.MipLevels,
+        " array=", actual.ArraySize,
+        " samples=", actual.SampleDesc.Count,
+        " initial_data=", pData != nullptr);
+  }
+  return hr;
 }
 
 void STDMETHODCALLTYPE ID3D11DeviceContext_RSSetViewports(
@@ -1012,13 +1326,20 @@ void updateViewportScissor(ID3D11DeviceContext* pContext) {
   D3D11_RECT scissor = { };
   pContext->RSGetViewports(&viewportCount, &viewport);
   pContext->RSGetScissorRects(&scissorCount, &scissor);
-  const bool validViewport = viewportCount == 1 &&
+  const bool fullSizeViewport = viewportCount == 1 &&
     viewport.TopLeftX == 0.0f && viewport.TopLeftY == 0.0f &&
     viewport.Width == 1920.0f && viewport.Height == 1080.0f;
-  const bool validScissor = scissorCount == 1 &&
+  const bool halfSizeViewport = viewportCount == 1 &&
+    viewport.TopLeftX == 0.0f && viewport.TopLeftY == 0.0f &&
+    viewport.Width == 960.0f && viewport.Height == 540.0f;
+  const bool fullSizeScissor = scissorCount == 1 &&
     scissor.left == 0 && scissor.top == 0 &&
     scissor.right == 1920 && scissor.bottom == 1080;
-  if (!validViewport && !validScissor)
+  const bool halfSizeScissor = scissorCount == 1 &&
+    scissor.left == 0 && scissor.top == 0 &&
+    scissor.right == 960 && scissor.bottom == 540;
+  if (!fullSizeViewport && !halfSizeViewport &&
+      !fullSizeScissor && !halfSizeScissor)
     return;
 
   ID3D11RenderTargetView* rtv = nullptr;
@@ -1034,6 +1355,8 @@ void updateViewportScissor(ID3D11DeviceContext* pContext) {
       dsv->GetResource(&resource);
     dsv->Release();
   }
+  bool resizeViewport = false;
+  bool resizeScissor = false;
   if (resource) {
     ID3D11Texture2D* texture = nullptr;
     const HRESULT hr = resource->QueryInterface(IID_PPV_ARGS(&texture));
@@ -1042,11 +1365,21 @@ void updateViewportScissor(ID3D11DeviceContext* pContext) {
       D3D11_TEXTURE2D_DESC desc = { };
       texture->GetDesc(&desc);
       texture->Release();
-      if (validViewport) {
+      const UINT mainWidth = g_mainRtWidth.load(std::memory_order_relaxed);
+      const UINT mainHeight = g_mainRtHeight.load(std::memory_order_relaxed);
+      const bool fullSizeTarget = desc.Width == mainWidth &&
+        desc.Height == mainHeight;
+      const bool halfSizeTarget = desc.Width == mainWidth / 2 &&
+        desc.Height == mainHeight / 2;
+      resizeViewport = (fullSizeViewport && fullSizeTarget) ||
+        (halfSizeViewport && halfSizeTarget);
+      resizeScissor = (fullSizeScissor && fullSizeTarget) ||
+        (halfSizeScissor && halfSizeTarget);
+      if (resizeViewport) {
         viewport.Width = static_cast<FLOAT>(desc.Width);
         viewport.Height = static_cast<FLOAT>(desc.Height);
       }
-      if (validScissor) {
+      if (resizeScissor) {
         scissor.right = static_cast<LONG>(desc.Width);
         scissor.bottom = static_cast<LONG>(desc.Height);
       }
@@ -1054,9 +1387,9 @@ void updateViewportScissor(ID3D11DeviceContext* pContext) {
   }
 
   auto procs = getContextProcs(pContext);
-  if (validViewport)
+  if (resizeViewport)
     procs->RSSetViewports(pContext, 1, &viewport);
-  if (validScissor)
+  if (resizeScissor)
     procs->RSSetScissorRects(pContext, 1, &scissor);
 }
 
@@ -1259,6 +1592,8 @@ void STDMETHODCALLTYPE ID3D11DeviceContext_CopyResource(
         ID3D11Resource*           pSrcResource) {
   auto procs = getContextProcs(pContext);
 
+  traceResolutionCopy("resource", pContext, pDstResource, pSrcResource);
+
   resolveIfMSAA(pContext, pSrcResource);
 
   ID3D11Resource* dstShadow = getShadowResource(pDstResource);
@@ -1303,6 +1638,37 @@ void STDMETHODCALLTYPE ID3D11DeviceContext_CopySubresourceRegion(
         UINT                      SrcSubresource,
   const D3D11_BOX*                pSrcBox) {
   auto procs = getContextProcs(pContext);
+
+  D3D11_BOX scaledBox = { };
+  const UINT mainWidth = g_mainRtWidth.load(std::memory_order_relaxed);
+  const UINT mainHeight = g_mainRtHeight.load(std::memory_order_relaxed);
+  if (mainWidth > 1920 && mainHeight > 1080 && pSrcBox &&
+      DstSubresource == 0 && SrcSubresource == 0 &&
+      DstX == 0 && DstY == 0 && DstZ == 0 &&
+      pSrcBox->left == 0 && pSrcBox->top == 0 && pSrcBox->front == 0 &&
+      pSrcBox->right == 1920 && pSrcBox->bottom == 1080 &&
+      pSrcBox->back == 1) {
+    D3D11_TEXTURE2D_DESC dstDesc = { };
+    D3D11_TEXTURE2D_DESC srcDesc = { };
+    if (texture2DDesc(pDstResource, &dstDesc) &&
+        texture2DDesc(pSrcResource, &srcDesc) &&
+        dstDesc.Width == mainWidth && dstDesc.Height == mainHeight &&
+        srcDesc.Width == mainWidth && srcDesc.Height == mainHeight &&
+        dstDesc.Format == DXGI_FORMAT_B8G8R8A8_TYPELESS &&
+        srcDesc.Format == DXGI_FORMAT_B8G8R8A8_TYPELESS) {
+      scaledBox = *pSrcBox;
+      scaledBox.right = mainWidth;
+      scaledBox.bottom = mainHeight;
+      pSrcBox = &scaledBox;
+      const UINT marker = 1;
+      pDstResource->SetPrivateData(
+        IID_DialogSnapshotResource, sizeof(marker), &marker);
+      log("Expanded hard-coded dialogue snapshot copy from 1920x1080 to ",
+          std::dec, mainWidth, "x", mainHeight);
+    }
+  }
+
+  traceResolutionCopy("subresource", pContext, pDstResource, pSrcResource);
 
   resolveIfMSAA(pContext, pSrcResource);
 
@@ -1466,6 +1832,9 @@ void STDMETHODCALLTYPE ID3D11DeviceContext_UpdateSubresource(
         UINT                      SlicePitch) {
   auto procs = getContextProcs(pContext);
 
+  if (!pBox && Subresource == 0)
+    dumpCompositeUpdate(pResource, pData);
+
   procs->UpdateSubresource(pContext, pResource,
     Subresource, pBox, pData, RowPitch, SlicePitch);
 
@@ -1589,12 +1958,22 @@ HRESULT STDMETHODCALLTYPE ID3D11DeviceContext_Map(
         UINT                       MapFlags,
         D3D11_MAPPED_SUBRESOURCE*  pMappedResource) {
   auto procs = getContextProcs(pContext);
-  if (!pResource || !isImmediatecontext(pContext))
-    return procs->Map(pContext, pResource, Subresource, MapType, MapFlags, pMappedResource);
+  if (!pResource || !isImmediatecontext(pContext)) {
+    const HRESULT hr = procs->Map(
+      pContext, pResource, Subresource, MapType, MapFlags, pMappedResource);
+    if (SUCCEEDED(hr))
+      trackCompositeMap(pResource, Subresource, pMappedResource);
+    return hr;
+  }
 
   ID3D11Resource* shadow = getShadowResource(pResource);
-  if (!shadow)
-    return procs->Map(pContext, pResource, Subresource, MapType, MapFlags, pMappedResource);
+  if (!shadow) {
+    const HRESULT hr = procs->Map(
+      pContext, pResource, Subresource, MapType, MapFlags, pMappedResource);
+    if (SUCCEEDED(hr))
+      trackCompositeMap(pResource, Subresource, pMappedResource);
+    return hr;
+  }
 
   const HRESULT hr = procs->Map(pContext, shadow, Subresource,
     D3D11_MAP_READ_WRITE, MapFlags, pMappedResource);
@@ -1611,6 +1990,7 @@ HRESULT STDMETHODCALLTYPE ID3D11DeviceContext_Map(
     shadow->Release();
     return E_FAIL;
   }
+  trackCompositeMap(pResource, Subresource, pMappedResource);
   return hr;
 }
 
@@ -1619,6 +1999,7 @@ void STDMETHODCALLTYPE ID3D11DeviceContext_Unmap(
         ID3D11Resource*            pResource,
         UINT                       Subresource) {
   auto procs = getContextProcs(pContext);
+  dumpCompositeMap(pResource, Subresource);
   ShadowMapping mapping;
   bool redirected = false;
   if (pResource) {
@@ -1641,12 +2022,205 @@ void STDMETHODCALLTYPE ID3D11DeviceContext_Unmap(
   markShadowDirty(pResource, Subresource);
 }
 
+void traceResolutionDraw(ID3D11DeviceContext* context,
+                         const char* operation,
+                         UINT elementCount,
+                         UINT instanceCount) {
+  if (!resolutionTraceEnabled() || elementCount > 12)
+    return;
+
+  ID3D11RenderTargetView* rtv = nullptr;
+  context->OMGetRenderTargets(1, &rtv, nullptr);
+  ID3D11Resource* target = nullptr;
+  D3D11_TEXTURE2D_DESC targetDesc = { };
+  if (rtv) {
+    rtv->GetResource(&target);
+    rtv->Release();
+  }
+  const bool haveTarget = texture2DDesc(target, &targetDesc);
+  const UINT mainWidth = g_mainRtWidth.load(std::memory_order_relaxed);
+  const UINT mainHeight = g_mainRtHeight.load(std::memory_order_relaxed);
+  const bool mainTarget = haveTarget && targetDesc.Width == mainWidth &&
+    targetDesc.Height == mainHeight;
+  const bool halfTarget = haveTarget && targetDesc.Width == mainWidth / 2 &&
+    targetDesc.Height == mainHeight / 2;
+  if (!mainTarget && !halfTarget) {
+    if (target)
+      target->Release();
+    return;
+  }
+
+  ID3D11VertexShader* vs = nullptr;
+  ID3D11PixelShader* ps = nullptr;
+  context->VSGetShader(&vs, nullptr, nullptr);
+  context->PSGetShader(&ps, nullptr, nullptr);
+  ID3D11ShaderResourceView* views[8] = { };
+  context->PSGetShaderResources(0, 8, views);
+  ID3D11Resource* resources[8] = { };
+  D3D11_TEXTURE2D_DESC resourceDescs[8] = { };
+  for (UINT i = 0; i < 8; i++) {
+    if (!views[i])
+      continue;
+    views[i]->GetResource(&resources[i]);
+    texture2DDesc(resources[i], &resourceDescs[i]);
+  }
+
+  std::array<uintptr_t, 12> key = {
+    reinterpret_cast<uintptr_t>(vs),
+    reinterpret_cast<uintptr_t>(ps),
+    reinterpret_cast<uintptr_t>(resources[0]),
+    reinterpret_cast<uintptr_t>(resources[1]),
+    reinterpret_cast<uintptr_t>(resources[2]),
+    reinterpret_cast<uintptr_t>(resources[3]),
+    reinterpret_cast<uintptr_t>(resources[4]),
+    reinterpret_cast<uintptr_t>(resources[5]),
+    reinterpret_cast<uintptr_t>(resources[6]),
+    reinterpret_cast<uintptr_t>(resources[7]),
+    elementCount,
+    instanceCount,
+  };
+  static mutex traceMutex;
+  static std::set<std::array<uintptr_t, 12>> seen;
+  bool unique = false;
+  {
+    std::lock_guard lock(traceMutex);
+    if (seen.size() < 4096)
+      unique = seen.insert(key).second;
+  }
+  if (unique) {
+  UINT viewportCount = 1;
+  D3D11_VIEWPORT viewport = { };
+  context->RSGetViewports(&viewportCount, &viewport);
+  UINT scissorCount = 1;
+  D3D11_RECT scissor = { };
+  context->RSGetScissorRects(&scissorCount, &scissor);
+  ID3D11InputLayout* inputLayout = nullptr;
+  D3D11_PRIMITIVE_TOPOLOGY topology = D3D11_PRIMITIVE_TOPOLOGY_UNDEFINED;
+  context->IAGetInputLayout(&inputLayout);
+  context->IAGetPrimitiveTopology(&topology);
+  ID3D11Buffer* vertexBuffers[2] = { };
+  UINT strides[2] = { };
+  UINT offsets[2] = { };
+  context->IAGetVertexBuffers(0, 2, vertexBuffers, strides, offsets);
+  D3D11_BUFFER_DESC vbDescs[2] = { };
+  for (UINT i = 0; i < 2; i++)
+    if (vertexBuffers[i]) vertexBuffers[i]->GetDesc(&vbDescs[i]);
+  ID3D11Buffer* vsBuffers[4] = { };
+  ID3D11Buffer* psBuffers[4] = { };
+  context->VSGetConstantBuffers(0, 4, vsBuffers);
+  context->PSGetConstantBuffers(0, 4, psBuffers);
+
+  const bool blurComposite = mainTarget && elementCount == 3 &&
+    resourceDescs[0].Width == mainWidth / 2 &&
+    resourceDescs[0].Height == mainHeight / 2 &&
+    resourceDescs[0].Format == DXGI_FORMAT_B8G8R8A8_TYPELESS;
+  if (blurComposite) {
+    tagCompositeBuffer(vertexBuffers[0], CompositeVb0);
+    tagCompositeBuffer(vertexBuffers[1], CompositeVb1);
+    tagCompositeBuffer(vsBuffers[0], CompositeVsCb0);
+    tagCompositeBuffer(vsBuffers[1], CompositeVsCb1);
+    tagCompositeBuffer(psBuffers[0], CompositePsCb0);
+    tagCompositeBuffer(psBuffers[1], CompositePsCb1);
+    uint32_t vb0Data[16] = { };
+    uint32_t vb1Data[16] = { };
+    const UINT vb0DataSize = resolutionBufferData(vertexBuffers[0], vb0Data);
+    const UINT vb1DataSize = resolutionBufferData(vertexBuffers[1], vb1Data);
+    log("RES blur geometry vb0_size=", vb0DataSize,
+        " vb0=", std::hex,
+        vb0Data[0], ",", vb0Data[1], ",", vb0Data[2], ",",
+        vb0Data[3], ",", vb0Data[4], ",", vb0Data[5], ",",
+        vb0Data[6], ",", vb0Data[7], ",", vb0Data[8],
+        " vb1_size=", std::dec, vb1DataSize,
+        " vb1=", std::hex,
+        vb1Data[0], ",", vb1Data[1], ",", vb1Data[2], ",",
+        vb1Data[3], ",", vb1Data[4], ",", vb1Data[5]);
+  }
+
+  log("RES draw op=", operation,
+      " elements=", elementCount,
+      " instances=", instanceCount,
+      " context=", context->GetType() == D3D11_DEVICE_CONTEXT_IMMEDIATE ? "immediate" : "deferred",
+      " target=", target, "/", targetDesc.Width, "x", targetDesc.Height,
+      " viewport=", viewportCount ? viewport.TopLeftX : 0, ",", viewportCount ? viewport.TopLeftY : 0,
+      "+", viewportCount ? viewport.Width : 0, "x", viewportCount ? viewport.Height : 0,
+      " scissor=", scissorCount ? scissor.left : 0, ",", scissorCount ? scissor.top : 0,
+      "-", scissorCount ? scissor.right : 0, ",", scissorCount ? scissor.bottom : 0,
+      " topology=", topology,
+      " layout=", inputLayout,
+      " vs=", vs, " ps=", ps,
+      " vb0=", vertexBuffers[0], "/", vbDescs[0].ByteWidth,
+      "/", strides[0], "/", offsets[0],
+      " vb1=", vertexBuffers[1], "/", vbDescs[1].ByteWidth,
+      "/", strides[1], "/", offsets[1],
+      " vs_cb=", vsBuffers[0], ",", vsBuffers[1], ",", vsBuffers[2], ",", vsBuffers[3],
+      " ps_cb=", psBuffers[0], ",", psBuffers[1], ",", psBuffers[2], ",", psBuffers[3],
+      " srv0=", resources[0], "/", resourceDescs[0].Width, "x", resourceDescs[0].Height, "/", resourceDescs[0].Format,
+      " srv1=", resources[1], "/", resourceDescs[1].Width, "x", resourceDescs[1].Height, "/", resourceDescs[1].Format,
+      " srv2=", resources[2], "/", resourceDescs[2].Width, "x", resourceDescs[2].Height, "/", resourceDescs[2].Format,
+      " srv3=", resources[3], "/", resourceDescs[3].Width, "x", resourceDescs[3].Height, "/", resourceDescs[3].Format,
+      " srv4=", resources[4], "/", resourceDescs[4].Width, "x", resourceDescs[4].Height, "/", resourceDescs[4].Format,
+      " srv5=", resources[5], "/", resourceDescs[5].Width, "x", resourceDescs[5].Height, "/", resourceDescs[5].Format,
+      " srv6=", resources[6], "/", resourceDescs[6].Width, "x", resourceDescs[6].Height, "/", resourceDescs[6].Format,
+      " srv7=", resources[7], "/", resourceDescs[7].Width, "x", resourceDescs[7].Height, "/", resourceDescs[7].Format);
+
+  if (inputLayout) inputLayout->Release();
+  for (ID3D11Buffer* buffer : vertexBuffers)
+    if (buffer) buffer->Release();
+  for (ID3D11Buffer* buffer : vsBuffers)
+    if (buffer) buffer->Release();
+  for (ID3D11Buffer* buffer : psBuffers)
+    if (buffer) buffer->Release();
+  }
+
+  if (vs) vs->Release();
+  if (ps) ps->Release();
+  for (UINT i = 0; i < 8; i++) {
+    if (resources[i]) resources[i]->Release();
+    if (views[i]) views[i]->Release();
+  }
+  if (target)
+    target->Release();
+}
+
 void STDMETHODCALLTYPE ID3D11DeviceContext_Draw(
         ID3D11DeviceContext* pContext, UINT VertexCount,
         UINT StartVertexLocation) {
   auto procs = getContextProcs(pContext);
   flushDirtyShadows(pContext);
   updateViewportScissor(pContext);
+  traceResolutionDraw(pContext, "draw", VertexCount, 1);
+
+  // Carry dialogue-snapshot identity through the three-vertex blur passes so
+  // the later four-vertex composite can be distinguished from the raw copy.
+  UINT blurGeneration = 0;
+  ID3D11ShaderResourceView* blurView = nullptr;
+  ID3D11Resource* blurInput = nullptr;
+  pContext->PSGetShaderResources(0, 1, &blurView);
+  if (blurView)
+    blurView->GetResource(&blurInput);
+  if (blurInput) {
+    UINT size = sizeof(blurGeneration);
+    if (FAILED(blurInput->GetPrivateData(
+          IID_DialogSnapshotResource, &size, &blurGeneration)))
+      blurGeneration = 0;
+  }
+  if (blurGeneration && VertexCount == 3) {
+    ID3D11RenderTargetView* targetView = nullptr;
+    pContext->OMGetRenderTargets(1, &targetView, nullptr);
+    ID3D11Resource* target = nullptr;
+    if (targetView)
+      targetView->GetResource(&target);
+    if (target) {
+      const UINT outputGeneration = blurGeneration + 1;
+      target->SetPrivateData(IID_DialogSnapshotResource,
+        sizeof(outputGeneration), &outputGeneration);
+      target->Release();
+    }
+    if (targetView) targetView->Release();
+  }
+  if (blurInput) blurInput->Release();
+  if (blurView) blurView->Release();
+
   procs->Draw(pContext, VertexCount, StartVertexLocation);
 }
 
@@ -1656,6 +2230,56 @@ void STDMETHODCALLTYPE ID3D11DeviceContext_DrawIndexed(
   auto procs = getContextProcs(pContext);
   flushDirtyShadows(pContext);
   updateViewportScissor(pContext);
+  traceResolutionDraw(pContext, "indexed", IndexCount, 1);
+
+  // The 48-byte 1920x1080 quad is shared by other cutscene layers. Keep the
+  // game's original buffer bound everywhere except the corrected dialogue
+  // snapshot draw; globally scaling it makes portraits flash out of place.
+  if (IndexCount == 4) {
+    ID3D11ShaderResourceView* view = nullptr;
+    ID3D11Resource* resource = nullptr;
+    pContext->PSGetShaderResources(0, 1, &view);
+    if (view)
+      view->GetResource(&resource);
+
+    UINT blurGeneration = 0;
+    UINT markerSize = sizeof(blurGeneration);
+    const bool processedDialogueBlur = resource && SUCCEEDED(
+      resource->GetPrivateData(
+        IID_DialogSnapshotResource, &markerSize, &blurGeneration)) &&
+        blurGeneration >= 2;
+
+    if (processedDialogueBlur) {
+      ID3D11Buffer* originalBuffer = nullptr;
+      UINT stride = 0;
+      UINT offset = 0;
+      pContext->IAGetVertexBuffers(
+        0, 1, &originalBuffer, &stride, &offset);
+
+      ID3D11Buffer* scaledBuffer = nullptr;
+      UINT scaledSize = sizeof(scaledBuffer);
+      if (originalBuffer && SUCCEEDED(originalBuffer->GetPrivateData(
+            IID_DialogScaledVertexBuffer, &scaledSize, &scaledBuffer)) &&
+          scaledBuffer) {
+        pContext->IASetVertexBuffers(
+          0, 1, &scaledBuffer, &stride, &offset);
+        procs->DrawIndexed(
+          pContext, IndexCount, StartIndexLocation, BaseVertexLocation);
+        pContext->IASetVertexBuffers(
+          0, 1, &originalBuffer, &stride, &offset);
+        scaledBuffer->Release();
+        originalBuffer->Release();
+        if (resource) resource->Release();
+        if (view) view->Release();
+        return;
+      }
+      if (scaledBuffer) scaledBuffer->Release();
+      if (originalBuffer) originalBuffer->Release();
+    }
+
+    if (resource) resource->Release();
+    if (view) view->Release();
+  }
   procs->DrawIndexed(pContext, IndexCount, StartIndexLocation, BaseVertexLocation);
 }
 
@@ -1666,6 +2290,8 @@ void STDMETHODCALLTYPE ID3D11DeviceContext_DrawInstanced(
   auto procs = getContextProcs(pContext);
   flushDirtyShadows(pContext);
   updateViewportScissor(pContext);
+  traceResolutionDraw(
+    pContext, "instanced", VertexCountPerInstance, InstanceCount);
   procs->DrawInstanced(pContext, VertexCountPerInstance, InstanceCount,
     StartVertexLocation, StartInstanceLocation);
 }
@@ -1677,6 +2303,8 @@ void STDMETHODCALLTYPE ID3D11DeviceContext_DrawIndexedInstanced(
   auto procs = getContextProcs(pContext);
   flushDirtyShadows(pContext);
   updateViewportScissor(pContext);
+  traceResolutionDraw(
+    pContext, "indexed-instanced", IndexCountPerInstance, InstanceCount);
   procs->DrawIndexedInstanced(pContext, IndexCountPerInstance, InstanceCount,
     StartIndexLocation, BaseVertexLocation, StartInstanceLocation);
 }
@@ -1707,6 +2335,79 @@ void STDMETHODCALLTYPE ID3D11DeviceContext_DrawIndexedInstancedIndirect(
     AlignedByteOffsetForArgs);
 }
 
+void traceResolutionShaderResource(ID3D11DeviceContext* context,
+                                   UINT slot,
+                                   ID3D11ShaderResourceView* view,
+                                   ID3D11Resource* resource) {
+  ResolutionTraceState state = { };
+  if (!resolutionTraceState(resource, &state))
+    return;
+  ++state.shaderBinds;
+  resource->SetPrivateData(IID_ResolutionTrace, sizeof(state), &state);
+  if (state.shaderBinds > 8 &&
+      (state.shaderBinds & (state.shaderBinds - 1)) != 0)
+    return;
+
+  D3D11_TEXTURE2D_DESC sourceDesc = { };
+  texture2DDesc(resource, &sourceDesc);
+  D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc = { };
+  view->GetDesc(&srvDesc);
+
+  ID3D11RenderTargetView* rtv = nullptr;
+  context->OMGetRenderTargets(1, &rtv, nullptr);
+  ID3D11Resource* target = nullptr;
+  D3D11_TEXTURE2D_DESC targetDesc = { };
+  if (rtv) {
+    rtv->GetResource(&target);
+    rtv->Release();
+  }
+  const bool haveTarget = texture2DDesc(target, &targetDesc);
+  if (target)
+    target->Release();
+
+  UINT viewportCount = 1;
+  D3D11_VIEWPORT viewport = { };
+  context->RSGetViewports(&viewportCount, &viewport);
+  UINT scissorCount = 1;
+  D3D11_RECT scissor = { };
+  context->RSGetScissorRects(&scissorCount, &scissor);
+
+  ID3D11VertexShader* vs = nullptr;
+  ID3D11PixelShader* ps = nullptr;
+  context->VSGetShader(&vs, nullptr, nullptr);
+  context->PSGetShader(&ps, nullptr, nullptr);
+  ID3D11Buffer* vsBuffers[4] = { };
+  ID3D11Buffer* psBuffers[4] = { };
+  context->VSGetConstantBuffers(0, 4, vsBuffers);
+  context->PSGetConstantBuffers(0, 4, psBuffers);
+
+  log("RES bind candidate=", state.id,
+      " count=", state.shaderBinds,
+      " context=", context->GetType() == D3D11_DEVICE_CONTEXT_IMMEDIATE ? "immediate" : "deferred",
+      " slot=", slot,
+      " resource=", resource,
+      " format=", sourceDesc.Format,
+      " srv_format=", srvDesc.Format,
+      " target=", haveTarget ? targetDesc.Width : 0, "x", haveTarget ? targetDesc.Height : 0,
+      " target_format=", haveTarget ? targetDesc.Format : DXGI_FORMAT_UNKNOWN,
+      " viewport=", viewportCount ? viewport.TopLeftX : 0, ",", viewportCount ? viewport.TopLeftY : 0,
+      "+", viewportCount ? viewport.Width : 0, "x", viewportCount ? viewport.Height : 0,
+      " scissor=", scissorCount ? scissor.left : 0, ",", scissorCount ? scissor.top : 0,
+      "-", scissorCount ? scissor.right : 0, ",", scissorCount ? scissor.bottom : 0,
+      " vs=", vs, " ps=", ps,
+      " vs_cb=", vsBuffers[0], ",", vsBuffers[1], ",", vsBuffers[2], ",", vsBuffers[3],
+      " ps_cb=", psBuffers[0], ",", psBuffers[1], ",", psBuffers[2], ",", psBuffers[3]);
+
+  if (vs)
+    vs->Release();
+  if (ps)
+    ps->Release();
+  for (ID3D11Buffer* buffer : vsBuffers)
+    if (buffer) buffer->Release();
+  for (ID3D11Buffer* buffer : psBuffers)
+    if (buffer) buffer->Release();
+}
+
 void STDMETHODCALLTYPE ID3D11DeviceContext_PSSetShaderResources(
         ID3D11DeviceContext* pContext, UINT StartSlot, UINT NumViews,
         ID3D11ShaderResourceView* const* ppShaderResourceViews) {
@@ -1719,6 +2420,8 @@ void STDMETHODCALLTYPE ID3D11DeviceContext_PSSetShaderResources(
       ppShaderResourceViews[i]->GetResource(&resource);
       if (resource) {
         resolveIfMSAA(pContext, resource);
+        traceResolutionShaderResource(
+          pContext, StartSlot + i, ppShaderResourceViews[i], resource);
         resource->Release();
       }
     }
@@ -1777,7 +2480,9 @@ void hookDevice(ID3D11Device* pDevice) {
   if (g_installedHooks & HOOK_DEVICE)
     return;
 
-  log("Hooking device ", pDevice, " msaa=", msaaSamples());
+  log("Hooking device ", pDevice,
+      " msaa=", msaaSamples(),
+      " resolution_trace=", resolutionTraceEnabled());
 
   DeviceProcs* procs = &g_deviceProcs;
   HOOK_PROC(ID3D11Device, pDevice, procs, 3,  CreateBuffer);
