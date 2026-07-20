@@ -193,6 +193,9 @@ std::map<ShadowDrawKey, ShadowDrawStats> g_shadowDraws;
 uint64_t g_shadowDepthOnlyBinds = 0;
 uint64_t g_shadowTraceFrames = 0;
 uint64_t g_shadowTraceSequence = 0;
+uint64_t g_shadowReceiveDraws = 0;
+std::set<uintptr_t> g_shadowSrvs;      // PS SRVs backed by the 1024x1024 fmt-44 map
+std::set<uintptr_t> g_nonShadowSrvs;   // classified as not the shadow map
 
 bool shadowTraceEnabled() {
   static const bool enabled = [] {
@@ -275,6 +278,54 @@ void traceShadowDraw(ID3D11DeviceContext* context, bool indexed,
   if (depthTexture) depthTexture->Release();
   if (depthResource) depthResource->Release();
   depthTarget->Release();
+}
+
+// Classify a PS shader-resource view as the shadow map or not, caching the
+// verdict by pointer so the desc query only happens once per view. Caller holds
+// g_shadowTraceMutex.
+bool isShadowSrvLocked(ID3D11ShaderResourceView* srv) {
+  const uintptr_t key = reinterpret_cast<uintptr_t>(srv);
+  if (g_shadowSrvs.count(key))
+    return true;
+  if (g_nonShadowSrvs.count(key))
+    return false;
+  bool shadow = false;
+  ID3D11Resource* resource = nullptr;
+  srv->GetResource(&resource);
+  if (resource) {
+    ID3D11Texture2D* texture = nullptr;
+    if (SUCCEEDED(resource->QueryInterface(IID_PPV_ARGS(&texture)))) {
+      D3D11_TEXTURE2D_DESC desc = {};
+      texture->GetDesc(&desc);
+      shadow = desc.Width == 1024 && desc.Height == 1024 &&
+        desc.Format == DXGI_FORMAT_R24G8_TYPELESS;
+      texture->Release();
+    }
+    resource->Release();
+  }
+  (shadow ? g_shadowSrvs : g_nonShadowSrvs).insert(key);
+  return shadow;
+}
+
+// Count draws that sample the shadow map (the receiver side). If cut-in frames
+// show zero of these while overview frames show many, the cut-in never binds the
+// shadow SRV — the missing "receive" step.
+void traceShadowReceive(ID3D11DeviceContext* context) {
+  if (!shadowTraceEnabled())
+    return;
+  ID3D11ShaderResourceView* srvs[16] = {};
+  context->PSGetShaderResources(0, 16, srvs);
+  {
+    std::lock_guard lock(g_shadowTraceMutex);
+    for (ID3D11ShaderResourceView* srv : srvs)
+      if (srv && isShadowSrvLocked(srv)) {
+        ++g_shadowReceiveDraws;
+        break;
+      }
+  }
+  for (ID3D11ShaderResourceView* srv : srvs)
+    if (srv)
+      srv->Release();
 }
 
 bool transitionTraceEnabled() {
@@ -2472,6 +2523,7 @@ void STDMETHODCALLTYPE ID3D11DeviceContext_Draw(
   flushDirtyShadows(pContext);
   updateViewportScissor(pContext);
   traceShadowDraw(pContext, false, VertexCount, 1);
+  traceShadowReceive(pContext);
   traceResolutionDraw(pContext, "draw", VertexCount, 1);
 
   // Carry dialogue-snapshot identity through the three-vertex blur passes so
@@ -2515,6 +2567,7 @@ void STDMETHODCALLTYPE ID3D11DeviceContext_DrawIndexed(
   flushDirtyShadows(pContext);
   updateViewportScissor(pContext);
   traceShadowDraw(pContext, true, IndexCount, 1);
+  traceShadowReceive(pContext);
   traceResolutionDraw(pContext, "indexed", IndexCount, 1);
 
   // The 48-byte 1920x1080 quad is shared by other cutscene layers. Keep the
@@ -2577,6 +2630,7 @@ void STDMETHODCALLTYPE ID3D11DeviceContext_DrawInstanced(
   updateViewportScissor(pContext);
   traceShadowDraw(
     pContext, false, VertexCountPerInstance, InstanceCount);
+  traceShadowReceive(pContext);
   traceResolutionDraw(
     pContext, "instanced", VertexCountPerInstance, InstanceCount);
   procs->DrawInstanced(pContext, VertexCountPerInstance, InstanceCount,
@@ -2592,6 +2646,7 @@ void STDMETHODCALLTYPE ID3D11DeviceContext_DrawIndexedInstanced(
   updateViewportScissor(pContext);
   traceShadowDraw(
     pContext, true, IndexCountPerInstance, InstanceCount);
+  traceShadowReceive(pContext);
   traceResolutionDraw(
     pContext, "indexed-instanced", IndexCountPerInstance, InstanceCount);
   procs->DrawIndexedInstanced(pContext, IndexCountPerInstance, InstanceCount,
@@ -2918,6 +2973,7 @@ void traceShadowD3DFrame() {
 
   std::map<ShadowDrawKey, ShadowDrawStats> draws;
   uint64_t depthOnlyBinds = 0;
+  uint64_t receiveDraws = 0;
   uint64_t sequence = 0;
   {
     std::lock_guard lock(g_shadowTraceMutex);
@@ -2927,6 +2983,8 @@ void traceShadowD3DFrame() {
     sequence = ++g_shadowTraceSequence;
     depthOnlyBinds = g_shadowDepthOnlyBinds;
     g_shadowDepthOnlyBinds = 0;
+    receiveDraws = g_shadowReceiveDraws;
+    g_shadowReceiveDraws = 0;
     draws.swap(g_shadowDraws);
   }
 
@@ -2957,6 +3015,7 @@ void traceShadowD3DFrame() {
 
   log("SHADOW window=", sequence,
       " frames=120 depth_only_binds=", depthOnlyBinds,
+      " recv_draws=", receiveDraws,
       " draws=", totalCalls,
       " elements=", totalElements,
       " groups=", groups.size());

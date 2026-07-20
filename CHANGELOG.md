@@ -2,9 +2,13 @@
 
 ## v0.3
 
+### Added
+
+- Shadows are now visible for characters and enemies in battle.
+
 ### Fixed
 
-- A second Rorona atlas-readback path that caused large recurring stalls when opening Synthesis, Assignment, and other text-heavy menus.
+- Even faster text-heavy menus in all three games. Especially the synthesis menu is much faster.
 
 ## v0.2
 

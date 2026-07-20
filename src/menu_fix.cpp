@@ -170,6 +170,7 @@ std::atomic<uintptr_t> g_battleGameMode{0};
 std::atomic<uintptr_t> g_battleScene{0};
 std::atomic<uintptr_t> g_battleCharaVectorAddr{0};
 std::atomic<uintptr_t> g_savedGlobalHelper{0};
+std::unordered_set<uintptr_t> g_registeredCharacters;  // guarded by battleCharaMutex
 std::atomic<bool> g_battleActive{false};
 std::atomic<bool> g_battleContainerFound{false};
 std::atomic<bool> g_battleRegistered{false};
@@ -460,6 +461,17 @@ bool battleShadowTargetsBattleHelper() {
     return value && std::strcmp(value, "battle") == 0;
   }();
   return battle;
+}
+
+// Experiment for the attack cut-in: re-register the party's current render node
+// every few frames, so if a cut-in swaps [chara+0x18] to a cinematic model that
+// new node also becomes a shadow caster.
+bool battleShadowSweepEnabled() {
+  static const bool enabled = [] {
+    const char* value = std::getenv("ARLAND_BATTLE_SHADOW_SWEEP");
+    return value && value[0] != '0';
+  }();
+  return enabled;
 }
 
 size_t shadowLayerCount(uintptr_t helper, size_t offset);
@@ -775,6 +787,10 @@ void registerBattleCharaShadows() {
     const size_t before = shadowLayerCount(helper, 0x48);
     originalShadowCharacterBuild(helper, scene, character, 0);
     const size_t after = shadowLayerCount(helper, 0x48);
+    {
+      std::lock_guard<std::mutex> lock(battleCharaMutex);
+      g_registeredCharacters.insert(character);
+    }
     ++registered;
     atfix::log("BATTLE_SHADOW_REGISTER which=", which,
       " helper=", reinterpret_cast<void*>(helper),
@@ -798,6 +814,51 @@ void registerBattleCharaShadows() {
     " helper=", reinterpret_cast<void*>(helper),
     " scene=", reinterpret_cast<void*>(scene), " registered=", registered,
     " published=", published);
+}
+
+// Re-register the party's *current* render nodes. If an attack cut-in swaps a
+// character's [chara+0x18] to a cinematic model, that new node is not yet a
+// caster; this picks it up. Dedup'd so each distinct node registers once.
+void sweepRegisterBattleCharas() {
+  if (!originalShadowCharacterBuild)
+    return;
+  const uintptr_t vecAddr =
+    g_battleCharaVectorAddr.load(std::memory_order_acquire);
+  if (!vecAddr || !readableRange(vecAddr, 0x10))
+    return;
+  const uintptr_t begin = *reinterpret_cast<const uintptr_t*>(vecAddr);
+  const uintptr_t end = *reinterpret_cast<const uintptr_t*>(vecAddr + 8);
+  if (!begin || end <= begin || (end - begin) > 0x1000 ||
+      (end - begin) % sizeof(uintptr_t) || !readableRange(begin, end - begin))
+    return;
+  uintptr_t helper = 0;
+  if (battleShadowTargetsBattleHelper())
+    helper = g_battleHelper.load(std::memory_order_acquire);
+  else if (uintptr_t* slot = globalActiveHelperSlot())
+    helper = *slot;
+  const uintptr_t scene = g_battleScene.load(std::memory_order_acquire);
+  if (!helper || !scene)
+    return;
+
+  for (uintptr_t p = begin; p < end; p += sizeof(uintptr_t)) {
+    const uintptr_t chara = *reinterpret_cast<const uintptr_t*>(p);
+    if (!readableRange(chara, 0x20) ||
+        !isBattleCharaVtable(*reinterpret_cast<const uintptr_t*>(chara)))
+      continue;
+    const uintptr_t character = *reinterpret_cast<const uintptr_t*>(chara + 0x18);
+    if (!character)
+      continue;
+    {
+      std::lock_guard<std::mutex> lock(battleCharaMutex);
+      if (!g_registeredCharacters.insert(character).second)
+        continue;
+    }
+    originalShadowCharacterBuild(helper, scene, character, 0);
+    atfix::log("BATTLE_SHADOW_SWEEP helper=", reinterpret_cast<void*>(helper),
+      " chara=", reinterpret_cast<void*>(chara),
+      " character=", reinterpret_cast<void*>(character),
+      " registry=", shadowLayerCount(helper, 0x48));
+  }
 }
 
 // Detour of the per-frame scene shadow pass (RVA 0x39cfd0). It reads the active
@@ -848,6 +909,10 @@ uintptr_t tracedShadowHelperInit(uintptr_t helper, uintptr_t id,
     g_battleContainerFound.store(false, std::memory_order_release);
     g_battleRegistered.store(false, std::memory_order_release);
     g_battleCharaVectorAddr.store(0, std::memory_order_release);
+    {
+      std::lock_guard<std::mutex> lock(battleCharaMutex);
+      g_registeredCharacters.clear();
+    }
     g_battleTickCounter.store(0, std::memory_order_release);
     g_battleActive.store(true, std::memory_order_release);
     if (battleShadowRestoreEnabled() && gameMode &&
@@ -2590,6 +2655,10 @@ void battleShadowFrameTick() {
     g_battleContainerFound.store(true, std::memory_order_release);
     registerBattleCharaShadows();
   }
+
+  if (battleShadowSweepEnabled() &&
+      g_battleContainerFound.load(std::memory_order_acquire) && tick % 12 == 0)
+    sweepRegisterBattleCharas();
 
   if (tick % 120 == 0 && tick <= 120 * 200) {
     uintptr_t* slot = globalActiveHelperSlot();
