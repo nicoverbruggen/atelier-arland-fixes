@@ -1,4 +1,4 @@
-// Launcher-only 32-bit WinMM proxy. Original project code under the MIT terms
+// Launcher-only 32-bit MSIMG32 proxy. Original project code under the MIT terms
 // in ../LICENSE; it modifies only the verified process image in memory.
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -9,11 +9,53 @@
 
 namespace {
 
+void launcherLog(const char* message) {
+#ifdef ARLAND_LAUNCHER_DIAGNOSTIC
+  std::array<char, 32768> path = { };
+  const DWORD length = GetModuleFileNameA(nullptr, path.data(), path.size());
+  if (!length || length == path.size())
+    return;
+  char* name = path.data();
+  for (char* cursor = path.data(); *cursor; cursor++) {
+    if (*cursor == '\\' || *cursor == '/')
+      name = cursor + 1;
+  }
+  std::memcpy(name, "arland-launcher.log", sizeof("arland-launcher.log"));
+  HANDLE file = CreateFileA(path.data(), FILE_APPEND_DATA,
+    FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_ALWAYS,
+    FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (file == INVALID_HANDLE_VALUE)
+    return;
+  DWORD written = 0;
+  WriteFile(file, message, static_cast<DWORD>(std::strlen(message)),
+    &written, nullptr);
+  static constexpr char newline[] = "\r\n";
+  WriteFile(file, newline, sizeof(newline) - 1, &written, nullptr);
+  FlushFileBuffers(file);
+  CloseHandle(file);
+#else
+  (void)message;
+#endif
+}
+
+void launcherLogCount(const char* stage, std::uint32_t count) {
+#ifdef ARLAND_LAUNCHER_DIAGNOSTIC
+  char message[128] = { };
+  wsprintfA(message, "%s count=%lu", stage,
+    static_cast<unsigned long>(count));
+  launcherLog(message);
+#else
+  (void)stage;
+  (void)count;
+#endif
+}
+
 constexpr std::uintptr_t TableRva = 0x1a1c88;
 constexpr std::uintptr_t CodeRva = 0x0b56a;
 constexpr std::uintptr_t ModeBuilderRva = 0x0b460;
 constexpr std::uintptr_t CapacityImmediateRva = 0x0b508;
 constexpr std::uintptr_t FallbackSizeImmediateRva = 0x0b6c9;
+constexpr std::uintptr_t AllocatorRva = 0x15bcc;
 constexpr DWORD LauncherImageSize = 0x317000;
 
 constexpr std::array<std::uint8_t, 40> OriginalTable = {
@@ -61,9 +103,13 @@ bool matchesModeBuilder(const std::uint8_t* code, const std::uint8_t* table) {
   return std::memcmp(code, expected.data(), expected.size()) == 0;
 }
 
-using PFN_PlaySoundW = BOOL (WINAPI *)(LPCWSTR, HMODULE, DWORD);
-INIT_ONCE g_winmmInit = INIT_ONCE_STATIC_INIT;
-PFN_PlaySoundW g_playSoundW = nullptr;
+using PFN_AlphaBlend = BOOL (WINAPI *)(
+  HDC, int, int, int, int, HDC, int, int, int, int, BLENDFUNCTION);
+using PFN_TransparentBlt = BOOL (WINAPI *)(
+  HDC, int, int, int, int, HDC, int, int, int, int, UINT);
+INIT_ONCE g_msimg32Init = INIT_ONCE_STATIC_INIT;
+PFN_AlphaBlend g_alphaBlend = nullptr;
+PFN_TransparentBlt g_transparentBlt = nullptr;
 using PFN_ModeBuilder = void (__thiscall *)(void*);
 PFN_ModeBuilder g_modeBuilder = nullptr;
 
@@ -80,10 +126,7 @@ bool isLauncher(HMODULE module) {
   return _wcsicmp(name, L"ArlandDXEnv.exe") == 0;
 }
 
-void appendSupportedModes(void* object) {
-  auto* base = reinterpret_cast<std::uint8_t*>(object);
-  auto& count = *reinterpret_cast<std::uint32_t*>(base + 0x1e8);
-  auto* modes = *reinterpret_cast<DisplayMode**>(base + 0x1f0);
+void appendSupportedModesToList(std::uint32_t& count, DisplayMode* modes) {
   if (!modes)
     return;
 
@@ -115,9 +158,50 @@ void appendSupportedModes(void* object) {
   }
 }
 
+void appendSupportedModes(void* object) {
+  auto* base = reinterpret_cast<std::uint8_t*>(object);
+  auto& fullscreenCount =
+    *reinterpret_cast<std::uint32_t*>(base + 0x1e4);
+  auto& fullscreenModes =
+    *reinterpret_cast<DisplayMode**>(base + 0x1ec);
+  auto& windowedCount =
+    *reinterpret_cast<std::uint32_t*>(base + 0x1e8);
+  auto* windowedModes =
+    *reinterpret_cast<DisplayMode**>(base + 0x1f0);
+
+  HMODULE module = GetModuleHandleW(nullptr);
+  if (module) {
+    using AllocateProc = void* (__cdecl *)(std::size_t);
+    auto allocate = reinterpret_cast<AllocateProc>(
+      reinterpret_cast<std::uint8_t*>(module) + AllocatorRva);
+    auto* grown = static_cast<DisplayMode*>(allocate(
+      (fullscreenCount + SupportedModes.size()) * sizeof(DisplayMode)));
+    if (grown) {
+      if (fullscreenModes && fullscreenCount)
+        std::memcpy(grown, fullscreenModes,
+          fullscreenCount * sizeof(DisplayMode));
+      // The launcher's original allocation is intentionally leaked once.
+      // The replacement uses its own allocator and is freed normally when
+      // the short-lived settings process exits.
+      fullscreenModes = grown;
+      appendSupportedModesToList(fullscreenCount, fullscreenModes);
+    }
+  }
+  appendSupportedModesToList(windowedCount, windowedModes);
+}
+
 void __fastcall modeBuilderHook(void* object, void*) {
+  launcherLogCount("mode hook entered", object
+    ? *reinterpret_cast<std::uint32_t*>(
+        reinterpret_cast<std::uint8_t*>(object) + 0x1e8) : 0);
   g_modeBuilder(object);
+  launcherLogCount("mode original returned", object
+    ? *reinterpret_cast<std::uint32_t*>(
+        reinterpret_cast<std::uint8_t*>(object) + 0x1e8) : 0);
   appendSupportedModes(object);
+  launcherLogCount("mode append returned", object
+    ? *reinterpret_cast<std::uint32_t*>(
+        reinterpret_cast<std::uint8_t*>(object) + 0x1e8) : 0);
 }
 
 bool writeByte(std::uint8_t* address, std::uint8_t expected, std::uint8_t replacement) {
@@ -163,55 +247,102 @@ bool installModeBuilderHook(std::uint8_t* target) {
 }
 
 void installLauncherResolutionHook() {
+  launcherLog("patch initialization entered");
   HMODULE module = GetModuleHandleW(nullptr);
-  if (!module || !isLauncher(module))
+  if (!module || !isLauncher(module)) {
+    launcherLog("process is forwarding-only");
     return;
+  }
+  launcherLog("launcher process recognized");
 
   auto* base = reinterpret_cast<std::uint8_t*>(module);
   const auto* dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(base);
-  if (dos->e_magic != IMAGE_DOS_SIGNATURE)
+  if (dos->e_magic != IMAGE_DOS_SIGNATURE) {
+    launcherLog("DOS header failed");
     return;
+  }
   const auto* nt = reinterpret_cast<const IMAGE_NT_HEADERS32*>(base + dos->e_lfanew);
   if (nt->Signature != IMAGE_NT_SIGNATURE ||
       nt->FileHeader.Machine != IMAGE_FILE_MACHINE_I386 ||
-      nt->OptionalHeader.SizeOfImage != LauncherImageSize)
+      nt->OptionalHeader.SizeOfImage != LauncherImageSize) {
+    launcherLog("PE header failed");
     return;
+  }
+  launcherLog("PE header passed");
 
   auto* table = base + TableRva;
+  const std::array<std::uint8_t, 5> allocatorExpected = {
+    0x55, 0x8b, 0xec, 0x5d, 0xe9,
+  };
   if (!matchesModeBuilder(base + CodeRva, table) ||
-      std::memcmp(table, OriginalTable.data(), OriginalTable.size()) != 0)
+      std::memcmp(table, OriginalTable.data(), OriginalTable.size()) != 0 ||
+      std::memcmp(base + AllocatorRva, allocatorExpected.data(),
+        allocatorExpected.size()) != 0) {
+    launcherLog("table/code signatures failed");
     return;
+  }
+  launcherLog("table/code signatures passed");
 
   // The original reserves detected-mode count + 5 entries. We expose six
   // canonical modes, so increase both normal and no-DXGI-mode allocations.
-  if (!writeByte(base + CapacityImmediateRva, 0x05, 0x06) ||
-      !writeByte(base + FallbackSizeImmediateRva, 0x28, 0x30))
+  if (!writeByte(base + CapacityImmediateRva, 0x05, 0x06)) {
+    launcherLog("capacity patch failed");
     return;
-  installModeBuilderHook(base + ModeBuilderRva);
+  }
+  launcherLog("capacity patch passed");
+  if (!writeByte(base + FallbackSizeImmediateRva, 0x28, 0x30)) {
+    launcherLog("fallback patch failed");
+    return;
+  }
+  launcherLog("fallback patch passed");
+  launcherLog(installModeBuilderHook(base + ModeBuilderRva)
+    ? "mode hook installed" : "mode hook failed");
 }
 
-BOOL CALLBACK loadSystemWinmm(PINIT_ONCE, PVOID, PVOID*) {
+BOOL CALLBACK loadSystemMsimg32(PINIT_ONCE, PVOID, PVOID*) {
   std::array<wchar_t, MAX_PATH> path = { };
   const UINT length = GetSystemDirectoryW(path.data(), path.size());
-  if (!length || length + 12 >= path.size())
+  if (!length || length + 14 >= path.size())
     return TRUE;
-  std::memcpy(path.data() + length, L"\\winmm.dll", 11 * sizeof(wchar_t));
+  std::memcpy(path.data() + length, L"\\msimg32.dll", 13 * sizeof(wchar_t));
   HMODULE module = LoadLibraryW(path.data());
-  if (module)
-    g_playSoundW = reinterpret_cast<PFN_PlaySoundW>(GetProcAddress(module, "PlaySoundW"));
+  if (module) {
+    g_alphaBlend = reinterpret_cast<PFN_AlphaBlend>(
+      GetProcAddress(module, "AlphaBlend"));
+    g_transparentBlt = reinterpret_cast<PFN_TransparentBlt>(
+      GetProcAddress(module, "TransparentBlt"));
+  }
+  launcherLog(module && g_alphaBlend && g_transparentBlt
+    ? "system msimg32 forwarding ready"
+    : "system msimg32 forwarding failed");
   return TRUE;
 }
 
 } // namespace
 
-extern "C" BOOL WINAPI PlaySoundW(LPCWSTR sound, HMODULE module, DWORD flags) {
-  InitOnceExecuteOnce(&g_winmmInit, loadSystemWinmm, nullptr, nullptr);
-  return g_playSoundW ? g_playSoundW(sound, module, flags) : FALSE;
+extern "C" BOOL WINAPI AlphaBlend(
+    HDC dst, int dstX, int dstY, int dstWidth, int dstHeight,
+    HDC src, int srcX, int srcY, int srcWidth, int srcHeight,
+    BLENDFUNCTION blend) {
+  InitOnceExecuteOnce(&g_msimg32Init, loadSystemMsimg32, nullptr, nullptr);
+  return g_alphaBlend && g_alphaBlend(dst, dstX, dstY, dstWidth, dstHeight,
+    src, srcX, srcY, srcWidth, srcHeight, blend);
+}
+
+extern "C" BOOL WINAPI TransparentBlt(
+    HDC dst, int dstX, int dstY, int dstWidth, int dstHeight,
+    HDC src, int srcX, int srcY, int srcWidth, int srcHeight,
+    UINT transparent) {
+  InitOnceExecuteOnce(&g_msimg32Init, loadSystemMsimg32, nullptr, nullptr);
+  return g_transparentBlt && g_transparentBlt(
+    dst, dstX, dstY, dstWidth, dstHeight,
+    src, srcX, srcY, srcWidth, srcHeight, transparent);
 }
 
 BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, LPVOID) {
   if (reason == DLL_PROCESS_ATTACH) {
     DisableThreadLibraryCalls(instance);
+    launcherLog("msimg32 process attach");
     installLauncherResolutionHook();
   }
   return TRUE;

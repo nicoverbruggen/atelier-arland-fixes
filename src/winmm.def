@@ -1,3 +1,0 @@
-LIBRARY WINMM.DLL
-EXPORTS
-    PlaySoundW

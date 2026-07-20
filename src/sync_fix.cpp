@@ -2,6 +2,7 @@
 // work by TellowKrinkle; substantially altered for Arland. See LICENSE.
 #include <array>
 #include <atomic>
+#include <cstdlib>
 #include <cstring>
 #include <map>
 #include <set>
@@ -25,6 +26,8 @@ using PFN_ID3D11Device_CreateTexture3D = HRESULT (STDMETHODCALLTYPE *) (ID3D11De
 
 using PFN_ID3D11DeviceContext_ClearRenderTargetView = void (STDMETHODCALLTYPE *) (ID3D11DeviceContext*,
   ID3D11RenderTargetView*, const FLOAT[4]);
+using PFN_ID3D11DeviceContext_ClearDepthStencilView = void (STDMETHODCALLTYPE *) (ID3D11DeviceContext*,
+  ID3D11DepthStencilView*, UINT, FLOAT, UINT8);
 using PFN_ID3D11DeviceContext_ClearUnorderedAccessViewFloat = void (STDMETHODCALLTYPE *) (ID3D11DeviceContext*,
   ID3D11UnorderedAccessView*, const FLOAT[4]);
 using PFN_ID3D11DeviceContext_ClearUnorderedAccessViewUint = void (STDMETHODCALLTYPE *) (ID3D11DeviceContext*,
@@ -61,6 +64,8 @@ using PFN_ID3D11DeviceContext_DrawAuto = void (STDMETHODCALLTYPE *) (ID3D11Devic
 using PFN_ID3D11DeviceContext_DrawInstancedIndirect = void (STDMETHODCALLTYPE *) (ID3D11DeviceContext*, ID3D11Buffer*, UINT);
 using PFN_ID3D11DeviceContext_DrawIndexedInstancedIndirect = void (STDMETHODCALLTYPE *) (ID3D11DeviceContext*, ID3D11Buffer*, UINT);
 using PFN_ID3D11DeviceContext_ExecuteCommandList = void (STDMETHODCALLTYPE *) (ID3D11DeviceContext*, ID3D11CommandList*, BOOL);
+using PFN_ID3D11DeviceContext_FinishCommandList = HRESULT (STDMETHODCALLTYPE *) (ID3D11DeviceContext*, BOOL, ID3D11CommandList**);
+using PFN_ID3D11DeviceContext_PSSetShaderResources = void (STDMETHODCALLTYPE *) (ID3D11DeviceContext*, UINT, UINT, ID3D11ShaderResourceView* const*);
 
 struct DeviceProcs {
   PFN_ID3D11Device_CreateBuffer                         CreateBuffer                  = nullptr;
@@ -72,6 +77,7 @@ struct DeviceProcs {
 
 struct ContextProcs {
   PFN_ID3D11DeviceContext_ClearRenderTargetView         ClearRenderTargetView         = nullptr;
+  PFN_ID3D11DeviceContext_ClearDepthStencilView         ClearDepthStencilView         = nullptr;
   PFN_ID3D11DeviceContext_ClearUnorderedAccessViewFloat ClearUnorderedAccessViewFloat = nullptr;
   PFN_ID3D11DeviceContext_ClearUnorderedAccessViewUint  ClearUnorderedAccessViewUint  = nullptr;
   PFN_ID3D11DeviceContext_CopyResource                  CopyResource                  = nullptr;
@@ -94,6 +100,8 @@ struct ContextProcs {
   PFN_ID3D11DeviceContext_DrawInstancedIndirect         DrawInstancedIndirect         = nullptr;
   PFN_ID3D11DeviceContext_DrawIndexedInstancedIndirect  DrawIndexedInstancedIndirect  = nullptr;
   PFN_ID3D11DeviceContext_ExecuteCommandList            ExecuteCommandList            = nullptr;
+  PFN_ID3D11DeviceContext_FinishCommandList             FinishCommandList             = nullptr;
+  PFN_ID3D11DeviceContext_PSSetShaderResources          PSSetShaderResources          = nullptr;
 };
 
 static mutex  g_hookMutex;
@@ -116,6 +124,8 @@ uint32_t      g_installedHooks = 0u;
 // Remember the former so those later targets can follow it.
 static std::atomic<UINT> g_mainRtWidth  = { 0 };
 static std::atomic<UINT> g_mainRtHeight = { 0 };
+static std::atomic<UINT> g_originalSwapWidth  = { 0 };
+static std::atomic<UINT> g_originalSwapHeight = { 0 };
 
 // The games also submit a hard-coded 1080p viewport and scissor. Keep separate
 // state for the immediate and deferred context paths; atomics keep the hooks
@@ -131,6 +141,100 @@ struct RasterState {
 static RasterState g_immRasterState;
 static RasterState g_defRasterState;
 
+// MSAA design adapted from TellowKrinkle's atelier-sync-fix rendering fork.
+// The game continues to own single-sample resources; matching multisample
+// render targets are attached as private data and resolved before every read.
+static const GUID IID_MSAAResource = {0xe2728d94,0x9fdd,0x40d0,{0x87,0xa8,0x09,0xb6,0x2d,0xf3,0x14,0x9a}};
+static const GUID IID_MSAAState = {0xe2728d93,0x9fdd,0x40d0,{0x87,0xa8,0x09,0xb6,0x2d,0xf3,0x14,0x9a}};
+static const GUID IID_MSAABoundHost = {0xe2728d98,0x9fdd,0x40d0,{0x87,0xa8,0x09,0xb6,0x2d,0xf3,0x14,0x9a}};
+
+enum class MSAAState : UINT { Clean, Dirty };
+
+const char* configPath() {
+  static const std::array<char, MAX_PATH + 1> path = [] {
+    std::array<char, MAX_PATH + 1> result = { };
+    const DWORD pathLength = GetModuleFileNameA(
+      nullptr, result.data(), MAX_PATH);
+    if (pathLength && pathLength < MAX_PATH) {
+      char* back = std::strrchr(result.data(), '\\');
+      char* forward = std::strrchr(result.data(), '/');
+      char* slash = !back || (forward && forward > back) ? forward : back;
+      if (slash)
+        std::memcpy(slash + 1, "arland-fix.ini", sizeof("arland-fix.ini"));
+    }
+
+    if (result[0] &&
+        GetFileAttributesA(result.data()) == INVALID_FILE_ATTRIBUTES) {
+      WritePrivateProfileStringA("Rendering", "MSAA", "1", result.data());
+      WritePrivateProfileStringA("Rendering", "Width", "", result.data());
+      WritePrivateProfileStringA("Rendering", "Height", "", result.data());
+    }
+    return result;
+  }();
+  return path[0] ? path.data() : nullptr;
+}
+
+bool configuredResolution(UINT* width, UINT* height) {
+  const char* path = configPath();
+  if (!path)
+    return false;
+  char widthValue[16] = { };
+  char heightValue[16] = { };
+  GetPrivateProfileStringA("Rendering", "Width", "", widthValue,
+    sizeof(widthValue), path);
+  GetPrivateProfileStringA("Rendering", "Height", "", heightValue,
+    sizeof(heightValue), path);
+  const unsigned long parsedWidth = std::strtoul(widthValue, nullptr, 10);
+  const unsigned long parsedHeight = std::strtoul(heightValue, nullptr, 10);
+  if (parsedWidth < 640 || parsedWidth > 16384 ||
+      parsedHeight < 360 || parsedHeight > 16384)
+    return false;
+  *width = static_cast<UINT>(parsedWidth);
+  *height = static_cast<UINT>(parsedHeight);
+  return true;
+}
+
+bool applyResolutionOverride(DXGI_SWAP_CHAIN_DESC* pDesc) {
+  if (!pDesc)
+    return false;
+  UINT width = 0;
+  UINT height = 0;
+  if (!configuredResolution(&width, &height))
+    return false;
+  g_originalSwapWidth.store(pDesc->BufferDesc.Width, std::memory_order_relaxed);
+  g_originalSwapHeight.store(pDesc->BufferDesc.Height, std::memory_order_relaxed);
+  pDesc->BufferDesc.Width = width;
+  pDesc->BufferDesc.Height = height;
+  pDesc->BufferDesc.RefreshRate.Numerator = 0;
+  pDesc->BufferDesc.RefreshRate.Denominator = 0;
+  log("Overriding swap-chain resolution to ", std::dec, width, "x", height);
+  return true;
+}
+
+UINT msaaSamples() {
+  static const UINT samples = [] {
+    const char* path = configPath();
+
+    char value[16] = { };
+    const DWORD length = GetEnvironmentVariableA("ARLAND_MSAA", value, sizeof(value));
+    unsigned long requested = 1;
+    if (length) {
+      requested = std::strtoul(value, nullptr, 10);
+    } else if (path) {
+      requested = GetPrivateProfileIntA(
+        "Rendering", "MSAA", 1, path);
+    }
+    if (requested < 2)
+      return 1u;
+    if (requested >= 8)
+      return 8u;
+    if (requested >= 4)
+      return 4u;
+    return 2u;
+  }();
+  return samples;
+}
+
 const DeviceProcs* getDeviceProcs(ID3D11Device* pDevice) {
   return &g_deviceProcs;
 }
@@ -145,6 +249,164 @@ RasterState* getRasterState(ID3D11DeviceContext* pContext) {
   return pContext->GetType() == D3D11_DEVICE_CONTEXT_IMMEDIATE
     ? &g_immRasterState
     : &g_defRasterState;
+}
+
+template<typename T>
+T* getMSAAObject(ID3D11DeviceChild* host) {
+  T* object = nullptr;
+  UINT size = sizeof(object);
+  return host && SUCCEEDED(host->GetPrivateData(IID_MSAAResource, &size, &object))
+    ? object : nullptr;
+}
+
+void resolveIfMSAA(ID3D11DeviceContext* context, ID3D11Resource* host) {
+  ID3D11Resource* multisampled = getMSAAObject<ID3D11Resource>(host);
+  if (!multisampled)
+    return;
+
+  MSAAState state = MSAAState::Clean;
+  UINT size = sizeof(state);
+  if (SUCCEEDED(host->GetPrivateData(IID_MSAAState, &size, &state)) &&
+      state == MSAAState::Dirty) {
+    ID3D11Texture2D* texture = nullptr;
+    if (SUCCEEDED(multisampled->QueryInterface(IID_PPV_ARGS(&texture)))) {
+      D3D11_TEXTURE2D_DESC desc = { };
+      texture->GetDesc(&desc);
+      texture->Release();
+      context->ResolveSubresource(host, 0, multisampled, 0, desc.Format);
+      state = MSAAState::Clean;
+      host->SetPrivateData(IID_MSAAState, sizeof(state), &state);
+    }
+  }
+  multisampled->Release();
+}
+
+void resolveBoundMSAA(ID3D11DeviceContext* context) {
+  ID3D11Resource* host = nullptr;
+  UINT size = sizeof(host);
+  if (FAILED(context->GetPrivateData(IID_MSAABoundHost, &size, &host)) || !host)
+    return;
+  context->SetPrivateData(IID_MSAABoundHost, 0, nullptr);
+  resolveIfMSAA(context, host);
+  host->Release();
+}
+
+bool getOrCreateMSAAViews(ID3D11DeviceContext* context,
+                         ID3D11RenderTargetView* hostRtv,
+                         ID3D11DepthStencilView* hostDsv,
+                         ID3D11RenderTargetView** msaaRtv,
+                         ID3D11DepthStencilView** msaaDsv) {
+  *msaaRtv = getMSAAObject<ID3D11RenderTargetView>(hostRtv);
+  *msaaDsv = getMSAAObject<ID3D11DepthStencilView>(hostDsv);
+  if (*msaaRtv && *msaaDsv)
+    return true;
+  if (*msaaRtv) { (*msaaRtv)->Release(); *msaaRtv = nullptr; }
+  if (*msaaDsv) { (*msaaDsv)->Release(); *msaaDsv = nullptr; }
+
+  ID3D11Resource* colorResource = nullptr;
+  ID3D11Resource* depthResource = nullptr;
+  ID3D11Texture2D* colorHost = nullptr;
+  ID3D11Texture2D* depthHost = nullptr;
+  hostRtv->GetResource(&colorResource);
+  hostDsv->GetResource(&depthResource);
+  if (!colorResource || !depthResource ||
+      FAILED(colorResource->QueryInterface(IID_PPV_ARGS(&colorHost))) ||
+      FAILED(depthResource->QueryInterface(IID_PPV_ARGS(&depthHost)))) {
+    if (colorHost) colorHost->Release();
+    if (depthHost) depthHost->Release();
+    if (colorResource) colorResource->Release();
+    if (depthResource) depthResource->Release();
+    return false;
+  }
+
+  D3D11_TEXTURE2D_DESC colorDesc = { };
+  D3D11_TEXTURE2D_DESC depthDesc = { };
+  D3D11_RENDER_TARGET_VIEW_DESC rtvDesc = { };
+  D3D11_DEPTH_STENCIL_VIEW_DESC dsvDesc = { };
+  colorHost->GetDesc(&colorDesc);
+  depthHost->GetDesc(&depthDesc);
+  hostRtv->GetDesc(&rtvDesc);
+  hostDsv->GetDesc(&dsvDesc);
+  colorHost->Release();
+  depthHost->Release();
+
+  const UINT mainWidth = g_mainRtWidth.load(std::memory_order_relaxed);
+  const UINT mainHeight = g_mainRtHeight.load(std::memory_order_relaxed);
+  const bool eligible = msaaSamples() > 1 && mainWidth && mainHeight &&
+    colorDesc.Width == mainWidth && colorDesc.Height == mainHeight &&
+    depthDesc.Width == mainWidth && depthDesc.Height == mainHeight &&
+    colorDesc.SampleDesc.Count == 1 && depthDesc.SampleDesc.Count == 1 &&
+    colorDesc.ArraySize == 1 && depthDesc.ArraySize == 1 &&
+    colorDesc.MipLevels == 1 && depthDesc.MipLevels == 1 &&
+    (rtvDesc.Format == DXGI_FORMAT_B8G8R8A8_UNORM ||
+     rtvDesc.Format == DXGI_FORMAT_B8G8R8A8_UNORM_SRGB);
+  if (!eligible) {
+    colorResource->Release();
+    depthResource->Release();
+    return false;
+  }
+
+  ID3D11Device* device = nullptr;
+  context->GetDevice(&device);
+  UINT samples = msaaSamples();
+  while (samples > 1) {
+    UINT colorQuality = 0;
+    UINT depthQuality = 0;
+    if (SUCCEEDED(device->CheckMultisampleQualityLevels(rtvDesc.Format, samples, &colorQuality)) &&
+        SUCCEEDED(device->CheckMultisampleQualityLevels(dsvDesc.Format, samples, &depthQuality)) &&
+        colorQuality && depthQuality)
+      break;
+    samples /= 2;
+  }
+  if (samples < 2) {
+    device->Release();
+    colorResource->Release();
+    depthResource->Release();
+    return false;
+  }
+
+  colorDesc.Format = rtvDesc.Format;
+  colorDesc.SampleDesc = { samples, 0 };
+  colorDesc.BindFlags = D3D11_BIND_RENDER_TARGET;
+  colorDesc.CPUAccessFlags = 0;
+  colorDesc.MiscFlags = 0;
+  colorDesc.Usage = D3D11_USAGE_DEFAULT;
+  depthDesc.SampleDesc = { samples, 0 };
+  depthDesc.BindFlags = D3D11_BIND_DEPTH_STENCIL;
+  depthDesc.CPUAccessFlags = 0;
+  depthDesc.MiscFlags = 0;
+  depthDesc.Usage = D3D11_USAGE_DEFAULT;
+
+  ID3D11Texture2D* colorMsaa = nullptr;
+  ID3D11Texture2D* depthMsaa = nullptr;
+  HRESULT hr = device->CreateTexture2D(&colorDesc, nullptr, &colorMsaa);
+  if (SUCCEEDED(hr))
+    hr = device->CreateTexture2D(&depthDesc, nullptr, &depthMsaa);
+  if (SUCCEEDED(hr)) {
+    rtvDesc.ViewDimension = D3D11_RTV_DIMENSION_TEXTURE2DMS;
+    dsvDesc.ViewDimension = D3D11_DSV_DIMENSION_TEXTURE2DMS;
+    hr = device->CreateRenderTargetView(colorMsaa, &rtvDesc, msaaRtv);
+    if (SUCCEEDED(hr))
+      hr = device->CreateDepthStencilView(depthMsaa, &dsvDesc, msaaDsv);
+  }
+  if (SUCCEEDED(hr)) {
+    colorResource->SetPrivateDataInterface(IID_MSAAResource, colorMsaa);
+    depthResource->SetPrivateDataInterface(IID_MSAAResource, depthMsaa);
+    hostRtv->SetPrivateDataInterface(IID_MSAAResource, *msaaRtv);
+    hostDsv->SetPrivateDataInterface(IID_MSAAResource, *msaaDsv);
+    log("Created ", std::dec, samples, "x MSAA targets at ",
+        mainWidth, "x", mainHeight);
+  } else {
+    if (*msaaRtv) { (*msaaRtv)->Release(); *msaaRtv = nullptr; }
+    if (*msaaDsv) { (*msaaDsv)->Release(); *msaaDsv = nullptr; }
+    log("Failed to create MSAA targets, hr 0x", std::hex, hr);
+  }
+  if (colorMsaa) colorMsaa->Release();
+  if (depthMsaa) depthMsaa->Release();
+  device->Release();
+  colorResource->Release();
+  depthResource->Release();
+  return SUCCEEDED(hr);
 }
 
 void flushDirtyShadows(ID3D11DeviceContext* pContext);
@@ -447,6 +709,14 @@ ID3D11Resource* getShadowResource(
   return getShadowResourceLocked(pBaseResource);
 }
 
+bool isMutableFontAtlas(ID3D11Resource* resource) {
+  ATFIX_RESOURCE_INFO info = { };
+  return resource && getResourceInfo(resource, &info) &&
+    info.Dim == D3D11_RESOURCE_DIMENSION_TEXTURE2D &&
+    info.Usage == D3D11_USAGE_DYNAMIC &&
+    info.Width == 512 && info.Height == 512;
+}
+
 ID3D11Resource* getOrCreateShadowResource(
         ID3D11DeviceContext*      pContext,
         ID3D11Resource*           pBaseResource) {
@@ -661,16 +931,32 @@ HRESULT STDMETHODCALLTYPE ID3D11Device_CreateTexture2D(
     UINT mainHeight = g_mainRtHeight.load(std::memory_order_relaxed);
     if (!mainWidth && (desc.BindFlags & D3D11_BIND_DEPTH_STENCIL)) {
       // The trilogy creates its main depth target before the hard-coded
-      // 1920x1080 auxiliary targets. Only arm the override for resolutions
-      // above 1080p; 1080p and lower retain the game's original behavior.
-      if (desc.Width > 1920 && desc.Height > 1080) {
+      // 1920x1080 auxiliary targets. Record 1080p too so MSAA can identify
+      // the main scene, but only resize later targets for higher resolutions.
+      const UINT originalWidth =
+        g_originalSwapWidth.load(std::memory_order_relaxed);
+      const UINT originalHeight =
+        g_originalSwapHeight.load(std::memory_order_relaxed);
+      const bool matchesOriginalSwap = originalWidth && originalHeight &&
+        desc.Width == originalWidth && desc.Height == originalHeight;
+      const bool knownMainShape = desc.Width >= 1920 && desc.Height >= 1080 &&
+        static_cast<uint64_t>(desc.Width) * 9 ==
+          static_cast<uint64_t>(desc.Height) * 16;
+      if (matchesOriginalSwap || knownMainShape) {
+        UINT overrideWidth = 0;
+        UINT overrideHeight = 0;
+        if (configuredResolution(&overrideWidth, &overrideHeight)) {
+          desc.Width = overrideWidth;
+          desc.Height = overrideHeight;
+          changed = true;
+        }
         g_mainRtWidth.store(desc.Width, std::memory_order_relaxed);
         g_mainRtHeight.store(desc.Height, std::memory_order_relaxed);
         mainWidth = desc.Width;
         mainHeight = desc.Height;
         log("Detected main render size ", std::dec, mainWidth, "x", mainHeight);
       }
-    } else if (mainWidth && !pData &&
+    } else if (mainWidth > 1920 && mainHeight > 1080 && !pData &&
                (desc.BindFlags & (D3D11_BIND_RENDER_TARGET | D3D11_BIND_DEPTH_STENCIL)) &&
                desc.Width == 1920 && desc.Height == 1080) {
       desc.Width = mainWidth;
@@ -720,30 +1006,20 @@ void updateViewportScissor(ID3D11DeviceContext* pContext) {
   if (!state->dirty.exchange(false, std::memory_order_acq_rel))
     return;
 
-  const UINT viewportWidth = state->viewportWidth.load(std::memory_order_relaxed);
-  const UINT viewportHeight = state->viewportHeight.load(std::memory_order_relaxed);
-  const UINT scissorWidth = state->scissorWidth.load(std::memory_order_relaxed);
-  const UINT scissorHeight = state->scissorHeight.load(std::memory_order_relaxed);
-  const bool is1080State = viewportWidth == 1920 && viewportHeight == 1080 &&
-    scissorWidth == 1920 && scissorHeight == 1080;
-  if (!is1080State)
-    return;
-
   UINT viewportCount = 1;
   UINT scissorCount = 1;
   D3D11_VIEWPORT viewport = { };
   D3D11_RECT scissor = { };
   pContext->RSGetViewports(&viewportCount, &viewport);
   pContext->RSGetScissorRects(&scissorCount, &scissor);
-  if (viewportCount != 1 || scissorCount != 1 ||
-      viewport.TopLeftX != 0.0f || viewport.TopLeftY != 0.0f ||
-      scissor.left != 0 || scissor.top != 0)
+  const bool validViewport = viewportCount == 1 &&
+    viewport.TopLeftX == 0.0f && viewport.TopLeftY == 0.0f &&
+    viewport.Width == 1920.0f && viewport.Height == 1080.0f;
+  const bool validScissor = scissorCount == 1 &&
+    scissor.left == 0 && scissor.top == 0 &&
+    scissor.right == 1920 && scissor.bottom == 1080;
+  if (!validViewport && !validScissor)
     return;
-
-  viewport.Width = static_cast<FLOAT>(viewportWidth);
-  viewport.Height = static_cast<FLOAT>(viewportHeight);
-  scissor.right = static_cast<LONG>(scissorWidth);
-  scissor.bottom = static_cast<LONG>(scissorHeight);
 
   ID3D11RenderTargetView* rtv = nullptr;
   ID3D11DepthStencilView* dsv = nullptr;
@@ -766,16 +1042,22 @@ void updateViewportScissor(ID3D11DeviceContext* pContext) {
       D3D11_TEXTURE2D_DESC desc = { };
       texture->GetDesc(&desc);
       texture->Release();
-      viewport.Width = static_cast<FLOAT>(desc.Width);
-      viewport.Height = static_cast<FLOAT>(desc.Height);
-      scissor.right = static_cast<LONG>(desc.Width);
-      scissor.bottom = static_cast<LONG>(desc.Height);
+      if (validViewport) {
+        viewport.Width = static_cast<FLOAT>(desc.Width);
+        viewport.Height = static_cast<FLOAT>(desc.Height);
+      }
+      if (validScissor) {
+        scissor.right = static_cast<LONG>(desc.Width);
+        scissor.bottom = static_cast<LONG>(desc.Height);
+      }
     }
   }
 
   auto procs = getContextProcs(pContext);
-  procs->RSSetViewports(pContext, 1, &viewport);
-  procs->RSSetScissorRects(pContext, 1, &scissor);
+  if (validViewport)
+    procs->RSSetViewports(pContext, 1, &viewport);
+  if (validScissor)
+    procs->RSSetScissorRects(pContext, 1, &scissor);
 }
 
 HRESULT STDMETHODCALLTYPE ID3D11Device_CreateTexture3D(
@@ -800,10 +1082,27 @@ void STDMETHODCALLTYPE ID3D11DeviceContext_ClearRenderTargetView(
         ID3D11RenderTargetView*   pRTV,
   const FLOAT                     pColor[4]) {
   auto procs = getContextProcs(pContext);
-  procs->ClearRenderTargetView(pContext, pRTV, pColor);
+  ID3D11RenderTargetView* msaa = getMSAAObject<ID3D11RenderTargetView>(pRTV);
+  procs->ClearRenderTargetView(pContext, msaa ? msaa : pRTV, pColor);
+  if (msaa)
+    msaa->Release();
 
   if (pRTV)
     updateViewShadowResource(pContext, pRTV);
+}
+
+void STDMETHODCALLTYPE ID3D11DeviceContext_ClearDepthStencilView(
+        ID3D11DeviceContext*      pContext,
+        ID3D11DepthStencilView*   pDSV,
+        UINT                      ClearFlags,
+        FLOAT                     Depth,
+        UINT8                     Stencil) {
+  auto procs = getContextProcs(pContext);
+  ID3D11DepthStencilView* msaa = getMSAAObject<ID3D11DepthStencilView>(pDSV);
+  procs->ClearDepthStencilView(pContext, msaa ? msaa : pDSV,
+    ClearFlags, Depth, Stencil);
+  if (msaa)
+    msaa->Release();
 }
 
 void STDMETHODCALLTYPE ID3D11DeviceContext_ClearUnorderedAccessViewFloat(
@@ -838,6 +1137,9 @@ HRESULT tryCpuCopy(
         ID3D11Resource*           pSrcResource,
         UINT                      SrcSubresource,
   const D3D11_BOX*                pSrcBox) {
+  if (isMutableFontAtlas(pSrcResource))
+    return E_NOTIMPL;
+
   auto procs = getContextProcs(pContext);
   ATFIX_RESOURCE_INFO dstInfo = { };
   getResourceInfo(pDstResource, &dstInfo);
@@ -957,6 +1259,8 @@ void STDMETHODCALLTYPE ID3D11DeviceContext_CopyResource(
         ID3D11Resource*           pSrcResource) {
   auto procs = getContextProcs(pContext);
 
+  resolveIfMSAA(pContext, pSrcResource);
+
   ID3D11Resource* dstShadow = getShadowResource(pDstResource);
 
   bool needsBaseCopy = true;
@@ -999,6 +1303,8 @@ void STDMETHODCALLTYPE ID3D11DeviceContext_CopySubresourceRegion(
         UINT                      SrcSubresource,
   const D3D11_BOX*                pSrcBox) {
   auto procs = getContextProcs(pContext);
+
+  resolveIfMSAA(pContext, pSrcResource);
 
   ID3D11Resource* dstShadow = getShadowResource(pDstResource);
 
@@ -1092,9 +1398,27 @@ void STDMETHODCALLTYPE ID3D11DeviceContext_OMSetRenderTargets(
         ID3D11DepthStencilView*   pDSV) {
   auto procs = getContextProcs(pContext);
   updateRtvShadowResources(pContext);
+  resolveBoundMSAA(pContext);
   getRasterState(pContext)->dirty.store(true, std::memory_order_release);
 
+  ID3D11RenderTargetView* msaaRtv = nullptr;
+  ID3D11DepthStencilView* msaaDsv = nullptr;
+  if (RTVCount == 1 && ppRTVs && ppRTVs[0] && pDSV &&
+      getOrCreateMSAAViews(pContext, ppRTVs[0], pDSV, &msaaRtv, &msaaDsv)) {
+    ID3D11Resource* host = nullptr;
+    ppRTVs[0]->GetResource(&host);
+    if (host) {
+      const MSAAState state = MSAAState::Dirty;
+      host->SetPrivateData(IID_MSAAState, sizeof(state), &state);
+      pContext->SetPrivateDataInterface(IID_MSAABoundHost, host);
+      host->Release();
+    }
+    ppRTVs = &msaaRtv;
+    pDSV = msaaDsv;
+  }
   procs->OMSetRenderTargets(pContext, RTVCount, ppRTVs, pDSV);
+  if (msaaRtv) msaaRtv->Release();
+  if (msaaDsv) msaaDsv->Release();
 }
 
 void STDMETHODCALLTYPE ID3D11DeviceContext_OMSetRenderTargetsAndUnorderedAccessViews(
@@ -1108,10 +1432,28 @@ void STDMETHODCALLTYPE ID3D11DeviceContext_OMSetRenderTargetsAndUnorderedAccessV
   const UINT*                     pUAVClearValues) {
   auto procs = getContextProcs(pContext);
   updateRtvShadowResources(pContext);
+  resolveBoundMSAA(pContext);
   getRasterState(pContext)->dirty.store(true, std::memory_order_release);
 
+  ID3D11RenderTargetView* msaaRtv = nullptr;
+  ID3D11DepthStencilView* msaaDsv = nullptr;
+  if (RTVCount == 1 && ppRTVs && ppRTVs[0] && pDSV && UAVCount == 0 &&
+      getOrCreateMSAAViews(pContext, ppRTVs[0], pDSV, &msaaRtv, &msaaDsv)) {
+    ID3D11Resource* host = nullptr;
+    ppRTVs[0]->GetResource(&host);
+    if (host) {
+      const MSAAState state = MSAAState::Dirty;
+      host->SetPrivateData(IID_MSAAState, sizeof(state), &state);
+      pContext->SetPrivateDataInterface(IID_MSAABoundHost, host);
+      host->Release();
+    }
+    ppRTVs = &msaaRtv;
+    pDSV = msaaDsv;
+  }
   procs->OMSetRenderTargetsAndUnorderedAccessViews(pContext,
     RTVCount, ppRTVs, pDSV, UAVIndex, UAVCount, ppUAVs, pUAVClearValues);
+  if (msaaRtv) msaaRtv->Release();
+  if (msaaDsv) msaaDsv->Release();
 }
 
 void STDMETHODCALLTYPE ID3D11DeviceContext_UpdateSubresource(
@@ -1365,6 +1707,35 @@ void STDMETHODCALLTYPE ID3D11DeviceContext_DrawIndexedInstancedIndirect(
     AlignedByteOffsetForArgs);
 }
 
+void STDMETHODCALLTYPE ID3D11DeviceContext_PSSetShaderResources(
+        ID3D11DeviceContext* pContext, UINT StartSlot, UINT NumViews,
+        ID3D11ShaderResourceView* const* ppShaderResourceViews) {
+  auto procs = getContextProcs(pContext);
+  if (ppShaderResourceViews) {
+    for (UINT i = 0; i < NumViews; i++) {
+      if (!ppShaderResourceViews[i])
+        continue;
+      ID3D11Resource* resource = nullptr;
+      ppShaderResourceViews[i]->GetResource(&resource);
+      if (resource) {
+        resolveIfMSAA(pContext, resource);
+        resource->Release();
+      }
+    }
+  }
+  procs->PSSetShaderResources(pContext, StartSlot, NumViews,
+    ppShaderResourceViews);
+}
+
+HRESULT STDMETHODCALLTYPE ID3D11DeviceContext_FinishCommandList(
+        ID3D11DeviceContext* pContext, BOOL RestoreDeferredContextState,
+        ID3D11CommandList** ppCommandList) {
+  auto procs = getContextProcs(pContext);
+  resolveBoundMSAA(pContext);
+  return procs->FinishCommandList(pContext, RestoreDeferredContextState,
+    ppCommandList);
+}
+
 void STDMETHODCALLTYPE ID3D11DeviceContext_ExecuteCommandList(
         ID3D11DeviceContext* pContext, ID3D11CommandList* pCommandList,
         BOOL RestoreContextState) {
@@ -1406,7 +1777,7 @@ void hookDevice(ID3D11Device* pDevice) {
   if (g_installedHooks & HOOK_DEVICE)
     return;
 
-  log("Hooking device ", pDevice);
+  log("Hooking device ", pDevice, " msaa=", msaaSamples());
 
   DeviceProcs* procs = &g_deviceProcs;
   HOOK_PROC(ID3D11Device, pDevice, procs, 3,  CreateBuffer);
@@ -1435,6 +1806,7 @@ void hookContext(ID3D11DeviceContext* pContext) {
   log("Hooking context ", pContext);
 
   HOOK_PROC(ID3D11DeviceContext, pContext, procs, 50, ClearRenderTargetView);
+  HOOK_PROC(ID3D11DeviceContext, pContext, procs, 53, ClearDepthStencilView);
   HOOK_PROC(ID3D11DeviceContext, pContext, procs, 52, ClearUnorderedAccessViewFloat);
   HOOK_PROC(ID3D11DeviceContext, pContext, procs, 51, ClearUnorderedAccessViewUint);
   HOOK_PROC(ID3D11DeviceContext, pContext, procs, 47, CopyResource);
@@ -1450,6 +1822,8 @@ void hookContext(ID3D11DeviceContext* pContext) {
   HOOK_PROC(ID3D11DeviceContext, pContext, procs, 40, DrawInstancedIndirect);
   HOOK_PROC(ID3D11DeviceContext, pContext, procs, 39, DrawIndexedInstancedIndirect);
   HOOK_PROC(ID3D11DeviceContext, pContext, procs, 58, ExecuteCommandList);
+  HOOK_PROC(ID3D11DeviceContext, pContext, procs, 114, FinishCommandList);
+  HOOK_PROC(ID3D11DeviceContext, pContext, procs, 8,  PSSetShaderResources);
   HOOK_PROC(ID3D11DeviceContext, pContext, procs, 14, Map);
   HOOK_PROC(ID3D11DeviceContext, pContext, procs, 15, Unmap);
   HOOK_PROC(ID3D11DeviceContext, pContext, procs, 44, RSSetViewports);

@@ -2,7 +2,7 @@
 
 ## Project scope
 
-This repository builds a 64-bit `d3d11.dll` and a companion 32-bit `winmm.dll` settings-launcher proxy for the English Steam releases of Atelier Rorona DX, Atelier Totori DX, and Atelier Meruru DX. Keep the implementation Arland-specific. Do not add support code for newer Atelier games; direct those users to upstream `atelier-sync-fix` instead.
+This repository releases a 64-bit `d3d11.dll` and a 32-bit settings-launcher `msimg32.dll` for the English Steam releases of Atelier Rorona DX, Atelier Totori DX, and Atelier Meruru DX. Keep the released implementation Arland-specific. Atelier Ayesha support is under investigation but must remain disabled until its atlas-only path is validated. Do not add support code for newer Atelier games; direct those users to upstream `atelier-sync-fix` instead.
 
 The current tree contains:
 
@@ -11,7 +11,8 @@ The current tree contains:
 - successful `.PSSG` path-validation caching for all three Arland games;
 - a queue-scoped font-atlas read cache for all three games.
 - old-Arland render-target and viewport/scissor correction;
-- signature-gated launcher mode injection that always exposes the supported resolutions.
+- old-Arland game-side 1440p/4K render-target and raster correction.
+- signature-gated launcher mode injection and an optional INI resolution override.
 
 Consult `TODO.md` for work in progress and features under consideration.
 
@@ -19,35 +20,35 @@ Consult `TODO.md` for work in progress and features under consideration.
 
 - `src/` contains project C++ source, headers, and module-definition files.
 - `vendor/minhook/` contains the unmodified vendored MinHook dependency and its license.
-- `.github/workflows/build.yml` builds the 64-bit game DLL and 32-bit launcher DLL.
+- `.github/workflows/build.yml` builds and publishes both Windows DLLs.
 - `README.md` is the user-facing overview and installation guide.
 - `TECHNICAL.md` documents implementation details, evidence, and provenance.
 - `TODO.md` is the only roadmap and work-in-progress document.
 
-Keep the root minimal. Build output belongs in an ignored build directory and must not be committed.
+Keep the root minimal. Build output belongs below ignored `builds/` and must not be committed.
 
 ## Build
 
 Windows:
 
 ```powershell
-meson setup build64 --buildtype release
-meson compile -C build64
-# Run the following from an x86 Native Tools shell:
-meson setup build32 --buildtype release
-meson compile -C build32
+meson setup builds/release-x64 --buildtype release
+meson compile -C builds/release-x64
+# Run from an x86 Native Tools shell:
+meson setup builds/release-x86 --buildtype release
+meson compile -C builds/release-x86
 ```
 
 Linux cross-build:
 
 ```sh
-meson setup build64 --cross-file build-win64.txt --buildtype release
-ninja -C build64
-meson setup build32 --cross-file build-win32.txt --buildtype release
-ninja -C build32
+meson setup builds/release-x64 --cross-file build-win64.txt --buildtype release
+ninja -C builds/release-x64
+meson setup builds/release-x86 --cross-file build-win32.txt --buildtype release
+ninja -C builds/release-x86
 ```
 
-The expected outputs are `build64/d3d11.dll` and `build32/winmm.dll`. Verify that `d3d11.dll` exports `D3D11CreateDevice` at ordinal 22 and `D3D11CreateDeviceAndSwapChain` at ordinal 23, and that `winmm.dll` exports `PlaySoundW`.
+The expected outputs are `builds/release-x64/d3d11.dll` and `builds/release-x86/msimg32.dll`. Verify that the game DLL exports `D3D11CreateDevice` at ordinal 22 and `D3D11CreateDeviceAndSwapChain` at ordinal 23, and that the launcher DLL exports `AlphaBlend` and `TransparentBlt`.
 
 ## Implementation rules
 
@@ -59,7 +60,7 @@ The expected outputs are `build64/d3d11.dll` and `build32/winmm.dll`. Verify tha
 - Redirect staging shadows only on the immediate context. Flush before GPU consumers and before executing deferred command lists.
 - Preserve per-resource/per-subresource lifetime tracking and COM reference ownership.
 - Gate experimental behavior until it has passed clean-text, repeated-menu, and multiple-game validation.
-- Keep launcher modifications in memory and signature-gated. Never modify or redistribute a Koei Tecmo executable.
+- Keep launcher mutations in memory and signature-gated; never modify or redistribute Koei Tecmo executables.
 
 ## Attribution and documentation
 

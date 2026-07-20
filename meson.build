@@ -1,4 +1,4 @@
-project('atelier-arland-fixes', ['c', 'cpp'], version : '0.1.0',
+project('atelier-arland-fixes', ['c', 'cpp'], version : '0.2.0',
   default_options : ['cpp_std=c++17', 'buildtype=release', 'strip=true'])
 
 cpp = meson.get_compiler('cpp')
@@ -6,9 +6,9 @@ common_cpp_args = ['-DNOMINMAX', '-D_WIN32_WINNT=0x0a00']
 common_link_args = cpp.get_id() == 'gcc' ? ['-static', '-static-libgcc', '-static-libstdc++', '-Wl,--strip-all'] : []
 
 if host_machine.cpu_family() == 'x86'
-  shared_library('winmm', 'src/launcher_proxy.cpp',
+  shared_library('msimg32', 'src/launcher_proxy.cpp',
     name_prefix : '',
-    vs_module_defs : 'src/winmm.def',
+    vs_module_defs : 'src/msimg32.def',
     cpp_args : common_cpp_args,
     link_args : common_link_args,
     install : true)

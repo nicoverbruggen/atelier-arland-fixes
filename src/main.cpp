@@ -18,7 +18,7 @@
 
 namespace atfix {
 
-Log log("atfix.log");
+Log log("arland-fix.log");
 
 /** Load system D3D11 DLL and return entry points */
 using PFN_D3D11CreateDevice = HRESULT (__stdcall *) (
@@ -164,6 +164,12 @@ DLLEXPORT HRESULT __stdcall D3D11CreateDeviceAndSwapChain(
 
   ID3D11Device* device = nullptr;
   ID3D11DeviceContext* context = nullptr;
+  DXGI_SWAP_CHAIN_DESC swapChainDesc = { };
+  if (pSwapChainDesc && arland::initializeGameHooks()) {
+    swapChainDesc = *pSwapChainDesc;
+    if (atfix::applyResolutionOverride(&swapChainDesc))
+      pSwapChainDesc = &swapChainDesc;
+  }
 
   HRESULT hr = (*proc.D3D11CreateDeviceAndSwapChain)(pAdapter, DriverType, Software,
     Flags, pFeatureLevels, FeatureLevels, SDKVersion, pSwapChainDesc, ppSwapChain,

@@ -4,6 +4,7 @@
 
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
@@ -14,6 +15,11 @@
 #include <vector>
 
 #include "../vendor/minhook/include/MinHook.h"
+#include "log.h"
+
+namespace atfix {
+extern Log log;
+}
 
 namespace {
 
@@ -73,6 +79,10 @@ std::mutex atlasMutex;
 std::unordered_map<uintptr_t, AtlasRead> atlasReads;
 std::atomic<uint32_t> atlasDrainDepth = { 0 };
 std::atomic<bool> atlasCacheActive = { false };
+std::atomic<uint64_t> pathCacheHits = { 0 };
+std::atomic<uint64_t> pathRealChecks = { 0 };
+std::atomic<uint64_t> atlasCacheHits = { 0 };
+std::atomic<uint64_t> atlasRealReads = { 0 };
 thread_local uint32_t renderTextDepth = 0;
 thread_local std::vector<uintptr_t> syntheticAtlasLocks;
 
@@ -116,6 +126,8 @@ const char* pssgPath(const void* stringObject) {
   return extension && !_stricmp(extension, ".PSSG") ? path : nullptr;
 }
 
+bool menuStatsEnabled();
+
 bool cachedPathCheck(void* context, void* pathString) {
   const char* path = pssgPath(pathString);
   if (!path)
@@ -123,9 +135,14 @@ bool cachedPathCheck(void* context, void* pathString) {
   const std::string key(path);
   {
     std::lock_guard lock(cacheMutex);
-    if (successfulPaths.find(key) != successfulPaths.end())
+    if (successfulPaths.find(key) != successfulPaths.end()) {
+      if (menuStatsEnabled())
+        pathCacheHits.fetch_add(1, std::memory_order_relaxed);
       return true;
+    }
   }
+  if (menuStatsEnabled())
+    pathRealChecks.fetch_add(1, std::memory_order_relaxed);
   if (!originalPathCheck(context, pathString))
     return false;
   std::lock_guard lock(cacheMutex);
@@ -141,6 +158,14 @@ bool atlasCacheEnabled() {
   return enabled;
 }
 
+bool menuStatsEnabled() {
+  static const bool enabled = [] {
+    const char* value = std::getenv("ARLAND_MENU_STATS");
+    return value && value[0] != '0';
+  }();
+  return enabled;
+}
+
 void cachedQueueDrain(void* manager) {
   const bool outermost =
     atlasDrainDepth.fetch_add(1, std::memory_order_acq_rel) == 0;
@@ -150,12 +175,32 @@ void cachedQueueDrain(void* manager) {
     atlasCacheActive.store(true, std::memory_order_release);
   }
 
+  const bool stats = outermost && menuStatsEnabled();
+  const uint64_t pathHitsBefore = stats
+    ? pathCacheHits.load(std::memory_order_relaxed) : 0;
+  const uint64_t pathChecksBefore = stats
+    ? pathRealChecks.load(std::memory_order_relaxed) : 0;
+  const uint64_t atlasHitsBefore = stats
+    ? atlasCacheHits.load(std::memory_order_relaxed) : 0;
+  const uint64_t atlasReadsBefore = stats
+    ? atlasRealReads.load(std::memory_order_relaxed) : 0;
+  const auto started = std::chrono::steady_clock::now();
+
   originalQueueDrain(manager);
 
   if (atlasDrainDepth.fetch_sub(1, std::memory_order_acq_rel) == 1) {
     atlasCacheActive.store(false, std::memory_order_release);
     std::lock_guard lock(atlasMutex);
     atlasReads.clear();
+    if (stats) {
+      const auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(
+        std::chrono::steady_clock::now() - started).count();
+      atfix::log("MENU drain us=", elapsed,
+        " pssg_cached=", pathCacheHits.load(std::memory_order_relaxed) - pathHitsBefore,
+        " pssg_real=", pathRealChecks.load(std::memory_order_relaxed) - pathChecksBefore,
+        " atlas_cached=", atlasCacheHits.load(std::memory_order_relaxed) - atlasHitsBefore,
+        " atlas_real=", atlasRealReads.load(std::memory_order_relaxed) - atlasReadsBefore);
+    }
   }
 }
 
@@ -184,12 +229,16 @@ uintptr_t cachedAtlasLock(uintptr_t texture, uintptr_t output,
     std::lock_guard lock(atlasMutex);
     const auto found = atlasReads.find(texture);
     if (found != atlasReads.end() && !found->second.bytes.empty()) {
+      if (menuStatsEnabled())
+        atlasCacheHits.fetch_add(1, std::memory_order_relaxed);
       *reinterpret_cast<void**>(output) = found->second.bytes.data();
       syntheticAtlasLocks.push_back(texture);
       return found->second.pitch;
     }
   }
 
+  if (candidate && menuStatsEnabled())
+    atlasRealReads.fetch_add(1, std::memory_order_relaxed);
   const uintptr_t pitch = originalAtlasLock(texture, output, level, face);
   if (candidate && pitch && pitch <= 16384) {
     const void* mapped = *reinterpret_cast<void* const*>(output);
@@ -342,6 +391,7 @@ void detectAndInstallGameHooks() {
     if (_stricmp(baseName(imagePath), game.executable) || textSize != game.textSize)
       continue;
     supportedGame = true;
+    atfix::log("Recognized menu-fix executable ", game.executable);
     const char* enabled = std::getenv("ARLAND_MENU_FIX");
     if (enabled && enabled[0] == '0')
       return;
@@ -350,10 +400,15 @@ void detectAndInstallGameHooks() {
       0x40, game.pushedRegister, 0x48, 0x81, 0xec, 0xc0, 0x00, 0x00,
       0x00, 0x48, 0xc7, 0x44, 0x24, 0x20, 0xfe, 0xff, 0xff, 0xff,
     };
+    bool pathInstalled = false;
     if (matches(target, expected))
-      installDetour(target, reinterpret_cast<void*>(&cachedPathCheck),
+      pathInstalled = installDetour(target, reinterpret_cast<void*>(&cachedPathCheck),
         expected.size(), reinterpret_cast<void**>(&originalPathCheck));
-    installAtlasCache(reinterpret_cast<BYTE*>(module), game);
+    const bool atlasInstalled = installAtlasCache(
+      reinterpret_cast<BYTE*>(module), game);
+    atfix::log("Menu hooks pssg=", pathInstalled,
+      " atlas=", atlasInstalled,
+      " stats=", menuStatsEnabled());
     return;
   }
 }

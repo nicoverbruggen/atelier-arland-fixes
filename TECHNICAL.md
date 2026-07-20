@@ -7,7 +7,7 @@ This repository combines established synchronization work with new Arland-specif
 - Philip Rebohle created `atelier-sync-fix` in 2022. Its central technique—replacing eligible GPU-to-CPU copies with copies through CPU-accessible shadow resources—is the foundation of `src/sync_fix.cpp`. The proxy loading, MinHook-based native D3D11 interception, staging-resource access correction, and direct-source unmap fixes also originate there.
 - TellowKrinkle identified that direct game writes through `Map` and `Unmap` must update the shadow and implemented that correction for Atelier Ayesha in commit `98b5c9b`. That implementation stored one global last mapping and uploaded the complete resource on every `Unmap`.
 - This project refines the Map/Unmap solution for the Arland workload: mappings are keyed by resource and subresource, references are lifetime-safe, dirty shadows are coalesced, uploads are deferred until the GPU can observe the resource, and deferred contexts cannot perform invalid staging reads. This refinement fixed the corrupted-text case encountered during the investigation while avoiding thousands of redundant atlas uploads.
-- TellowKrinkle's rendering fork also established the old-Arland render-target and viewport/scissor correction ported into this project. The implementation here retains only that resolution logic and excludes the fork's shader replacement, MSAA, anisotropic filtering, and LOD-bias features.
+- TellowKrinkle's rendering fork also established the old-Arland render-target and viewport/scissor correction ported into this project. The released configuration retains that resolution logic while anti-aliasing remains disabled by default; shader replacement, anisotropic filtering, and LOD-bias features are not included.
 - Nico, the author of this repository, led the reverse-engineering and runtime investigation of the Arland English menu slowdown. The successful `.PSSG` validation cache and the queue-scoped font-atlas read cache are results of that work; they are not features of the original `atelier-sync-fix`.
 - MinHook is an independent library by Tsuda Kageyu and contributors, bundled unchanged under `vendor/minhook`.
 
@@ -35,6 +35,8 @@ The bookkeeping is deliberately stricter than the earlier single-map implementat
 - a shadow that is still mapped remains pending rather than being uploaded prematurely.
 
 The game can therefore update mutable atlases without producing stale CPU reads, while the GPU sees the newest completed shadow contents before rendering.
+
+Native Windows exposed one additional ordering hazard. The games can populate a dynamic 512×512 font atlas through deferred command submission before the synchronization layer creates its CPU shadow. Treating that atlas as an ordinary CPU-copy source can snapshot stale contents and then preserve them, producing consistently scrambled glyphs even though the later Map/Unmap tracking is correct. The fix identifies dynamic 512×512 texture sources and leaves those copies on the native D3D11 path. The queue-scoped atlas-read cache still removes thousands of redundant reads at the game-code layer, so correctness does not require sacrificing the dominant menu optimization.
 
 ## Repeated PSSG validation
 
@@ -71,21 +73,27 @@ A process-lifetime snapshot was rejected because the atlases are mutable. Cleari
 
 ## High-resolution rendering
 
-The Arland settings launcher contains canonical 1280×720, 1366×768, 1600×900, 1920×1080, and 3840×2160 entries, then filters and merges them with modes reported by DXGI. It omits 2560×1440 and can hide 3840×2160 on a lower-resolution desktop even though the games accept both dimensions in `ArlandDX_Settings.ini`.
+The games accept high render dimensions, but the settings launcher filters its lists through Windows display-mode reporting. DPI virtualization and the current desktop mode can therefore hide a resolution that the game and display can use. The launcher stores independent fullscreen and windowed arrays, so both must be corrected. The 32-bit `msimg32.dll` proxy is loaded by the shared settings launcher, verifies the exact process image, allocator, and code signatures, expands both mode arrays with the launcher's own allocator, and appends missing canonical modes. It guarantees that 1920×1080, 2560×1440, and 3840×2160 remain available in both states; forcing 1920×1080 is specifically useful on Steam Deck and other lower-resolution, high-DPI handhelds that would otherwise hide it, as well as for docked use. The proxy forwards the launchers' two imported image functions, `AlphaBlend` and `TransparentBlt`, to the system MSIMG32 library. MSIMG32 is deliberately used instead of WinMM because native DirectX initialization can dynamically depend on WinMM exports beyond the two functions directly imported by the launcher.
 
-The companion 32-bit `winmm.dll` is loaded only by `ArlandDXEnv.exe`. After verifying the launcher filename, PE architecture, image size, complete canonical table, ASLR-adjusted table operands, and mode-builder prologue, it hooks the builder in memory. The hook appends any missing canonical modes, including 2560×1440 and 3840×2160, removes duplicates, and sorts the result. It also expands the launcher's two mode-array allocations from five fallback entries to six. The launcher executable is never edited.
+The relevant launcher binaries are structurally identical across the trilogy. Every `ArlandDXEnv.exe` has image size `0x317000`, `.text` SHA-256 `32c441b19f242a249145215eb9b4be315095563b839f23762c18519f8fedc4cc`, and `.data` SHA-256 `eb3bc4cdce506b628e36b6d5dac94951142ca40e90af8f38ab508d72759c0fe2`. Their complete files differ only in sections containing game-specific material outside the patched paths:
 
-All three tested Steam launchers share the relevant code and table layout, although their complete files have different hashes:
+| Game | `ArlandDXEnv.exe` SHA-256 |
+|---|---|
+| Rorona DX | `167e1c141d0faa03e7baca0034a672f6d8023b446473a6daad6c10b71d5b9667` |
+| Totori DX | `c251c7e747e027f75d6e37e4e317cfb599b0db378db9e27ba09043619e02c226` |
+| Meruru DX | `fa64db36c92c34429c6c2709ab2126c1ce48f839d9eddd2de1a992564182c732` |
 
-| Game launcher | Original SHA-256 | Resolution table file offset |
-|---|---|---:|
-| Rorona DX | `167e1c141d0faa03e7baca0034a672f6d8023b446473a6daad6c10b71d5b9667` | `0x1a0888` |
-| Totori DX | `c251c7e747e027f75d6e37e4e317cfb599b0db378db9e27ba09043619e02c226` | `0x1a0888` |
-| Meruru DX | `fa64db36c92c34429c6c2709ab2126c1ce48f839d9eddd2de1a992564182c732` | `0x1a0888` |
+The three outer `ArlandDXLauncher.exe` files likewise have identical `.text` SHA-256 `58ba7aee62d924d35ca160829766bc8775125475894473bcbadf92d962fcc522` and import the same `AlphaBlend` and `TransparentBlt` entry points. The proxy remains forwarding-only in that process and installs resolution hooks only in `ArlandDXEnv.exe`.
+
+The 64-bit game DLL provides a second, launcher-independent path. Blank `Width` and `Height` keys are created in `arland-fix.ini` by default. When both are changed to valid dimensions, the DLL replaces the swap-chain request, clears the inherited refresh-rate constraint, and resizes the matching first main depth target before applying the ordinary auxiliary-target and raster corrections. Missing, blank, incomplete, or out-of-range values leave the launcher's selection unchanged.
 
 Selecting a larger backbuffer is not sufficient by itself. The old render path creates the main depth target at the requested dimensions but later creates auxiliary render/depth targets and submits viewport/scissor state hard-coded to 1920×1080. It also records rendering through a deferred D3D11 context. Correcting only the immediate context therefore produces genuinely large targets with a 1920×1080 image confined to their upper-left corner.
 
 The D3D11 layer learns the larger main-target size and resizes only later exact-1920×1080 render/depth targets created without initial data. Raster state is tracked independently for the immediate and deferred context paths. When an affected target is bound, exact full-screen 1920×1080 viewport and scissor state is replaced with that target's dimensions before drawing on the same context. This produces direct native 2560×1440 and 3840×2160 rendering; neither mode is a 1080p upscale, and 1440p is not implemented by rendering at 4K and downsampling. Ordinary 1920×1080 and lower-resolution operation remains unchanged.
+
+One auxiliary dialogue effect remains resolution-bound: a blurred snapshot of the 3D scene is still composed into a 1920×1080 region in the upper-left at higher output resolutions. Portraits and dialogue UI fill the output, but the blur leaves black space at the right and bottom. This is a known limitation of the current resolution correction.
+
+The D3D11 layer also contains an optional multisample render-target and resolve path adapted from TellowKrinkle's rendering work. On first launch it creates `arland-fix.ini` with `MSAA=1`, `Width=`, and `Height=` under `[Rendering]` if the file is absent. The path is inactive unless the MSAA value is changed to `2`, `4`, or `8`, or the higher-priority `ARLAND_MSAA` environment variable requests one of those values; absent values and values below two use the original single-sample path. Unsupported requests fall back through lower sample counts. The game continues to own single-sample host resources, while matching multisample color and depth targets are attached as private data and resolved before reads, copies, render-target changes, shader-resource binding, and deferred command-list completion. This feature has received less cross-game coverage than the synchronization and menu fixes and therefore remains opt-in.
 
 ## Hook boundaries
 
