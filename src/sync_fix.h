@@ -10,6 +10,7 @@ namespace atfix {
 void hookDevice(ID3D11Device* pDevice);
 void hookContext(ID3D11DeviceContext* pContext);
 bool applyResolutionOverride(DXGI_SWAP_CHAIN_DESC* pDesc);
+void traceTransitionD3DFrame(uint64_t intervalMicros);
 
 /* lives in main.cpp */
 extern Log log;

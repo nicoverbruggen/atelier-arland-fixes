@@ -6,6 +6,7 @@
 #include <cstring>
 #include <map>
 #include <set>
+#include <tuple>
 
 #include "sync_fix.h"
 #include "util.h"
@@ -118,6 +119,105 @@ constexpr uint32_t HOOK_IMM_CTX = (1u << 1);
 constexpr uint32_t HOOK_DEF_CTX = (1u << 2);
 
 uint32_t      g_installedHooks = 0u;
+
+struct TransitionCounter {
+  std::atomic<uint64_t> calls = 0;
+  std::atomic<uint64_t> nanos = 0;
+};
+
+TransitionCounter g_transitionCreate;
+TransitionCounter g_transitionMap;
+TransitionCounter g_transitionCopy;
+TransitionCounter g_transitionUpdate;
+TransitionCounter g_transitionCommands;
+std::array<std::array<TransitionCounter, 6>, 3> g_transitionMapKinds;
+
+struct ReadMapKey {
+  uintptr_t caller;
+  uint32_t dimension;
+  uint32_t format;
+  uint32_t width;
+  uint32_t height;
+  uint32_t usage;
+  uint32_t bindFlags;
+  uint32_t cpuFlags;
+
+  bool operator<(const ReadMapKey& other) const {
+    return std::tie(caller, dimension, format, width, height, usage,
+      bindFlags, cpuFlags) <
+      std::tie(other.caller, other.dimension, other.format, other.width,
+        other.height, other.usage, other.bindFlags, other.cpuFlags);
+  }
+};
+
+struct ReadMapStats {
+  uint64_t calls = 0;
+  uint64_t nanos = 0;
+  std::set<uintptr_t> resources;
+};
+
+mutex g_transitionReadMapMutex;
+std::map<ReadMapKey, ReadMapStats> g_transitionReadMaps;
+
+bool transitionTraceEnabled() {
+  static const bool enabled = [] {
+    const char* value = std::getenv("ARLAND_MENU_TRANSITION_TRACE");
+    return value && value[0] != '0';
+  }();
+  return enabled;
+}
+
+class TransitionTimer {
+public:
+  explicit TransitionTimer(TransitionCounter& counter)
+  : m_counter(transitionTraceEnabled() ? &counter : nullptr) {
+    if (m_counter) {
+      m_counter->calls.fetch_add(1, std::memory_order_relaxed);
+      m_started = std::chrono::steady_clock::now();
+    }
+  }
+
+  ~TransitionTimer() {
+    if (m_counter) {
+      const auto nanos = std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::steady_clock::now() - m_started).count();
+      m_counter->nanos.fetch_add(uint64_t(nanos), std::memory_order_relaxed);
+    }
+  }
+
+private:
+  TransitionCounter* m_counter;
+  std::chrono::steady_clock::time_point m_started;
+};
+
+class TransitionMapKindTimer {
+public:
+  explicit TransitionMapKindTimer(D3D11_MAP mapType)
+  : m_mapType(mapType >= D3D11_MAP_READ && mapType <= D3D11_MAP_WRITE_NO_OVERWRITE
+      ? unsigned(mapType) : 0),
+    m_enabled(transitionTraceEnabled()) {
+    if (m_enabled)
+      m_started = std::chrono::steady_clock::now();
+  }
+
+  void setBranch(unsigned branch) { m_branch = branch; }
+
+  ~TransitionMapKindTimer() {
+    if (!m_enabled || m_branch >= g_transitionMapKinds.size())
+      return;
+    auto& counter = g_transitionMapKinds[m_branch][m_mapType];
+    counter.calls.fetch_add(1, std::memory_order_relaxed);
+    const auto nanos = std::chrono::duration_cast<std::chrono::nanoseconds>(
+      std::chrono::steady_clock::now() - m_started).count();
+    counter.nanos.fetch_add(uint64_t(nanos), std::memory_order_relaxed);
+  }
+
+private:
+  unsigned m_branch = 0;
+  unsigned m_mapType = 0;
+  bool m_enabled = false;
+  std::chrono::steady_clock::time_point m_started;
+};
 
 // Resolution behavior ported from TellowKrinkle's atelier-sync-fix rendering
 // fork and adapted to this project's vtable-hook architecture.
@@ -764,6 +864,24 @@ bool getResourceInfo(
   }
 }
 
+void recordTransitionReadMap(ID3D11Resource* resource, uintptr_t caller,
+                             uint64_t nanos) {
+  if (!transitionTraceEnabled() || !resource)
+    return;
+  ATFIX_RESOURCE_INFO info = { };
+  if (!getResourceInfo(resource, &info))
+    return;
+  ReadMapKey key = {
+    caller, uint32_t(info.Dim), uint32_t(info.Format), info.Width, info.Height,
+    uint32_t(info.Usage), info.BindFlags, info.CPUFlags,
+  };
+  std::lock_guard lock(g_transitionReadMapMutex);
+  auto& stats = g_transitionReadMaps[key];
+  stats.calls++;
+  stats.nanos += nanos;
+  stats.resources.insert(reinterpret_cast<uintptr_t>(resource));
+}
+
 D3D11_BOX getResourceBox(
   const ATFIX_RESOURCE_INFO*      pInfo,
         UINT                      Subresource) {
@@ -1080,6 +1198,7 @@ HRESULT STDMETHODCALLTYPE ID3D11Device_CreateBuffer(
   const D3D11_BUFFER_DESC*        pDesc,
   const D3D11_SUBRESOURCE_DATA*   pData,
         ID3D11Buffer**            ppBuffer) {
+  TransitionTimer transitionTimer(g_transitionCreate);
   auto procs = getDeviceProcs(pDevice);
   D3D11_BUFFER_DESC desc;
   std::array<float, 12> scaledFullscreenQuad = { };
@@ -1157,6 +1276,7 @@ HRESULT STDMETHODCALLTYPE ID3D11Device_CreateTexture1D(
   const D3D11_TEXTURE1D_DESC*     pDesc,
   const D3D11_SUBRESOURCE_DATA*   pData,
         ID3D11Texture1D**         ppTexture) {
+  TransitionTimer transitionTimer(g_transitionCreate);
   auto procs = getDeviceProcs(pDevice);
   D3D11_TEXTURE1D_DESC desc;
 
@@ -1174,6 +1294,7 @@ HRESULT STDMETHODCALLTYPE ID3D11Device_CreateTexture2D(
   const D3D11_TEXTURE2D_DESC*     pDesc,
   const D3D11_SUBRESOURCE_DATA*   pData,
         ID3D11Texture2D**         ppTexture) {
+  TransitionTimer transitionTimer(g_transitionCreate);
   auto procs = getDeviceProcs(pDevice);
   D3D11_TEXTURE2D_DESC desc;
   D3D11_TEXTURE2D_DESC originalDesc = { };
@@ -1398,6 +1519,7 @@ HRESULT STDMETHODCALLTYPE ID3D11Device_CreateTexture3D(
   const D3D11_TEXTURE3D_DESC*     pDesc,
   const D3D11_SUBRESOURCE_DATA*   pData,
         ID3D11Texture3D**         ppTexture) {
+  TransitionTimer transitionTimer(g_transitionCreate);
   auto procs = getDeviceProcs(pDevice);
   D3D11_TEXTURE3D_DESC desc;
 
@@ -1590,6 +1712,7 @@ void STDMETHODCALLTYPE ID3D11DeviceContext_CopyResource(
         ID3D11DeviceContext*      pContext,
         ID3D11Resource*           pDstResource,
         ID3D11Resource*           pSrcResource) {
+  TransitionTimer transitionTimer(g_transitionCopy);
   auto procs = getContextProcs(pContext);
 
   traceResolutionCopy("resource", pContext, pDstResource, pSrcResource);
@@ -1637,6 +1760,7 @@ void STDMETHODCALLTYPE ID3D11DeviceContext_CopySubresourceRegion(
         ID3D11Resource*           pSrcResource,
         UINT                      SrcSubresource,
   const D3D11_BOX*                pSrcBox) {
+  TransitionTimer transitionTimer(g_transitionCopy);
   auto procs = getContextProcs(pContext);
 
   D3D11_BOX scaledBox = { };
@@ -1830,6 +1954,7 @@ void STDMETHODCALLTYPE ID3D11DeviceContext_UpdateSubresource(
   const void*                     pData,
         UINT                      RowPitch,
         UINT                      SlicePitch) {
+  TransitionTimer transitionTimer(g_transitionUpdate);
   auto procs = getContextProcs(pContext);
 
   if (!pBox && Subresource == 0)
@@ -1957,8 +2082,13 @@ HRESULT STDMETHODCALLTYPE ID3D11DeviceContext_Map(
         D3D11_MAP                  MapType,
         UINT                       MapFlags,
         D3D11_MAPPED_SUBRESOURCE*  pMappedResource) {
+  TransitionTimer transitionTimer(g_transitionMap);
+  TransitionMapKindTimer mapKindTimer(MapType);
+  const uintptr_t caller = transitionTraceEnabled()
+    ? reinterpret_cast<uintptr_t>(__builtin_return_address(0)) : 0;
   auto procs = getContextProcs(pContext);
   if (!pResource || !isImmediatecontext(pContext)) {
+    mapKindTimer.setBranch(0);
     const HRESULT hr = procs->Map(
       pContext, pResource, Subresource, MapType, MapFlags, pMappedResource);
     if (SUCCEEDED(hr))
@@ -1968,12 +2098,24 @@ HRESULT STDMETHODCALLTYPE ID3D11DeviceContext_Map(
 
   ID3D11Resource* shadow = getShadowResource(pResource);
   if (!shadow) {
+    mapKindTimer.setBranch(1);
+    const auto directStarted = MapType == D3D11_MAP_READ &&
+        transitionTraceEnabled()
+      ? std::chrono::steady_clock::now()
+      : std::chrono::steady_clock::time_point{};
     const HRESULT hr = procs->Map(
       pContext, pResource, Subresource, MapType, MapFlags, pMappedResource);
+    if (directStarted != std::chrono::steady_clock::time_point{}) {
+      const auto nanos = std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::steady_clock::now() - directStarted).count();
+      recordTransitionReadMap(pResource, caller, uint64_t(nanos));
+    }
     if (SUCCEEDED(hr))
       trackCompositeMap(pResource, Subresource, pMappedResource);
     return hr;
   }
+
+  mapKindTimer.setBranch(2);
 
   const HRESULT hr = procs->Map(pContext, shadow, Subresource,
     D3D11_MAP_READ_WRITE, MapFlags, pMappedResource);
@@ -2433,6 +2575,7 @@ void STDMETHODCALLTYPE ID3D11DeviceContext_PSSetShaderResources(
 HRESULT STDMETHODCALLTYPE ID3D11DeviceContext_FinishCommandList(
         ID3D11DeviceContext* pContext, BOOL RestoreDeferredContextState,
         ID3D11CommandList** ppCommandList) {
+  TransitionTimer transitionTimer(g_transitionCommands);
   auto procs = getContextProcs(pContext);
   resolveBoundMSAA(pContext);
   return procs->FinishCommandList(pContext, RestoreDeferredContextState,
@@ -2442,6 +2585,7 @@ HRESULT STDMETHODCALLTYPE ID3D11DeviceContext_FinishCommandList(
 void STDMETHODCALLTYPE ID3D11DeviceContext_ExecuteCommandList(
         ID3D11DeviceContext* pContext, ID3D11CommandList* pCommandList,
         BOOL RestoreContextState) {
+  TransitionTimer transitionTimer(g_transitionCommands);
   auto procs = getContextProcs(pContext);
   flushDirtyShadows(pContext);
   procs->ExecuteCommandList(pContext, pCommandList, RestoreContextState);
@@ -2542,6 +2686,61 @@ void hookContext(ID3D11DeviceContext* pContext) {
   /* Immediate context and deferred context methods may share code */
   if (flag & HOOK_IMM_CTX)
     g_defContextProcs = g_immContextProcs;
+}
+
+void traceTransitionD3DFrame(uint64_t intervalMicros) {
+  const auto take = [](TransitionCounter& counter) {
+    return std::array<uint64_t, 2> {
+      counter.calls.exchange(0, std::memory_order_acq_rel),
+      counter.nanos.exchange(0, std::memory_order_acq_rel) / 1000,
+    };
+  };
+  const auto create = take(g_transitionCreate);
+  const auto map = take(g_transitionMap);
+  const auto copy = take(g_transitionCopy);
+  const auto update = take(g_transitionUpdate);
+  const auto commands = take(g_transitionCommands);
+  std::array<std::array<std::array<uint64_t, 2>, 6>, 3> mapKinds = { };
+  for (size_t branch = 0; branch < mapKinds.size(); branch++)
+    for (size_t type = 0; type < mapKinds[branch].size(); type++)
+      mapKinds[branch][type] = take(g_transitionMapKinds[branch][type]);
+  std::map<ReadMapKey, ReadMapStats> readMaps;
+  {
+    std::lock_guard lock(g_transitionReadMapMutex);
+    readMaps.swap(g_transitionReadMaps);
+  }
+  if (!transitionTraceEnabled() || intervalMicros < 15000)
+    return;
+  log("TRANSITION d3d interval_us=", intervalMicros,
+    " create_calls=", create[0], " create_us=", create[1],
+    " map_calls=", map[0], " map_us=", map[1],
+    " copy_calls=", copy[0], " copy_us=", copy[1],
+    " update_calls=", update[0], " update_us=", update[1],
+    " command_calls=", commands[0], " command_us=", commands[1]);
+  static const std::array<const char*, 3> branches = {
+    "other-context", "direct", "shadow",
+  };
+  for (size_t branch = 0; branch < mapKinds.size(); branch++) {
+    for (size_t type = 0; type < mapKinds[branch].size(); type++) {
+      const auto& bucket = mapKinds[branch][type];
+      if (bucket[0])
+        log("TRANSITION map-kind interval_us=", intervalMicros,
+          " branch=", branches[branch], " type=", type,
+          " calls=", bucket[0], " us=", bucket[1]);
+    }
+  }
+  const uintptr_t module = reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));
+  for (const auto& [key, stats] : readMaps) {
+    log("TRANSITION read-map interval_us=", intervalMicros,
+      " caller_rva=0x", std::hex,
+      module && key.caller >= module ? key.caller - module : key.caller,
+      std::dec, " dim=", key.dimension, " format=", key.format,
+      " size=", key.width, "x", key.height,
+      " usage=", key.usage, " bind=0x", std::hex, key.bindFlags,
+      " cpu=0x", key.cpuFlags, std::dec,
+      " calls=", stats.calls, " resources=", stats.resources.size(),
+      " api_us=", stats.nanos / 1000);
+  }
 }
 
 }

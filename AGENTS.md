@@ -9,7 +9,7 @@ The current tree contains:
 - D3D11 CPU shadow-copy synchronization;
 - coherent Map/Unmap handling with deferred shadow uploads;
 - successful `.PSSG` path-validation caching for all three Arland games;
-- a queue-scoped font-atlas read cache for all three games.
+- a queue-scoped font-atlas read cache for all three games, extended to the complete menu-construction frame in Rorona;
 - old-Arland render-target and viewport/scissor correction;
 - old-Arland game-side 1440p/4K render-target and raster correction.
 - signature-gated launcher mode injection and an optional INI resolution override.
@@ -55,7 +55,7 @@ The expected outputs are `builds/release-x64/d3d11.dll` and `builds/release-x86/
 - Preserve exact executable-name, `.text`-size, and prologue gating for game-code hooks.
 - Unknown executables must remain unmodified apart from normal system-D3D11 forwarding.
 - Cache only successful `.PSSG` validation results. Do not cache failures, parsed UI graphs, or mutable resource objects.
-- Keep atlas snapshots inside the verified synchronous queue-drain lifetime.
+- Keep atlas snapshots inside the verified synchronous queue-drain lifetime in Totori and Meruru. Rorona may retain verified text-renderer snapshots until the next `Present`; invalidate a texture on any unmatched real lock and never retain snapshots across frames.
 - Internal D3D11 operations must call original entry points and must not recurse through hooks.
 - Redirect staging shadows only on the immediate context. Flush before GPU consumers and before executing deferred command lists.
 - Preserve per-resource/per-subresource lifetime tracking and COM reference ownership.

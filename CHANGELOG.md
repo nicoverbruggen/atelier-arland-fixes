@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.3
+
+### Fixed
+
+- A second Rorona atlas-readback path that caused large recurring stalls when opening Synthesis, Assignment, and other text-heavy menus.
+
 ## v0.2
 
 ### Added

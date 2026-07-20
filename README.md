@@ -8,7 +8,7 @@ For newer Atelier games, use the upstream [atelier-sync-fix](https://github.com/
 
 ## Benefits
 
-- Much faster opening of text-heavy menus, including the worst-affected Status, Quest, Container, Basket, and crafting screens.
+- Much faster opening of text-heavy menus, including the worst-affected Status, Quest, Container, Basket, Assignment, and crafting screens.
 - Fewer pauses caused by the games repeatedly waiting for graphics work to finish.
 - Correct text rendering without the corruption produced by older synchronization fixes in these games.
 - Correct direct rendering at 2560×1440 and 3840×2160 instead of leaving internal render targets and raster state at 1920×1080.
@@ -70,7 +70,7 @@ Height=2160
 
 ### Troubleshooting switches
 
-The fixes are enabled by default. `ARLAND_MENU_FIX=0` disables the executable-specific menu hooks while retaining D3D11 forwarding and synchronization. `ARLAND_ATLAS_CACHE=0` disables only the queue-scoped atlas-read cache. These switches are intended for diagnosis and A/B testing, not normal installation.
+The fixes are enabled by default. `ARLAND_MENU_FIX=0` disables the executable-specific menu hooks while retaining D3D11 forwarding and synchronization. `ARLAND_ATLAS_CACHE=0` disables atlas-read caching. Rorona also accepts `ARLAND_FRAME_ATLAS_CACHE=0` to restrict snapshots to the older queue-scoped behavior. These switches are intended for diagnosis and A/B testing, not normal installation.
 
 ## Build
 

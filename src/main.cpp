@@ -6,8 +6,11 @@
 #include "util.h"
 
 #include <array>
+#include <atomic>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 
 #ifdef _MSC_VER
@@ -79,6 +82,114 @@ D3D11Proc loadSystemD3D11() {
   return d3d11Proc;
 }
 
+using PFN_IDXGISwapChain_Present = HRESULT (STDMETHODCALLTYPE *) (
+  IDXGISwapChain*, UINT, UINT);
+
+PFN_IDXGISwapChain_Present originalPresent = nullptr;
+using PFN_IDXGIFactory_CreateSwapChain = HRESULT (STDMETHODCALLTYPE *) (
+  IDXGIFactory*, IUnknown*, DXGI_SWAP_CHAIN_DESC*, IDXGISwapChain**);
+PFN_IDXGIFactory_CreateSwapChain originalCreateSwapChain = nullptr;
+mutex presentHookMutex;
+std::atomic<int64_t> previousPresentNanos = 0;
+
+bool menuTransitionTraceEnabled() {
+  const char* trace = std::getenv("ARLAND_MENU_TRANSITION_TRACE");
+  return (trace && trace[0] != '0') || arland::frameAtlasCacheEnabled();
+}
+
+HRESULT STDMETHODCALLTYPE tracedPresent(
+    IDXGISwapChain* swapChain, UINT syncInterval, UINT flags) {
+  const auto started = std::chrono::steady_clock::now();
+  const int64_t startedNanos = std::chrono::duration_cast<std::chrono::nanoseconds>(
+    started.time_since_epoch()).count();
+  const int64_t previous = previousPresentNanos.exchange(
+    startedNanos, std::memory_order_relaxed);
+  const HRESULT result = originalPresent(swapChain, syncInterval, flags);
+  const auto finished = std::chrono::steady_clock::now();
+  const uint64_t durationMicros = uint64_t(
+    std::chrono::duration_cast<std::chrono::microseconds>(
+      finished - started).count());
+  const uint64_t intervalMicros = previous > 0 && startedNanos >= previous
+    ? uint64_t(startedNanos - previous) / 1000 : 0;
+  atfix::traceTransitionD3DFrame(intervalMicros);
+  arland::traceMenuPresent(durationMicros, intervalMicros);
+  return result;
+}
+
+void hookSwapChain(IDXGISwapChain* swapChain) {
+  if (!swapChain || !menuTransitionTraceEnabled())
+    return;
+  std::lock_guard lock(presentHookMutex);
+  if (originalPresent)
+    return;
+  void** vtable = *reinterpret_cast<void***>(swapChain);
+  MH_STATUS status = MH_CreateHook(vtable[8],
+    reinterpret_cast<void*>(&tracedPresent),
+    reinterpret_cast<void**>(&originalPresent));
+  if (status && status != MH_ERROR_ALREADY_CREATED) {
+    log("Failed to create transition Present hook: ",
+      MH_StatusToString(status));
+    return;
+  }
+  status = MH_EnableHook(vtable[8]);
+  if (status) {
+    log("Failed to enable transition Present hook: ",
+      MH_StatusToString(status));
+    return;
+  }
+  log("Created transition Present hook @ ", vtable[8]);
+}
+
+HRESULT STDMETHODCALLTYPE tracedCreateSwapChain(
+    IDXGIFactory* factory, IUnknown* device,
+    DXGI_SWAP_CHAIN_DESC* desc, IDXGISwapChain** swapChain) {
+  const HRESULT result = originalCreateSwapChain(
+    factory, device, desc, swapChain);
+  if (SUCCEEDED(result) && swapChain && *swapChain)
+    hookSwapChain(*swapChain);
+  return result;
+}
+
+void hookFactoryForSwapChain(ID3D11Device* device) {
+  if (!device || !menuTransitionTraceEnabled())
+    return;
+  IDXGIDevice* dxgiDevice = nullptr;
+  IDXGIAdapter* adapter = nullptr;
+  IDXGIFactory* factory = nullptr;
+  HRESULT result = device->QueryInterface(
+    IID_IDXGIDevice, reinterpret_cast<void**>(&dxgiDevice));
+  if (SUCCEEDED(result))
+    result = dxgiDevice->GetAdapter(&adapter);
+  if (SUCCEEDED(result))
+    result = adapter->GetParent(
+      IID_IDXGIFactory, reinterpret_cast<void**>(&factory));
+  if (FAILED(result) || !factory) {
+    log("Failed to obtain DXGI factory for transition trace: ",
+      std::hex, result, std::dec);
+  } else {
+    std::lock_guard lock(presentHookMutex);
+    if (!originalCreateSwapChain) {
+      void** vtable = *reinterpret_cast<void***>(factory);
+      MH_STATUS status = MH_CreateHook(vtable[10],
+        reinterpret_cast<void*>(&tracedCreateSwapChain),
+        reinterpret_cast<void**>(&originalCreateSwapChain));
+      if (!status || status == MH_ERROR_ALREADY_CREATED)
+        status = MH_EnableHook(vtable[10]);
+      if (status)
+        log("Failed to hook IDXGIFactory::CreateSwapChain: ",
+          MH_StatusToString(status));
+      else
+        log("Created transition CreateSwapChain hook @ ", vtable[10]);
+    }
+  }
+  if (factory)
+    factory->Release();
+  if (adapter)
+    adapter->Release();
+  if (dxgiDevice)
+    dxgiDevice->Release();
+}
+
 }
 
 extern "C" {
@@ -118,6 +229,7 @@ DLLEXPORT HRESULT __stdcall D3D11CreateDevice(
   if (arland::initializeGameHooks()) {
     atfix::hookDevice(device);
     atfix::hookContext(context);
+    atfix::hookFactoryForSwapChain(device);
   }
 
   if (ppDevice) {
@@ -181,6 +293,8 @@ DLLEXPORT HRESULT __stdcall D3D11CreateDeviceAndSwapChain(
   if (arland::initializeGameHooks()) {
     atfix::hookDevice(device);
     atfix::hookContext(context);
+    if (ppSwapChain && *ppSwapChain)
+      atfix::hookSwapChain(*ppSwapChain);
   }
 
   if (ppDevice) {
