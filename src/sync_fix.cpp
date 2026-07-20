@@ -4,9 +4,11 @@
 #include <atomic>
 #include <cstdlib>
 #include <cstring>
+#include <algorithm>
 #include <map>
 #include <set>
 #include <tuple>
+#include <vector>
 
 #include "sync_fix.h"
 #include "util.h"
@@ -164,6 +166,7 @@ TransitionCounter g_transitionShadowFlush;
 std::atomic<uint64_t> g_transitionShadowFlushBytes = 0;
 
 struct ShadowDrawKey {
+  uintptr_t depthResource = 0;
   uintptr_t vertexShader = 0;
   uintptr_t pixelShader = 0;
   uintptr_t inputLayout = 0;
@@ -175,11 +178,13 @@ struct ShadowDrawKey {
   uint32_t indexed = 0;
 
   bool operator<(const ShadowDrawKey& other) const {
-    return std::tie(vertexShader, pixelShader, inputLayout, vertexBuffer,
-      targetWidth, targetHeight, targetFormat, contextType, indexed) <
-      std::tie(other.vertexShader, other.pixelShader, other.inputLayout,
-        other.vertexBuffer, other.targetWidth, other.targetHeight,
-        other.targetFormat, other.contextType, other.indexed);
+    return std::tie(depthResource, vertexShader, pixelShader, inputLayout,
+      vertexBuffer, targetWidth, targetHeight, targetFormat, contextType,
+      indexed) <
+      std::tie(other.depthResource, other.vertexShader, other.pixelShader,
+        other.inputLayout, other.vertexBuffer, other.targetWidth,
+        other.targetHeight, other.targetFormat, other.contextType,
+        other.indexed);
   }
 };
 
@@ -197,12 +202,473 @@ uint64_t g_shadowReceiveDraws = 0;
 std::set<uintptr_t> g_shadowSrvs;      // PS SRVs backed by the 1024x1024 fmt-44 map
 std::set<uintptr_t> g_nonShadowSrvs;   // classified as not the shadow map
 
+// Distinct depth-only shadow targets bound per window, keyed by depth resource.
+struct ShadowTargetStats {
+  uint64_t binds = 0;
+  uint32_t width = 0;
+  uint32_t height = 0;
+  uint32_t format = 0;
+};
+std::map<uintptr_t, ShadowTargetStats> g_shadowTargets;
+
+// Per-color-render-target draw buckets. Isolates the cut-in pass: it composes to
+// its own target, so a distinct bucket appears whose shadow-sampling count tells
+// us whether the cut-in ground samples the shadow map at all.
+struct ReceiverBucketKey {
+  uintptr_t colorResource = 0;
+  uintptr_t pixelShader = 0;
+  uint32_t width = 0;
+  uint32_t height = 0;
+  uint32_t format = 0;
+  bool operator<(const ReceiverBucketKey& o) const {
+    return std::tie(colorResource, pixelShader, width, height, format) <
+      std::tie(o.colorResource, o.pixelShader, o.width, o.height, o.format);
+  }
+};
+struct ReceiverBucketStats {
+  uint64_t draws = 0;
+  uint64_t shadowSampling = 0;
+};
+std::map<ReceiverBucketKey, ReceiverBucketStats> g_receiverBuckets;
+
+bool receiverRtTraceEnabled() {
+  static const bool enabled = [] {
+    const char* value = std::getenv("ARLAND_SHADOW_RECEIVE_RT");
+    return value && value[0] != '0';
+  }();
+  return enabled;
+}
+
+// Per-vertex-buffer coverage: did a given mesh draw to the shadow depth map
+// (casting), the color target (visible), or both? A character-sized mesh that
+// is color-only during the cut-in is visible-but-not-casting.
+struct VbCoverage {
+  bool shadow = false;
+  bool color = false;
+  uint32_t maxElements = 0;
+};
+std::map<uintptr_t, VbCoverage> g_vbCoverage;
+// Meshes (by vertex buffer) that have EVER cast a shadow, with their size — used
+// to spot a mesh that casts in the overview but goes visible-not-casting in the
+// cut-in (the decoupled geometry).
+std::map<uintptr_t, uint32_t> g_vbEverCast;
+std::set<uintptr_t> g_decoupledReported;
+
+bool casterCoverageEnabled() {
+  static const bool enabled = [] {
+    const char* value = std::getenv("ARLAND_CASTER_COVERAGE");
+    return value && value[0] != '0';
+  }();
+  return enabled;
+}
+
+void traceCasterCoverage(ID3D11DeviceContext* context, UINT elementCount) {
+  if (!casterCoverageEnabled())
+    return;
+  ID3D11RenderTargetView* rtv = nullptr;
+  ID3D11DepthStencilView* dsv = nullptr;
+  context->OMGetRenderTargets(1, &rtv, &dsv);
+  const bool shadowPass = dsv && !rtv;   // depth-only = shadow caster pass
+  bool colorPass = false;
+  if (rtv) {
+    ID3D11Resource* res = nullptr;
+    rtv->GetResource(&res);
+    if (res) {
+      ID3D11Texture2D* tex = nullptr;
+      if (SUCCEEDED(res->QueryInterface(IID_PPV_ARGS(&tex)))) {
+        D3D11_TEXTURE2D_DESC d = {};
+        tex->GetDesc(&d);
+        colorPass = d.Width == 1920 && d.Height == 1080;  // main scene target
+        tex->Release();
+      }
+      res->Release();
+    }
+  }
+  if (shadowPass || colorPass) {
+    ID3D11Buffer* vb = nullptr;
+    UINT stride = 0, offset = 0;
+    context->IAGetVertexBuffers(0, 1, &vb, &stride, &offset);
+    if (vb) {
+      const uintptr_t key = reinterpret_cast<uintptr_t>(vb);
+      std::lock_guard lock(g_shadowTraceMutex);
+      auto& c = g_vbCoverage[key];
+      if (shadowPass) c.shadow = true;
+      if (colorPass) c.color = true;
+      if (elementCount > c.maxElements) c.maxElements = elementCount;
+      if (shadowPass && elementCount >= 300) {
+        auto& mx = g_vbEverCast[key];
+        if (elementCount > mx) mx = elementCount;
+      }
+      vb->Release();
+    }
+  }
+  if (rtv) rtv->Release();
+  if (dsv) dsv->Release();
+}
+
 bool shadowTraceEnabled() {
   static const bool enabled = [] {
     const char* value = std::getenv("ARLAND_SHADOW_TRACE");
     return value && value[0] != '0';
   }();
   return enabled;
+}
+
+bool shadowMatrixEnabled() {
+  static const bool enabled = [] {
+    const char* value = std::getenv("ARLAND_SHADOW_MATRIX");
+    return value && value[0] != '0';
+  }();
+  return enabled;
+}
+
+// Read the first 16 floats (one 4x4 matrix) of a VS constant buffer via a
+// staging copy. Immediate context only. Returns false if unavailable.
+ID3D11Buffer* g_cbStaging = nullptr;
+bool readVsCbufferMatrix(ID3D11DeviceContext* context, UINT slot,
+                         float out[16]) {
+  if (context->GetType() != D3D11_DEVICE_CONTEXT_IMMEDIATE)
+    return false;
+  ID3D11Buffer* cb = nullptr;
+  context->VSGetConstantBuffers(slot, 1, &cb);
+  if (!cb)
+    return false;
+  bool ok = false;
+  if (!g_cbStaging) {
+    ID3D11Device* dev = nullptr;
+    context->GetDevice(&dev);
+    if (dev) {
+      D3D11_BUFFER_DESC d = {};
+      d.ByteWidth = 64;
+      d.Usage = D3D11_USAGE_STAGING;
+      d.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+      dev->CreateBuffer(&d, nullptr, &g_cbStaging);
+      dev->Release();
+    }
+  }
+  if (g_cbStaging) {
+    D3D11_BUFFER_DESC sd = {};
+    cb->GetDesc(&sd);
+    if (sd.ByteWidth >= 64) {
+      D3D11_BOX box = {0, 0, 0, 64, 1, 1};
+      context->CopySubresourceRegion(g_cbStaging, 0, 0, 0, 0, cb, 0, &box);
+      D3D11_MAPPED_SUBRESOURCE m = {};
+      if (SUCCEEDED(context->Map(g_cbStaging, 0, D3D11_MAP_READ, 0, &m))) {
+        memcpy(out, m.pData, 64);
+        context->Unmap(g_cbStaging, 0);
+        ok = true;
+      }
+    }
+  }
+  cb->Release();
+  return ok;
+}
+
+void traceShadowMatrix(ID3D11DeviceContext*, UINT) {}  // superseded by cb capture
+
+// Deferred contexts block reading a cbuffer at draw time, but the game still
+// WRITES cbuffers via Map(WRITE_DISCARD)/Unmap, which we hook — the CPU data is
+// valid at Unmap. We capture constant-buffer writes that happen while the shadow
+// depth target is bound: those matrices are the shadow light-view-projection and
+// the caster world matrices. Correlate ms against BATTLE_STATE to compare states.
+std::atomic<bool> g_inShadowPass{false};
+struct CbMtxCap { const void* data; UINT size; };
+std::map<std::pair<ID3D11Resource*, UINT>, CbMtxCap> g_cbMtxMaps;
+std::atomic<uint64_t> g_cbMtxLogged{0};
+
+void updateShadowPassFlag(UINT rtvCount,
+                          ID3D11RenderTargetView* const* rtvs,
+                          ID3D11DepthStencilView* dsv) {
+  if (!shadowMatrixEnabled())
+    return;
+  bool haveColor = false;
+  for (UINT i = 0; i < rtvCount && i < D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT; ++i)
+    haveColor |= rtvs && rtvs[i];
+  bool shadow = false;
+  if (!haveColor && dsv) {
+    ID3D11Resource* res = nullptr;
+    dsv->GetResource(&res);
+    if (res) {
+      ID3D11Texture2D* tex = nullptr;
+      if (SUCCEEDED(res->QueryInterface(IID_PPV_ARGS(&tex)))) {
+        D3D11_TEXTURE2D_DESC d = {};
+        tex->GetDesc(&d);
+        shadow = d.Width == 1024 && d.Height == 1024;
+        tex->Release();
+      }
+      res->Release();
+    }
+  }
+  g_inShadowPass.store(shadow, std::memory_order_release);
+}
+
+void captureCbMap(ID3D11Resource* resource, UINT sub,
+                  const D3D11_MAPPED_SUBRESOURCE* mapped) {
+  if (!shadowMatrixEnabled() || !resource || !mapped || !mapped->pData ||
+      !g_inShadowPass.load(std::memory_order_acquire))
+    return;
+  ID3D11Buffer* b = nullptr;
+  if (FAILED(resource->QueryInterface(IID_PPV_ARGS(&b))))
+    return;
+  D3D11_BUFFER_DESC d = {};
+  b->GetDesc(&d);
+  b->Release();
+  if (!(d.BindFlags & D3D11_BIND_CONSTANT_BUFFER) || d.ByteWidth < 64 ||
+      d.ByteWidth > 1024)
+    return;
+  std::lock_guard lock(g_shadowTraceMutex);
+  g_cbMtxMaps[{resource, sub}] = {mapped->pData, d.ByteWidth};
+}
+
+void captureCbUnmap(ID3D11Resource* resource, UINT sub) {
+  if (!shadowMatrixEnabled())
+    return;
+  CbMtxCap cap = {};
+  {
+    std::lock_guard lock(g_shadowTraceMutex);
+    auto it = g_cbMtxMaps.find({resource, sub});
+    if (it == g_cbMtxMaps.end())
+      return;
+    cap = it->second;
+    g_cbMtxMaps.erase(it);
+  }
+  // Per-window cap so sampling spreads across the whole battle (incl. the
+  // cut-in) instead of exhausting on the first frame.
+  if (!cap.data || g_cbMtxLogged.fetch_add(1, std::memory_order_relaxed) > 24)
+    return;
+  const float* f = reinterpret_cast<const float*>(cap.data);
+  // Log first matrix rows; a projection matrix has structured last column,
+  // a world matrix has translation in row 3.
+  log("SHADOW_MTX ms=", GetTickCount64(), " size=", cap.size,
+      " cb=", reinterpret_cast<void*>(resource),
+      " r0=", f[0], ",", f[1], ",", f[2], ",", f[3],
+      " r1=", f[4], ",", f[5], ",", f[6], ",", f[7],
+      " r2=", f[8], ",", f[9], ",", f[10], ",", f[11],
+      " r3=", f[12], ",", f[13], ",", f[14], ",", f[15]);
+}
+
+// ---- Cut-in shadow fix: re-issue decoupled meshes into the shadow map ----
+// The attack cut-in shadow was never implemented in Rorona: the cinematic mesh
+// is drawn to the screen but never submitted to the shadow depth map. We capture
+// the shadow-pass pipeline (which runs first each frame) and, at each such mesh's
+// color draw during the cut-in, re-issue it into the shadow map with its CURRENT
+// (cinematic) transform, so a shadow appears under the on-screen character.
+bool cutinShadowFixEnabled() {
+  static const bool enabled = [] {
+    const char* v = std::getenv("ARLAND_BATTLE_CUTIN_SHADOW");
+    return v && v[0] != '0';
+  }();
+  return enabled;
+}
+
+struct ShadowPipe {
+  ID3D11DepthStencilView* dsv = nullptr;
+  ID3D11VertexShader* vs = nullptr;
+  ID3D11InputLayout* il = nullptr;
+  ID3D11Buffer* cb[14] = {};
+  D3D11_VIEWPORT vp = {};
+  bool valid = false;
+};
+mutex g_pipeMutex;
+ShadowPipe g_shadowPipe;
+// To tell per-pass cbuffers (light-VP: stable across all shadow draws) from
+// per-object ones (world: changes per caster), track the first shadow draw's
+// cbuffers this frame and which slots later change.
+ID3D11Buffer* g_pipeFirstCb[14] = {};
+bool g_pipeCbSeen = false;
+bool g_pipeCbChanged[14] = {};
+std::set<uintptr_t> g_frameShadowVBs;   // VBs already cast this frame
+std::atomic<int> g_reissuesThisFrame{0};
+std::atomic<uint64_t> g_reissueTotal{0};
+
+void releaseShadowPipe(ShadowPipe& p) {
+  if (p.dsv) p.dsv->Release();
+  if (p.vs) p.vs->Release();
+  if (p.il) p.il->Release();
+  for (auto*& b : p.cb) { if (b) b->Release(); b = nullptr; }
+  p = ShadowPipe{};
+}
+
+// Capture the shadow pipeline from a depth-only draw (called before color pass).
+void captureShadowPipe(ID3D11DeviceContext* ctx) {
+  ShadowPipe p;
+  ID3D11RenderTargetView* rtv = nullptr;
+  ctx->OMGetRenderTargets(1, &rtv, &p.dsv);
+  if (rtv) { rtv->Release(); if (p.dsv) p.dsv->Release(); return; }  // not shadow
+  if (!p.dsv)
+    return;
+  ctx->VSGetShader(&p.vs, nullptr, nullptr);
+  ctx->IAGetInputLayout(&p.il);
+  ctx->VSGetConstantBuffers(0, 14, p.cb);
+  UINT n = 1;
+  ctx->RSGetViewports(&n, &p.vp);
+  p.valid = p.vs != nullptr;
+  std::lock_guard lock(g_pipeMutex);
+  releaseShadowPipe(g_shadowPipe);
+  g_shadowPipe = p;
+  // Track per-pass vs per-object cbuffer slots across the frame's shadow draws.
+  if (!g_pipeCbSeen) {
+    for (int i = 0; i < 14; ++i) {
+      g_pipeFirstCb[i] = p.cb[i];
+      if (g_pipeFirstCb[i]) g_pipeFirstCb[i]->AddRef();
+    }
+    g_pipeCbSeen = true;
+  } else {
+    for (int i = 0; i < 14; ++i)
+      if (p.cb[i] != g_pipeFirstCb[i])
+        g_pipeCbChanged[i] = true;   // this slot is per-object (world)
+  }
+}
+
+// Re-issue the currently-bound mesh into the shadow map. Saves and restores all
+// pipeline state it touches. `indexed` picks Draw vs DrawIndexed.
+void reissueMeshToShadow(ID3D11DeviceContext* ctx, bool indexed,
+                         UINT count, UINT startIndex, INT baseVertex) {
+  ShadowPipe pipe;
+  {
+    std::lock_guard lock(g_pipeMutex);
+    if (!g_shadowPipe.valid)
+      return;
+    pipe = g_shadowPipe;  // shallow copy of raw pointers (valid within frame)
+  }
+  // Save state we will change.
+  ID3D11RenderTargetView* savedRtv[8] = {};
+  ID3D11DepthStencilView* savedDsv = nullptr;
+  ctx->OMGetRenderTargets(8, savedRtv, &savedDsv);
+  ID3D11VertexShader* savedVs = nullptr;
+  ctx->VSGetShader(&savedVs, nullptr, nullptr);
+  ID3D11InputLayout* savedIl = nullptr;
+  ctx->IAGetInputLayout(&savedIl);
+  ID3D11Buffer* savedCb[14] = {};
+  ctx->VSGetConstantBuffers(0, 14, savedCb);
+  UINT savedVpN = 8;
+  D3D11_VIEWPORT savedVp[8] = {};
+  ctx->RSGetViewports(&savedVpN, savedVp);
+
+  // Bind shadow output + shadow VS + shadow input layout + shadow viewport.
+  ID3D11RenderTargetView* noRtv[1] = {nullptr};
+  ctx->OMSetRenderTargets(1, noRtv, pipe.dsv);
+  ctx->VSSetShader(pipe.vs, nullptr, 0);
+  if (pipe.il) ctx->IASetInputLayout(pipe.il);
+  ctx->RSSetViewports(1, &pipe.vp);
+  // Override only the per-PASS cbuffer slots (light-VP / light params — stable
+  // across all shadow draws this frame) with the shadow buffers; keep the
+  // currently-bound buffer for per-OBJECT slots (this mesh's world transform).
+  ID3D11Buffer* useCb[14] = {};
+  for (int i = 0; i < 14; ++i)
+    useCb[i] = (!g_pipeCbChanged[i] && g_pipeFirstCb[i]) ? g_pipeFirstCb[i]
+                                                         : savedCb[i];
+  ctx->VSSetConstantBuffers(0, 14, useCb);
+
+  if (indexed)
+    getContextProcs(ctx)->DrawIndexed(ctx, count, startIndex, baseVertex);
+  else
+    getContextProcs(ctx)->Draw(ctx, count, startIndex);
+  g_reissueTotal.fetch_add(1, std::memory_order_relaxed);
+
+  // Restore.
+  ctx->OMSetRenderTargets(8, savedRtv, savedDsv);
+  ctx->VSSetShader(savedVs, nullptr, 0);
+  ctx->IASetInputLayout(savedIl);
+  ctx->RSSetViewports(savedVpN, savedVp);
+  ctx->VSSetConstantBuffers(0, 14, savedCb);
+  for (auto* r : savedRtv) if (r) r->Release();
+  if (savedDsv) savedDsv->Release();
+  if (savedVs) savedVs->Release();
+  if (savedIl) savedIl->Release();
+  for (auto* b : savedCb) if (b) b->Release();
+}
+
+// At a draw: if it's a shadow-pass draw, capture the pipe + remember the VB as
+// having cast; if it's a decoupled cut-in mesh (visible, ever-cast, not cast
+// this frame), re-issue it into the shadow map.
+void cutinShadowDraw(ID3D11DeviceContext* ctx, bool indexed, UINT count,
+                     UINT startIndex, INT baseVertex) {
+  if (!cutinShadowFixEnabled())
+    return;
+  ID3D11RenderTargetView* rtv = nullptr;
+  ID3D11DepthStencilView* dsv = nullptr;
+  ctx->OMGetRenderTargets(1, &rtv, &dsv);
+  const bool shadowPass = dsv && !rtv;
+  bool colorMain = false;
+  if (rtv) {
+    ID3D11Resource* res = nullptr;
+    rtv->GetResource(&res);
+    if (res) {
+      ID3D11Texture2D* tex = nullptr;
+      if (SUCCEEDED(res->QueryInterface(IID_PPV_ARGS(&tex)))) {
+        D3D11_TEXTURE2D_DESC d = {};
+        tex->GetDesc(&d);
+        colorMain = d.Width == 1920 && d.Height == 1080;
+        tex->Release();
+      }
+      res->Release();
+    }
+  }
+  if (rtv) rtv->Release();
+  if (dsv) dsv->Release();
+
+  ID3D11Buffer* vb = nullptr;
+  UINT stride = 0, offset = 0;
+  ctx->IAGetVertexBuffers(0, 1, &vb, &stride, &offset);
+  const uintptr_t vbKey = reinterpret_cast<uintptr_t>(vb);
+  if (vb) vb->Release();
+  if (!vbKey)
+    return;
+
+  if (shadowPass) {
+    captureShadowPipe(ctx);
+    std::lock_guard lock(g_shadowTraceMutex);
+    g_frameShadowVBs.insert(vbKey);
+    if (count >= 300) {                       // record character-scale casters
+      auto& mx = g_vbEverCast[vbKey];
+      if (count > mx) mx = count;
+    }
+    return;
+  }
+  // No battle-state gate: the character close-up that lacks a shadow happens
+  // during action selection (SelectCommand/SelectTarget), not just WaitAction.
+  // The "not cast this frame" check below already excludes meshes casting
+  // normally, so any visible mesh that isn't in the shadow map is a candidate.
+  if (!colorMain || count < 300)
+    return;
+  bool everCast, castThisFrame;
+  {
+    std::lock_guard lock(g_shadowTraceMutex);
+    everCast = g_vbEverCast.count(vbKey) != 0;
+    castThisFrame = g_frameShadowVBs.count(vbKey) != 0;
+  }
+  if (!everCast || castThisFrame)
+    return;
+  const int n = g_reissuesThisFrame.fetch_add(1, std::memory_order_relaxed);
+  if (n >= 64)
+    return;
+  reissueMeshToShadow(ctx, indexed, count, startIndex, baseVertex);
+  if (g_reissueTotal.load(std::memory_order_relaxed) % 200 == 1) {
+    uint32_t stableMask = 0;
+    for (int i = 0; i < 14; ++i)
+      if (!g_pipeCbChanged[i] && g_pipeFirstCb[i]) stableMask |= (1u << i);
+    log("CUTIN_REISSUE total=", g_reissueTotal.load(std::memory_order_relaxed),
+        " vb=", reinterpret_cast<void*>(vbKey), " count=", count,
+        " pipe_valid=", g_shadowPipe.valid,
+        " overridden_slots=0x", std::hex, stableMask, std::dec);
+  }
+}
+
+// Per-frame reset (called from Present): the "cast this frame" set and re-issue
+// budget start fresh each frame.
+void cutinShadowPresent() {
+  if (!cutinShadowFixEnabled())
+    return;
+  {
+    std::lock_guard lock(g_shadowTraceMutex);
+    g_frameShadowVBs.clear();
+    g_reissuesThisFrame.store(0, std::memory_order_relaxed);
+  }
+  std::lock_guard lock(g_pipeMutex);
+  for (auto*& b : g_pipeFirstCb) { if (b) b->Release(); b = nullptr; }
+  g_pipeCbSeen = false;
+  for (auto& c : g_pipeCbChanged) c = false;
 }
 
 void traceShadowTargetBind(UINT renderTargetCount,
@@ -216,8 +682,28 @@ void traceShadowTargetBind(UINT renderTargetCount,
     haveColor |= renderTargets && renderTargets[index];
   if (haveColor)
     return;
+
+  uintptr_t depthResource = 0;
+  uint32_t width = 0, height = 0, format = 0;
+  ID3D11Resource* resource = nullptr;
+  depthTarget->GetResource(&resource);
+  if (resource) {
+    depthResource = reinterpret_cast<uintptr_t>(resource);
+    ID3D11Texture2D* texture = nullptr;
+    if (SUCCEEDED(resource->QueryInterface(IID_PPV_ARGS(&texture)))) {
+      D3D11_TEXTURE2D_DESC desc = {};
+      texture->GetDesc(&desc);
+      width = desc.Width; height = desc.Height; format = uint32_t(desc.Format);
+      texture->Release();
+    }
+    resource->Release();
+  }
+
   std::lock_guard lock(g_shadowTraceMutex);
   ++g_shadowDepthOnlyBinds;
+  auto& target = g_shadowTargets[depthResource];
+  ++target.binds;
+  target.width = width; target.height = height; target.format = format;
 }
 
 void traceShadowDraw(ID3D11DeviceContext* context, bool indexed,
@@ -254,6 +740,7 @@ void traceShadowDraw(ID3D11DeviceContext* context, bool indexed,
   context->IAGetVertexBuffers(0, 1, &vertexBuffer, &stride, &offset);
 
   const ShadowDrawKey key = {
+    reinterpret_cast<uintptr_t>(depthResource),
     reinterpret_cast<uintptr_t>(vertexShader),
     reinterpret_cast<uintptr_t>(pixelShader),
     reinterpret_cast<uintptr_t>(inputLayout),
@@ -315,14 +802,59 @@ void traceShadowReceive(ID3D11DeviceContext* context) {
     return;
   ID3D11ShaderResourceView* srvs[16] = {};
   context->PSGetShaderResources(0, 16, srvs);
-  {
-    std::lock_guard lock(g_shadowTraceMutex);
-    for (ID3D11ShaderResourceView* srv : srvs)
-      if (srv && isShadowSrvLocked(srv)) {
-        ++g_shadowReceiveDraws;
+  bool samplesShadow = false;
+  for (ID3D11ShaderResourceView* srv : srvs)
+    if (srv) {
+      std::lock_guard lock(g_shadowTraceMutex);
+      if (isShadowSrvLocked(srv)) {
+        samplesShadow = true;
         break;
       }
+    }
+
+  ReceiverBucketKey bucket;
+  bool haveBucket = false;
+  if (receiverRtTraceEnabled()) {
+    ID3D11RenderTargetView* rtv = nullptr;
+    ID3D11DepthStencilView* dsv = nullptr;
+    context->OMGetRenderTargets(1, &rtv, &dsv);
+    if (rtv) {
+      ID3D11Resource* resource = nullptr;
+      rtv->GetResource(&resource);
+      if (resource) {
+        ID3D11Texture2D* texture = nullptr;
+        if (SUCCEEDED(resource->QueryInterface(IID_PPV_ARGS(&texture)))) {
+          D3D11_TEXTURE2D_DESC desc = {};
+          texture->GetDesc(&desc);
+          ID3D11PixelShader* ps = nullptr;
+          context->PSGetShader(&ps, nullptr, nullptr);
+          bucket = {reinterpret_cast<uintptr_t>(resource),
+            reinterpret_cast<uintptr_t>(ps), desc.Width,
+            desc.Height, uint32_t(desc.Format)};
+          haveBucket = true;
+          if (ps) ps->Release();
+          texture->Release();
+        }
+        resource->Release();
+      }
+      rtv->Release();
+    }
+    if (dsv)
+      dsv->Release();
   }
+
+  {
+    std::lock_guard lock(g_shadowTraceMutex);
+    if (samplesShadow)
+      ++g_shadowReceiveDraws;
+    if (haveBucket) {
+      auto& stats = g_receiverBuckets[bucket];
+      ++stats.draws;
+      if (samplesShadow)
+        ++stats.shadowSampling;
+    }
+  }
+
   for (ID3D11ShaderResourceView* srv : srvs)
     if (srv)
       srv->Release();
@@ -2069,6 +2601,7 @@ void STDMETHODCALLTYPE ID3D11DeviceContext_OMSetRenderTargets(
   resolveBoundMSAA(pContext);
   getRasterState(pContext)->dirty.store(true, std::memory_order_release);
   traceShadowTargetBind(RTVCount, ppRTVs, pDSV);
+  updateShadowPassFlag(RTVCount, ppRTVs, pDSV);
 
   ID3D11RenderTargetView* msaaRtv = nullptr;
   ID3D11DepthStencilView* msaaDsv = nullptr;
@@ -2104,6 +2637,7 @@ void STDMETHODCALLTYPE ID3D11DeviceContext_OMSetRenderTargetsAndUnorderedAccessV
   resolveBoundMSAA(pContext);
   getRasterState(pContext)->dirty.store(true, std::memory_order_release);
   traceShadowTargetBind(RTVCount, ppRTVs, pDSV);
+  updateShadowPassFlag(RTVCount, ppRTVs, pDSV);
 
   ID3D11RenderTargetView* msaaRtv = nullptr;
   ID3D11DepthStencilView* msaaDsv = nullptr;
@@ -2281,8 +2815,10 @@ HRESULT STDMETHODCALLTYPE ID3D11DeviceContext_Map(
     mapKindTimer.setBranch(0);
     const HRESULT hr = procs->Map(
       pContext, pResource, Subresource, MapType, MapFlags, pMappedResource);
-    if (SUCCEEDED(hr))
+    if (SUCCEEDED(hr)) {
       trackCompositeMap(pResource, Subresource, pMappedResource);
+      captureCbMap(pResource, Subresource, pMappedResource);
+    }
     return hr;
   }
 
@@ -2302,8 +2838,10 @@ HRESULT STDMETHODCALLTYPE ID3D11DeviceContext_Map(
       recordTransitionMapDetail(
         pResource, Subresource, MapType, caller, uint64_t(nanos));
     }
-    if (SUCCEEDED(hr))
+    if (SUCCEEDED(hr)) {
       trackCompositeMap(pResource, Subresource, pMappedResource);
+      captureCbMap(pResource, Subresource, pMappedResource);
+    }
     return hr;
   }
 
@@ -2325,6 +2863,7 @@ HRESULT STDMETHODCALLTYPE ID3D11DeviceContext_Map(
     return E_FAIL;
   }
   trackCompositeMap(pResource, Subresource, pMappedResource);
+      captureCbMap(pResource, Subresource, pMappedResource);
   return hr;
 }
 
@@ -2333,6 +2872,7 @@ void STDMETHODCALLTYPE ID3D11DeviceContext_Unmap(
         ID3D11Resource*            pResource,
         UINT                       Subresource) {
   auto procs = getContextProcs(pContext);
+  captureCbUnmap(pResource, Subresource);
   dumpCompositeMap(pResource, Subresource);
   ShadowMapping mapping;
   bool redirected = false;
@@ -2524,6 +3064,8 @@ void STDMETHODCALLTYPE ID3D11DeviceContext_Draw(
   updateViewportScissor(pContext);
   traceShadowDraw(pContext, false, VertexCount, 1);
   traceShadowReceive(pContext);
+  traceCasterCoverage(pContext, VertexCount);
+  traceShadowMatrix(pContext, VertexCount);
   traceResolutionDraw(pContext, "draw", VertexCount, 1);
 
   // Carry dialogue-snapshot identity through the three-vertex blur passes so
@@ -2557,6 +3099,7 @@ void STDMETHODCALLTYPE ID3D11DeviceContext_Draw(
   if (blurInput) blurInput->Release();
   if (blurView) blurView->Release();
 
+  cutinShadowDraw(pContext, false, VertexCount, StartVertexLocation, 0);
   procs->Draw(pContext, VertexCount, StartVertexLocation);
 }
 
@@ -2568,6 +3111,8 @@ void STDMETHODCALLTYPE ID3D11DeviceContext_DrawIndexed(
   updateViewportScissor(pContext);
   traceShadowDraw(pContext, true, IndexCount, 1);
   traceShadowReceive(pContext);
+  traceCasterCoverage(pContext, IndexCount);
+  traceShadowMatrix(pContext, IndexCount);
   traceResolutionDraw(pContext, "indexed", IndexCount, 1);
 
   // The 48-byte 1920x1080 quad is shared by other cutscene layers. Keep the
@@ -2618,6 +3163,7 @@ void STDMETHODCALLTYPE ID3D11DeviceContext_DrawIndexed(
     if (resource) resource->Release();
     if (view) view->Release();
   }
+  cutinShadowDraw(pContext, true, IndexCount, StartIndexLocation, BaseVertexLocation);
   procs->DrawIndexed(pContext, IndexCount, StartIndexLocation, BaseVertexLocation);
 }
 
@@ -2631,6 +3177,8 @@ void STDMETHODCALLTYPE ID3D11DeviceContext_DrawInstanced(
   traceShadowDraw(
     pContext, false, VertexCountPerInstance, InstanceCount);
   traceShadowReceive(pContext);
+  traceCasterCoverage(pContext, VertexCountPerInstance);
+  traceShadowMatrix(pContext, VertexCountPerInstance);
   traceResolutionDraw(
     pContext, "instanced", VertexCountPerInstance, InstanceCount);
   procs->DrawInstanced(pContext, VertexCountPerInstance, InstanceCount,
@@ -2647,6 +3195,8 @@ void STDMETHODCALLTYPE ID3D11DeviceContext_DrawIndexedInstanced(
   traceShadowDraw(
     pContext, true, IndexCountPerInstance, InstanceCount);
   traceShadowReceive(pContext);
+  traceCasterCoverage(pContext, IndexCountPerInstance);
+  traceShadowMatrix(pContext, IndexCountPerInstance);
   traceResolutionDraw(
     pContext, "indexed-instanced", IndexCountPerInstance, InstanceCount);
   procs->DrawIndexedInstanced(pContext, IndexCountPerInstance, InstanceCount,
@@ -2972,12 +3522,16 @@ void traceShadowD3DFrame() {
     return;
 
   std::map<ShadowDrawKey, ShadowDrawStats> draws;
+  std::map<ReceiverBucketKey, ReceiverBucketStats> receiverBuckets;
+  std::map<uintptr_t, ShadowTargetStats> shadowTargets;
+  std::map<uintptr_t, VbCoverage> vbCoverage;
+  std::map<uintptr_t, uint64_t> drawsPerTarget;
   uint64_t depthOnlyBinds = 0;
   uint64_t receiveDraws = 0;
   uint64_t sequence = 0;
   {
     std::lock_guard lock(g_shadowTraceMutex);
-    if (++g_shadowTraceFrames < 120)
+    if (++g_shadowTraceFrames < 20)
       return;
     g_shadowTraceFrames = 0;
     sequence = ++g_shadowTraceSequence;
@@ -2986,9 +3540,46 @@ void traceShadowD3DFrame() {
     receiveDraws = g_shadowReceiveDraws;
     g_shadowReceiveDraws = 0;
     draws.swap(g_shadowDraws);
+    receiverBuckets.swap(g_receiverBuckets);
+    shadowTargets.swap(g_shadowTargets);
+    vbCoverage.swap(g_vbCoverage);
+  }
+  g_cbMtxLogged.store(0, std::memory_order_relaxed);
+
+  // Coverage summary: character-sized meshes (maxElements high) split by whether
+  // they cast (shadow), are visible (color), or both. color-only = visible but
+  // not casting — the transform/coherence break we're testing for.
+  if (!vbCoverage.empty()) {
+    uint64_t colorOnly = 0, both = 0, shadowOnly = 0;
+    uint64_t colorOnlyBig = 0, bothBig = 0;
+    for (const auto& [vb, c] : vbCoverage) {
+      const bool big = c.maxElements >= 300;  // character-scale mesh
+      if (c.color && !c.shadow) { ++colorOnly; if (big) ++colorOnlyBig; }
+      else if (c.color && c.shadow) { ++both; if (big) ++bothBig; }
+      else if (c.shadow && !c.color) ++shadowOnly;
+    }
+    log("SHADOW coverage window=", sequence,
+        " color_only=", colorOnly, " (big=", colorOnlyBig, ")",
+        " both=", both, " (big=", bothBig, ")",
+        " shadow_only=", shadowOnly);
+    // The decoupled mesh: casts in the overview (in g_vbEverCast) but is
+    // visible-and-not-casting right now, during a battle cinematic state.
+    const bool cinematic = arlandInCinematicBattle();
+    for (const auto& [vb, c] : vbCoverage) {
+      if (!(c.color && !c.shadow && c.maxElements >= 300))
+        continue;
+      auto ever = g_vbEverCast.find(vb);
+      if (cinematic && ever != g_vbEverCast.end() &&
+          g_decoupledReported.insert(vb).second)
+        log("SHADOW DECOUPLED_MESH window=", sequence,
+            " vb=", reinterpret_cast<void*>(vb),
+            " elements_now=", c.maxElements,
+            " elements_when_casting=", ever->second,
+            " (visible now, cast in overview)");
+    }
   }
 
-  using GroupKey = std::tuple<uintptr_t, uintptr_t, uintptr_t,
+  using GroupKey = std::tuple<uintptr_t, uintptr_t, uintptr_t, uintptr_t,
     uint32_t, uint32_t, uint32_t, uint32_t, uint32_t>;
   struct GroupStats {
     uint64_t calls = 0;
@@ -3000,13 +3591,14 @@ void traceShadowD3DFrame() {
   uint64_t totalElements = 0;
   for (const auto& [key, stats] : draws) {
     const GroupKey groupKey = {
-      key.vertexShader, key.pixelShader, key.inputLayout,
+      key.depthResource, key.vertexShader, key.pixelShader, key.inputLayout,
       key.targetWidth, key.targetHeight, key.targetFormat,
       key.contextType, key.indexed,
     };
     auto& group = groups[groupKey];
     group.calls += stats.calls;
     group.elements += stats.elements;
+    drawsPerTarget[key.depthResource] += stats.calls;
     if (key.vertexBuffer)
       group.vertexBuffers.insert(key.vertexBuffer);
     totalCalls += stats.calls;
@@ -3014,27 +3606,62 @@ void traceShadowD3DFrame() {
   }
 
   log("SHADOW window=", sequence,
-      " frames=120 depth_only_binds=", depthOnlyBinds,
+      " ms=", GetTickCount64(),
+      " frames=20 depth_only_binds=", depthOnlyBinds,
       " recv_draws=", receiveDraws,
       " draws=", totalCalls,
       " elements=", totalElements,
       " groups=", groups.size());
+  // Distinct shadow depth targets bound this window, with how many caster draws
+  // each received. The battle binds two 1024x1024/44 targets; if one gets many
+  // draws and the other zero, the empty one is the cut-in's unpopulated map.
+  for (const auto& [resource, stats] : shadowTargets) {
+    log("SHADOW target window=", sequence,
+        " depth_resource=", reinterpret_cast<void*>(resource),
+        " dims=", stats.width, "x", stats.height, "/", stats.format,
+        " binds=", stats.binds,
+        " caster_draws=", drawsPerTarget.count(resource)
+          ? drawsPerTarget[resource] : 0);
+  }
+
   size_t reported = 0;
   for (const auto& [key, stats] : groups) {
     if (reported++ >= 64)
       break;
-    const auto& [vs, ps, layout, width, height, format,
+    const auto& [depthResource, vs, ps, layout, width, height, format,
                  contextType, indexed] = key;
     log("SHADOW group window=", sequence,
         " calls=", stats.calls,
         " elements=", stats.elements,
         " buffers=", stats.vertexBuffers.size(),
+        " depth_resource=", reinterpret_cast<void*>(depthResource),
         " target=", width, "x", height, "/", format,
         " context=", contextType,
         " indexed=", indexed,
         " vs=", reinterpret_cast<void*>(vs),
         " ps=", reinterpret_cast<void*>(ps),
         " layout=", reinterpret_cast<void*>(layout));
+  }
+
+  // Per-color-RT receiver buckets: a bucket with many draws but
+  // shadow_sampling=0 that appears during a cut-in is the pass that fails to
+  // sample the shadow map. Report the busiest buckets.
+  if (!receiverBuckets.empty()) {
+    std::vector<std::pair<ReceiverBucketKey, ReceiverBucketStats>> ordered(
+      receiverBuckets.begin(), receiverBuckets.end());
+    std::sort(ordered.begin(), ordered.end(),
+      [](const auto& a, const auto& b) { return a.second.draws > b.second.draws; });
+    size_t rt = 0;
+    for (const auto& [key, stats] : ordered) {
+      if (rt++ >= 24)
+        break;
+      log("SHADOW recv_rt window=", sequence,
+          " draws=", stats.draws,
+          " shadow_sampling=", stats.shadowSampling,
+          " target=", key.width, "x", key.height, "/", key.format,
+          " ps=", reinterpret_cast<void*>(key.pixelShader),
+          " resource=", reinterpret_cast<void*>(key.colorResource));
+    }
   }
 }
 

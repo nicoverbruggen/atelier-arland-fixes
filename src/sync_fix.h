@@ -12,8 +12,13 @@ void hookContext(ID3D11DeviceContext* pContext);
 bool applyResolutionOverride(DXGI_SWAP_CHAIN_DESC* pDesc);
 void traceTransitionD3DFrame(uint64_t intervalMicros);
 void traceShadowD3DFrame();
+void cutinShadowPresent();
 
 /* lives in main.cpp */
 extern Log log;
+
+/* lives in menu_fix.cpp: is a battle cinematic state (WaitAction/skill/result)
+   currently active? Lets the D3D layer tag draws by cut-in vs overview. */
+bool arlandInCinematicBattle();
 
 }

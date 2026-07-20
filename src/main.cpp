@@ -116,6 +116,7 @@ HRESULT STDMETHODCALLTYPE tracedPresent(
     ? uint64_t(startedNanos - previous) / 1000 : 0;
   atfix::traceTransitionD3DFrame(intervalMicros);
   atfix::traceShadowD3DFrame();
+  atfix::cutinShadowPresent();
   arland::traceMenuPresent(durationMicros, intervalMicros);
   return result;
 }

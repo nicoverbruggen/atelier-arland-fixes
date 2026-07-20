@@ -4,7 +4,7 @@
 
 ### Added
 
-- Shadows are now visible for characters and enemies in battle.
+- Characters and enemies now cast shadows during battles in Atelier Rorona DX. The port never registered battle shadow casters, so battles rendered without them; the restored shadows use the game's own shadow pipeline. Set `ARLAND_BATTLE_SHADOWS=0` to disable. (The action-selection close-up and attack cut-ins never had shadows on any platform and are unchanged.)
 
 ### Fixed
 

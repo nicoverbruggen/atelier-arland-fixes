@@ -152,9 +152,10 @@ struct PendingBattleShadow {
 std::mutex pendingBattleShadowMutex;
 std::vector<PendingBattleShadow> pendingBattleShadows;
 
-// Opt-in battle-shadow reconstruction (ARLAND_BATTLE_SHADOWS). BtlChara-family
-// instances are collected as they are constructed; once the battle ShadowHelper
-// finishes initializing we register each one as a shadow caster, reproducing the
+// Battle-shadow reconstruction, enabled by default on the recognized Rorona
+// executable (ARLAND_BATTLE_SHADOWS=0 disables). BtlChara-family instances are
+// collected as they are constructed; once the battle ShadowHelper finishes
+// initializing we register each one as a shadow caster, reproducing the
 // slot-45 init (RVA 0x1072a0) the battle flow never dispatches on its characters.
 std::mutex battleCharaMutex;
 std::vector<uintptr_t> battleCharas;
@@ -176,6 +177,13 @@ std::atomic<bool> g_battleContainerFound{false};
 std::atomic<bool> g_battleRegistered{false};
 std::atomic<uint64_t> g_scenePassCalls{0};
 std::atomic<uint64_t> g_battleTickCounter{0};
+std::atomic<uint32_t> g_battleDeadFrames{0};
+std::atomic<uintptr_t> g_battleStateSlot{0};
+std::atomic<uintptr_t> g_lastBattleStateVt{0};
+std::atomic<uint32_t> g_cutinRegistered{0};
+std::atomic<uintptr_t> g_lastSceneA{0};
+std::atomic<uintptr_t> g_lastSceneB{0};
+std::atomic<uintptr_t> g_lastSceneHelper{0};
 thread_local uint64_t shadowRenderMappings = 0;
 thread_local uint64_t shadowSkinMappings = 0;
 std::once_flag initialization;
@@ -439,7 +447,7 @@ bool shadowMappingTraceEnabled() {
 bool battleShadowRestoreEnabled() {
   static const bool enabled = [] {
     const char* value = std::getenv("ARLAND_BATTLE_SHADOWS");
-    return value && value[0] != '0';
+    return !value || value[0] != '0';   // on by default; "0" disables
   }();
   return enabled;
 }
@@ -453,12 +461,13 @@ bool battleShadowPublishEnabled() {
 }
 
 // Which helper the located battle characters are registered into:
-// "battle" = the game-mode-local helper (gameMode+0x68); anything else = the
-// global active helper the renderer currently traverses. Default global.
+// "battle" (default) = the game-mode-local helper (gameMode+0x68), published
+// into the global slot for the battle's duration — the validated
+// configuration; "global" = register directly into the global active helper.
 bool battleShadowTargetsBattleHelper() {
   static const bool battle = [] {
     const char* value = std::getenv("ARLAND_BATTLE_SHADOW_TARGET");
-    return value && std::strcmp(value, "battle") == 0;
+    return !value || std::strcmp(value, "global") != 0;
   }();
   return battle;
 }
@@ -469,6 +478,14 @@ bool battleShadowTargetsBattleHelper() {
 bool battleShadowSweepEnabled() {
   static const bool enabled = [] {
     const char* value = std::getenv("ARLAND_BATTLE_SHADOW_SWEEP");
+    return value && value[0] != '0';
+  }();
+  return enabled;
+}
+
+bool sceneTraceEnabled() {
+  static const bool enabled = [] {
+    const char* value = std::getenv("ARLAND_SCENE_TRACE");
     return value && value[0] != '0';
   }();
   return enabled;
@@ -502,6 +519,8 @@ uintptr_t tracedShadowShaderBuild(uintptr_t shader, uintptr_t a2,
   const uint64_t renderBefore = shadowRenderMappings;
   const uint64_t skinBefore = shadowSkinMappings;
   const uintptr_t result = originalShadowShaderBuild(shader, a2, a3, a4);
+  if (!shadowMappingTraceEnabled())
+    return result;
   atfix::log("SHADOW_MAPPING caller_rva=0x", std::hex, callerRva, std::dec,
     " shader=", reinterpret_cast<void*>(shader),
     " nodes=", nodes,
@@ -516,6 +535,8 @@ uintptr_t tracedShadowShaderBuild(uintptr_t shader, uintptr_t a2,
 
 uintptr_t tracedShadowGroupBuild(uintptr_t group, uintptr_t a2,
                                  uintptr_t a3, uintptr_t context) {
+  if (!shadowMappingTraceEnabled())
+    return originalShadowGroupBuild(group, a2, a3, context);
   void* frames[12] = {};
   const USHORT frameCount = CaptureStackBackTrace(
     0, static_cast<DWORD>(std::size(frames)), frames, nullptr);
@@ -548,6 +569,8 @@ uintptr_t tracedShadowCharacterBuild(uintptr_t helper, uintptr_t scene,
   const uintptr_t result = originalShadowCharacterBuild(
     helper, scene, character, a4);
   const size_t after = helper ? shadowLayerCount(helper, 0x48) : 0;
+  if (!shadowMappingTraceEnabled())
+    return result;
   atfix::log("SHADOW_CHARACTER caller_rva=0x", std::hex, callerRva,
     std::dec,
     " helper=", reinterpret_cast<void*>(helper),
@@ -580,6 +603,34 @@ bool isBattleCharaVtable(uintptr_t vtable) {
     if (rva == known)
       return true;
   return false;
+}
+
+// Any renderable character/model family object — BtlChara (battle) or the
+// general Chara/CharaBase (field/event/cinematic). Returns a class label or
+// nullptr. Used to catch a cut-in character the Event system drives outside the
+// BtlChara party vector.
+const char* charaFamilyName(uintptr_t vtable) {
+  if (!gameBase || !vtable)
+    return nullptr;
+  const uintptr_t rva = vtable - reinterpret_cast<uintptr_t>(gameBase);
+  for (uintptr_t known : kBtlCharaVtableRvas)
+    if (rva == known)
+      return "BtlChara";
+  if (rva == 0x74e598) return "Chara";
+  if (rva == 0x74eb70) return "CharaBase";
+  return nullptr;
+}
+
+// The Event executors that drive a character during a cinematic. Finding one and
+// dumping its referenced pointers should reveal the active render node the cut-in
+// draws (which is NOT the character's registered [+0x18] node).
+const char* eventExecName(uintptr_t vtable) {
+  if (!gameBase || !vtable)
+    return nullptr;
+  const uintptr_t rva = vtable - reinterpret_cast<uintptr_t>(gameBase);
+  if (rva == 0x76e018) return "EventExecBtlChara";
+  if (rva == 0x74e3f8) return "EventExecChara";
+  return nullptr;
 }
 
 void recordBattleChara(uintptr_t chara) {
@@ -679,9 +730,11 @@ bool readableRange(uintptr_t p, size_t n) {
 // whose first element carries a known BtlChara-family vtable — recursing one
 // pointer level. Every access is VirtualQuery-guarded so wild members are safe.
 // Read-only: it only logs where the battle character list lives.
+uintptr_t chosenBattleHelper();  // forward decl
+
 size_t scanForBattleCharaVectors(uintptr_t obj, size_t window, int depth,
                                  std::unordered_set<uintptr_t>& seen,
-                                 size_t& budget) {
+                                 size_t& budget, bool registerMode) {
   if (!obj || (obj & 7) || budget == 0 || !seen.insert(obj).second)
     return 0;
   --budget;
@@ -699,18 +752,54 @@ size_t scanForBattleCharaVectors(uintptr_t obj, size_t window, int depth,
           isBattleCharaVtable(*reinterpret_cast<const uintptr_t*>(elem0))) {
         const uintptr_t vt = *reinterpret_cast<const uintptr_t*>(elem0);
         g_battleCharaVectorAddr.store(obj + off, std::memory_order_release);
-        atfix::log("BATTLE_CONTAINER obj=", reinterpret_cast<void*>(obj),
-          " offset=0x", std::hex, off, std::dec,
-          " count=", (end - begin) / sizeof(uintptr_t),
-          " elem0=", reinterpret_cast<void*>(elem0),
-          " vtable_rva=0x", std::hex,
-          vt - reinterpret_cast<uintptr_t>(gameBase), std::dec);
+        if (!registerMode)
+          atfix::log("BATTLE_CONTAINER obj=", reinterpret_cast<void*>(obj),
+            " offset=0x", std::hex, off, std::dec,
+            " count=", (end - begin) / sizeof(uintptr_t),
+            " elem0=", reinterpret_cast<void*>(elem0),
+            " vtable_rva=0x", std::hex,
+            vt - reinterpret_cast<uintptr_t>(gameBase), std::dec);
         ++found;
+        // Register every BtlChara in this vector as a caster (dedup). Catches a
+        // cut-in/victory character that lives outside the party vector.
+        if (registerMode) {
+          const uintptr_t helper = chosenBattleHelper();
+          const uintptr_t scene =
+            g_battleScene.load(std::memory_order_acquire);
+          if (helper && scene && originalShadowCharacterBuild) {
+            for (uintptr_t p = begin; p < end; p += sizeof(uintptr_t)) {
+              const uintptr_t chara = *reinterpret_cast<const uintptr_t*>(p);
+              if (!readableRange(chara, 0x20) || !isBattleCharaVtable(
+                    *reinterpret_cast<const uintptr_t*>(chara)))
+                continue;
+              const uintptr_t character =
+                *reinterpret_cast<const uintptr_t*>(chara + 0x18);
+              if (!character)
+                continue;
+              {
+                std::lock_guard<std::mutex> lock(battleCharaMutex);
+                if (!g_registeredCharacters.insert(character).second)
+                  continue;
+              }
+              originalShadowCharacterBuild(helper, scene, character, 0);
+              atfix::log("BATTLE_REACH_REGISTER ms=", GetTickCount64(),
+                " obj=", reinterpret_cast<void*>(obj),
+                " offset=0x", std::hex, off, std::dec,
+                " chara=", reinterpret_cast<void*>(chara),
+                " character=", reinterpret_cast<void*>(character),
+                " vtable_rva=0x", std::hex,
+                *reinterpret_cast<const uintptr_t*>(chara) -
+                  reinterpret_cast<uintptr_t>(gameBase), std::dec,
+                " registry=", shadowLayerCount(helper, 0x48));
+            }
+          }
+        }
       }
     }
     if (depth > 0) {
       const uintptr_t ptr = *reinterpret_cast<const uintptr_t*>(obj + off);
-      found += scanForBattleCharaVectors(ptr, 0x400, depth - 1, seen, budget);
+      found += scanForBattleCharaVectors(
+        ptr, 0x400, depth - 1, seen, budget, registerMode);
     }
   }
   return found;
@@ -719,16 +808,19 @@ size_t scanForBattleCharaVectors(uintptr_t obj, size_t window, int depth,
 // Scan the battle game-mode and scene (two pointer levels) for the party's
 // BtlChara vector, logging any hit. Returns the number of vectors found.
 size_t locateBattleCharaContainer(uintptr_t gameMode, uintptr_t scene,
-                                  const char* phase) {
+                                  const char* phase, bool registerMode) {
   std::unordered_set<uintptr_t> seen;
   size_t budget = 2000;
-  size_t found = scanForBattleCharaVectors(gameMode, 0x1000, 2, seen, budget);
+  size_t found = scanForBattleCharaVectors(
+    gameMode, 0x1000, 2, seen, budget, registerMode);
   if (scene)
-    found += scanForBattleCharaVectors(scene, 0x1000, 2, seen, budget);
-  atfix::log("BATTLE_CONTAINER_SCAN phase=", phase,
-    " gamemode=", reinterpret_cast<void*>(gameMode),
-    " scene=", reinterpret_cast<void*>(scene),
-    " found=", found, " objects_scanned=", 2000 - budget);
+    found += scanForBattleCharaVectors(
+      scene, 0x1000, 2, seen, budget, registerMode);
+  if (!registerMode)
+    atfix::log("BATTLE_CONTAINER_SCAN phase=", phase,
+      " gamemode=", reinterpret_cast<void*>(gameMode),
+      " scene=", reinterpret_cast<void*>(scene),
+      " found=", found, " objects_scanned=", 2000 - budget);
   return found;
 }
 
@@ -741,6 +833,16 @@ uintptr_t* globalActiveHelperSlot() {
   if (!manager)
     return nullptr;
   return reinterpret_cast<uintptr_t*>(manager + 0x9d0);
+}
+
+// The helper the fix registers casters into: the battle-local one when
+// ARLAND_BATTLE_SHADOW_TARGET=battle, else the global active helper.
+uintptr_t chosenBattleHelper() {
+  if (battleShadowTargetsBattleHelper())
+    return g_battleHelper.load(std::memory_order_acquire);
+  if (uintptr_t* slot = globalActiveHelperSlot())
+    return *slot;
+  return 0;
 }
 
 // Register the located battle party as shadow casters. For each BtlChara in the
@@ -909,14 +1011,22 @@ uintptr_t tracedShadowHelperInit(uintptr_t helper, uintptr_t id,
     g_battleContainerFound.store(false, std::memory_order_release);
     g_battleRegistered.store(false, std::memory_order_release);
     g_battleCharaVectorAddr.store(0, std::memory_order_release);
+    g_battleDeadFrames.store(0, std::memory_order_release);
+    g_cutinRegistered.store(0, std::memory_order_release);
+    g_battleStateSlot.store(0, std::memory_order_release);
+    g_lastBattleStateVt.store(0, std::memory_order_release);
     {
       std::lock_guard<std::mutex> lock(battleCharaMutex);
       g_registeredCharacters.clear();
     }
     g_battleTickCounter.store(0, std::memory_order_release);
     g_battleActive.store(true, std::memory_order_release);
+    atfix::log("==== BATTLE_START ms=", GetTickCount64(),
+      " gamemode=", reinterpret_cast<void*>(gameMode),
+      " helper=", reinterpret_cast<void*>(helper),
+      " scene=", reinterpret_cast<void*>(resource), " ====");
     if (battleShadowRestoreEnabled() && gameMode &&
-        locateBattleCharaContainer(gameMode, resource, "init")) {
+        locateBattleCharaContainer(gameMode, resource, "init", false)) {
       g_battleContainerFound.store(true, std::memory_order_release);
       registerBattleCharaShadows();
     }
@@ -2637,28 +2747,350 @@ void detectAndInstallGameHooks() {
 
 } // namespace
 
-// Per-battle-frame work: (1) locate the party vector and register once (actors
-// may spawn after helper-init), then (2) monitor the active helper so we can see
-// whether an attack cut-in swaps it out from under our published battle helper.
-void battleShadowFrameTick() {
+// Log the active scene identity when it changes. The persistent scene manager
+// ([0x1410c73c8]) holds the scene container at +0x10; an attack cut-in is
+// suspected to swap in a distinct scene/camera object there. Logging on change
+// catches a brief cut-in the coarse per-120-frame monitor would miss. Reads
+// only fields the game populates; every access is VirtualQuery-guarded.
+void sceneIdentityTick() {
+  if (!sceneTraceEnabled() || !gameBase)
+    return;
+  const uintptr_t managerSlot =
+    reinterpret_cast<uintptr_t>(gameBase) + 0x10c73c8;
+  if (!readableRange(managerSlot, sizeof(uintptr_t)))
+    return;
+  const uintptr_t manager = *reinterpret_cast<const uintptr_t*>(managerSlot);
+  const uintptr_t helper = readableRange(manager, 0xa00)
+    ? *reinterpret_cast<const uintptr_t*>(manager + 0x9d0) : 0;
+
+  // The active scene manager pointer ([0x1410c73c8]) is swapped per scene; log
+  // when it or its active helper changes. A cut-in that installs its own manager
+  // will surface here.
+  if (manager == g_lastSceneA.load(std::memory_order_acquire) &&
+      helper == g_lastSceneHelper.load(std::memory_order_acquire))
+    return;
+  g_lastSceneA.store(manager, std::memory_order_release);
+  g_lastSceneHelper.store(helper, std::memory_order_release);
+  atfix::log("SCENE_ID manager=", reinterpret_cast<void*>(manager),
+    " active_helper=", reinterpret_cast<void*>(helper),
+    " battle_active=", g_battleActive.load(std::memory_order_acquire),
+    " battle_helper=", reinterpret_cast<void*>(
+      g_battleHelper.load(std::memory_order_acquire)));
+}
+
+// Battle state-machine vtables (RVA, ImageBase 0x140000000) → name. The current
+// state's Update (vtable slot 1) is what runs each frame; recognizing the state
+// object lets us log exactly when the attack cut-in (ExecCommand) and victory
+// (ResultStart) are active without needing manual F8 marks.
+struct BattleStateEntry { uintptr_t rva; const char* name; };
+const BattleStateEntry kBattleStates[] = {
+  {0x76d9a0, "Enter"}, {0x76dd60, "StartWait"}, {0x76da40, "SelectCommand"},
+  {0x76da90, "SelectTarget"}, {0x76d8c8, "SelectSkill"}, {0x76d830, "SelectItem"},
+  {0x76d798, "SelectDefence"}, {0x76dbd0, "WaitAction"}, {0x76dae0, "ExecCommand"},
+  {0x76dc70, "Reaction"}, {0x76db80, "ReactionSkillBefore"},
+  {0x76db30, "HelpSkillBefore"}, {0x76dc20, "HelpSkillAfter"},
+  {0x76d9f0, "ChangeActiveChara"}, {0x76dcc0, "EndCheck"},
+  {0x76ddb0, "TurnEventWait"}, {0x76de00, "EndWait"}, {0x76dea0, "AfterBattle"},
+  {0x76dd10, "DeadBoss"}, {0x76de50, "ResultStart"}, {0x76d570, "ResultCountExp"},
+  {0x76d630, "ResultDropItem"}, {0x76d6a8, "ResultLevelUp"},
+};
+
+const char* battleStateName(uintptr_t vtable) {
+  if (!gameBase || !vtable)
+    return nullptr;
+  const uintptr_t rva = vtable - reinterpret_cast<uintptr_t>(gameBase);
+  for (const auto& e : kBattleStates)
+    if (e.rva == rva)
+      return e.name;
+  return nullptr;
+}
+
+// Find the game-mode field currently pointing at a battle-state object, so we
+// can re-read it cheaply each frame. Read-only, VirtualQuery-guarded.
+uintptr_t findBattleStateSlot(uintptr_t obj, size_t window, int depth,
+                              std::unordered_set<uintptr_t>& seen,
+                              size_t& budget) {
+  if (!obj || (obj & 7) || budget == 0 || !seen.insert(obj).second ||
+      !readableRange(obj, window))
+    return 0;
+  --budget;
+  for (size_t off = 0; off + 8 <= window; off += 8) {
+    const uintptr_t ptr = *reinterpret_cast<const uintptr_t*>(obj + off);
+    if (ptr && !(ptr & 7) && readableRange(ptr, 8) &&
+        battleStateName(*reinterpret_cast<const uintptr_t*>(ptr)))
+      return obj + off;
+  }
+  if (depth > 0)
+    for (size_t off = 0; off + 8 <= window; off += 8) {
+      const uintptr_t ptr = *reinterpret_cast<const uintptr_t*>(obj + off);
+      if (uintptr_t slot =
+            findBattleStateSlot(ptr, 0x400, depth - 1, seen, budget))
+        return slot;
+    }
+  return 0;
+}
+
+void trackBattleStateTick() {
   if (!battleShadowRestoreEnabled() ||
       !g_battleActive.load(std::memory_order_acquire))
     return;
+  uintptr_t slot = g_battleStateSlot.load(std::memory_order_acquire);
+  if (slot && (!readableRange(slot, 8) ||
+      !battleStateName(*reinterpret_cast<const uintptr_t*>(
+        *reinterpret_cast<const uintptr_t*>(slot))))) {
+    slot = 0;
+    g_battleStateSlot.store(0, std::memory_order_release);
+  }
+  if (!slot) {
+    const uintptr_t gameMode = g_battleGameMode.load(std::memory_order_acquire);
+    if (!gameMode)
+      return;
+    std::unordered_set<uintptr_t> seen;
+    size_t budget = 2000;
+    slot = findBattleStateSlot(gameMode, 0x1000, 2, seen, budget);
+    if (!slot)
+      return;
+    g_battleStateSlot.store(slot, std::memory_order_release);
+  }
+  const uintptr_t stateObj = *reinterpret_cast<const uintptr_t*>(slot);
+  const uintptr_t vt = *reinterpret_cast<const uintptr_t*>(stateObj);
+  if (vt == g_lastBattleStateVt.load(std::memory_order_acquire))
+    return;
+  g_lastBattleStateVt.store(vt, std::memory_order_release);
+  const char* name = battleStateName(vt);
+  atfix::log("BATTLE_STATE ms=", GetTickCount64(), " state=",
+    name, " obj=", reinterpret_cast<void*>(stateObj));
+
+  // On entering the overview (SelectCommand) or the attack cut-in (WaitAction),
+  // snapshot the first party character's render node so the two can be diffed to
+  // find the flag that gates shadow casting during the cut-in.
+  static int snaps = 0;
+  const bool target = name && (std::strcmp(name, "SelectCommand") == 0 ||
+    std::strcmp(name, "WaitAction") == 0);
+  if (!target || snaps >= 4)
+    return;
+  const uintptr_t gameMode = g_battleGameMode.load(std::memory_order_acquire);
+  if (!gameMode || !readableRange(gameMode + 0x658, 0x10))
+    return;
+  const uintptr_t begin = *reinterpret_cast<const uintptr_t*>(gameMode + 0x658);
+  const uintptr_t end = *reinterpret_cast<const uintptr_t*>(gameMode + 0x658 + 8);
+  if (!begin || end <= begin || (end - begin) > 0x200 ||
+      !readableRange(begin, end - begin))
+    return;
+  ++snaps;
+  // Dump the shadow caster registry nodes (helper+0x48) — the actual nodes the
+  // shadow traversal walks; their per-node visibility gates the shadow draw.
+  const uintptr_t helper = gameMode + 0x68;
+  if (readableRange(helper + 0x48, 0x10)) {
+    const uintptr_t rb = *reinterpret_cast<const uintptr_t*>(helper + 0x48);
+    const uintptr_t re = *reinterpret_cast<const uintptr_t*>(helper + 0x50);
+    if (rb && re > rb && (re - rb) <= 0x200 && readableRange(rb, re - rb)) {
+      int ridx = 0;
+      for (uintptr_t p = rb; p < re; p += sizeof(uintptr_t), ++ridx) {
+        const uintptr_t snode = *reinterpret_cast<const uintptr_t*>(p);
+        if (!snode || !readableRange(snode, 0x120))
+          continue;
+        for (size_t off = 0; off < 0x120; off += 0x20)
+          atfix::log("SNODE_SNAP state=", name, " ridx=", ridx,
+            " snode=", reinterpret_cast<void*>(snode),
+            " off=0x", std::hex, off,
+            " ", *reinterpret_cast<const uintptr_t*>(snode + off),
+            " ", *reinterpret_cast<const uintptr_t*>(snode + off + 8),
+            " ", *reinterpret_cast<const uintptr_t*>(snode + off + 0x10),
+            " ", *reinterpret_cast<const uintptr_t*>(snode + off + 0x18),
+            std::dec);
+      }
+    }
+  }
+}
+
+// The current battle state name, or nullptr outside battle.
+const char* currentBattleState() {
+  return battleStateName(g_lastBattleStateVt.load(std::memory_order_acquire));
+}
+
+// The cinematic states in which the Event system drives characters — the attack
+// cut-in (WaitAction / skill states) and the victory sequence. During these we
+// re-scan for character/model objects and register any not yet casting.
+bool isCinematicState(const char* name) {
+  if (!name)
+    return false;
+  static const char* const kNames[] = {
+    "WaitAction", "HelpSkillBefore", "HelpSkillAfter", "ReactionSkillBefore",
+    "Reaction", "ResultStart", "ResultCountExp", "ResultDropItem",
+    "ResultLevelUp", "DeadBoss", "AfterBattle",
+  };
+  for (const char* n : kNames)
+    if (std::strcmp(name, n) == 0)
+      return true;
+  return false;
+}
+
+// Exposed to the D3D layer (sync_fix) so draws can be tagged cut-in vs overview.
+namespace atfix {
+bool arlandInCinematicBattle() {
+  return isCinematicState(currentBattleState());
+}
+}
+
+// Scan an object graph for individually-referenced character/model objects and
+// register each one's render node ([obj+0x18]) as a shadow caster (deduped,
+// capped). Catches a cut-in/victory character the Event system drives outside
+// the party vector. Read-guarded; bounded so the caster registry can't run away.
+size_t scanCutinCharas(uintptr_t obj, size_t window, int depth,
+                       std::unordered_set<uintptr_t>& seen, size_t& budget,
+                       uintptr_t helper, uintptr_t scene, const char* state) {
+  if (!obj || (obj & 7) || budget == 0 || !seen.insert(obj).second ||
+      !readableRange(obj, window))
+    return 0;
+  --budget;
+  size_t registered = 0;
+  for (size_t off = 0; off + 8 <= window; off += 8) {
+    const uintptr_t ptr = *reinterpret_cast<const uintptr_t*>(obj + off);
+    if (!ptr || (ptr & 7) || !readableRange(ptr, 0x20))
+      continue;
+    const uintptr_t ptrVt = *reinterpret_cast<const uintptr_t*>(ptr);
+    if (const char* ev = eventExecName(ptrVt)) {
+      std::lock_guard<std::mutex> lock(battleCharaMutex);
+      if (g_registeredCharacters.insert(ptr | 1).second &&  // dedup marker
+          readableRange(ptr, 0x80)) {
+        for (size_t f = 0; f < 0x80; f += 8) {
+          const uintptr_t v = *reinterpret_cast<const uintptr_t*>(ptr + f);
+          const char* fc = (v && !(v & 7) && readableRange(v, 8))
+            ? charaFamilyName(*reinterpret_cast<const uintptr_t*>(v)) : nullptr;
+          if (fc)
+            atfix::log("EVENT_EXEC ms=", GetTickCount64(), " state=", state,
+              " ev=", ev, " obj=", reinterpret_cast<void*>(ptr),
+              " field=0x", std::hex, f, std::dec,
+              " ref=", reinterpret_cast<void*>(v), " ref_class=", fc,
+              " node=", reinterpret_cast<void*>(
+                *reinterpret_cast<const uintptr_t*>(v + 0x18)));
+        }
+      }
+    }
+    const char* cls = charaFamilyName(ptrVt);
+    if (cls) {
+      const uintptr_t node = *reinterpret_cast<const uintptr_t*>(ptr + 0x18);
+      if (node && readableRange(node, 8)) {
+        bool isNew;
+        {
+          std::lock_guard<std::mutex> lock(battleCharaMutex);
+          isNew = g_registeredCharacters.insert(node).second;
+        }
+        if (isNew && g_cutinRegistered.load(std::memory_order_acquire) < 512) {
+          const size_t before = shadowLayerCount(helper, 0x48);
+          originalShadowCharacterBuild(helper, scene, node, 0);
+          const size_t after = shadowLayerCount(helper, 0x48);
+          g_cutinRegistered.fetch_add(1, std::memory_order_acq_rel);
+          ++registered;
+          atfix::log("BATTLE_CUTIN_REGISTER ms=", GetTickCount64(),
+            " state=", state, " class=", cls,
+            " obj=", reinterpret_cast<void*>(ptr),
+            " node=", reinterpret_cast<void*>(node),
+            " registry_before=", before, " registry_after=", after);
+        }
+      }
+    }
+    if (depth > 0)
+      registered +=
+        scanCutinCharas(ptr, 0x400, depth - 1, seen, budget, helper, scene, state);
+  }
+  return registered;
+}
+
+void cutinReregisterTick() {
+  if (!battleShadowSweepEnabled() ||
+      !g_battleActive.load(std::memory_order_acquire) ||
+      !originalShadowCharacterBuild)
+    return;
+  const char* state = currentBattleState();
+  if (!isCinematicState(state))
+    return;
+  const uintptr_t helper = chosenBattleHelper();
+  const uintptr_t scene = g_battleScene.load(std::memory_order_acquire);
+  const uintptr_t gameMode = g_battleGameMode.load(std::memory_order_acquire);
+  if (!helper || !scene || !gameMode)
+    return;
+  std::unordered_set<uintptr_t> seen;
+  size_t budget = 3000;
+  scanCutinCharas(gameMode, 0x1000, 3, seen, budget, helper, scene, state);
+  if (scene != gameMode)
+    scanCutinCharas(scene, 0x1000, 3, seen, budget, helper, scene, state);
+}
+
+// Is the battle game-mode still a live battle (party vector at +0x658 still
+// holds BtlChara objects)? Used to detect battle exit so we can un-publish the
+// battle helper before the field renders through a freed pointer.
+bool battleGameModeLive(uintptr_t gameMode) {
+  if (!gameMode || !readableRange(gameMode + 0x658, 0x10))
+    return false;
+  const uintptr_t begin =
+    *reinterpret_cast<const uintptr_t*>(gameMode + 0x658);
+  const uintptr_t end =
+    *reinterpret_cast<const uintptr_t*>(gameMode + 0x658 + 8);
+  if (!begin || end <= begin || (end - begin) > 0x1000 ||
+      (end - begin) % sizeof(uintptr_t) || !readableRange(begin, end - begin))
+    return false;
+  const uintptr_t elem0 = *reinterpret_cast<const uintptr_t*>(begin);
+  return readableRange(elem0, sizeof(uintptr_t)) &&
+    isBattleCharaVtable(*reinterpret_cast<const uintptr_t*>(elem0));
+}
+
+// Restore the field helper we displaced when publishing the battle helper.
+void restorePublishedHelper(const char* reason) {
+  const uintptr_t saved =
+    g_savedGlobalHelper.exchange(0, std::memory_order_acq_rel);
+  if (saved) {
+    if (uintptr_t* slot = globalActiveHelperSlot())
+      *slot = saved;
+    atfix::log("BATTLE_SHADOW_RESTORE reason=", reason,
+      " restored=", reinterpret_cast<void*>(saved));
+  }
+}
+
+// Per-battle-frame work: locate the party vector and register once (actors may
+// spawn after helper-init); self-heal the publish when the battle ends so the
+// field never renders through a freed battle helper (returning to the field does
+// not go through the field-scene-setup path our helper-init hook watches).
+void battleShadowFrameTick() {
+  if (!battleShadowRestoreEnabled())
+    return;
+  const uintptr_t gameMode = g_battleGameMode.load(std::memory_order_acquire);
+
+  // Self-healing restore: once we've published (saved != 0), watch the battle
+  // game-mode. When it stops looking live for several consecutive frames, the
+  // battle is over — put the field helper back and stand down.
+  if (g_savedGlobalHelper.load(std::memory_order_acquire)) {
+    if (battleGameModeLive(gameMode)) {
+      g_battleDeadFrames.store(0, std::memory_order_release);
+    } else if (g_battleDeadFrames.fetch_add(1, std::memory_order_acq_rel) >= 20) {
+      restorePublishedHelper("gamemode_dead");
+      g_battleActive.store(false, std::memory_order_release);
+      g_battleContainerFound.store(false, std::memory_order_release);
+      g_battleRegistered.store(false, std::memory_order_release);
+      g_battleDeadFrames.store(0, std::memory_order_release);
+      return;
+    }
+  }
+
+  if (!g_battleActive.load(std::memory_order_acquire))
+    return;
   const uint64_t tick = g_battleTickCounter.fetch_add(
     1, std::memory_order_relaxed);
-  const uintptr_t gameMode = g_battleGameMode.load(std::memory_order_acquire);
   const uintptr_t scene = g_battleScene.load(std::memory_order_acquire);
 
   if (!g_battleContainerFound.load(std::memory_order_acquire) &&
       tick % 30 == 0 && tick / 30 <= 40 && gameMode &&
-      locateBattleCharaContainer(gameMode, scene, "frame")) {
+      locateBattleCharaContainer(gameMode, scene, "frame", false)) {
     g_battleContainerFound.store(true, std::memory_order_release);
     registerBattleCharaShadows();
   }
 
-  if (battleShadowSweepEnabled() &&
-      g_battleContainerFound.load(std::memory_order_acquire) && tick % 12 == 0)
-    sweepRegisterBattleCharas();
+  // Sweep mode: continuously scan the whole game-mode graph and register every
+  // reachable BtlChara (deduped). Catches a cut-in/victory character that lives
+  // outside the party vector and only exists while its scene is on screen.
+  if (battleShadowSweepEnabled() && gameMode && tick % 8 == 0)
+    locateBattleCharaContainer(gameMode, scene, "sweep", true);
 
   if (tick % 120 == 0 && tick <= 120 * 200) {
     uintptr_t* slot = globalActiveHelperSlot();
@@ -2683,7 +3115,23 @@ bool frameAtlasCacheEnabled() {
 }
 
 void traceMenuPresent(uint64_t durationMicros, uint64_t intervalMicros) {
+  sceneIdentityTick();
+  trackBattleStateTick();
   battleShadowFrameTick();
+  cutinReregisterTick();
+  // Manual correlation marker: press F7/F8/F9 while a cut-in is on screen. Uses
+  // the currently-down bit (0x8000) with our own edge detection — Wine does not
+  // reliably implement GetAsyncKeyState's "recently pressed" low bit. The ms
+  // timestamp matches against the ms on each SHADOW window line.
+  static bool markKeyWasDown[3] = {false, false, false};
+  const int markKeys[3] = {VK_F7, VK_F8, VK_F9};
+  for (int i = 0; i < 3; ++i) {
+    const bool down = (GetAsyncKeyState(markKeys[i]) & 0x8000) != 0;
+    if (down && !markKeyWasDown[i])
+      atfix::log("USER_MARK key=F", 7 + i, " ms=", GetTickCount64(),
+        " battle_active=", g_battleActive.load(std::memory_order_acquire));
+    markKeyWasDown[i] = down;
+  }
   if (frameAtlasCacheEnabled()) {
     std::lock_guard lock(atlasMutex);
     atlasReads.clear();

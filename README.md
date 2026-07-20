@@ -12,6 +12,7 @@ For newer Atelier games, use the upstream [atelier-sync-fix](https://github.com/
 - Fewer pauses caused by the games repeatedly waiting for graphics work to finish.
 - Correct text rendering without the corruption produced by older synchronization fixes in these games.
 - Correct direct rendering at 2560×1440 and 3840×2160 instead of leaving internal render targets and raster state at 1920×1080.
+- Restored character and enemy shadows during battles in Atelier Rorona DX, which the port omitted entirely.
 - One installation covering the relevant performance fixes for the complete Arland trilogy.
 
 The mod is intended for the Steam versions of the games. See [TECHNICAL.md](TECHNICAL.md) for implementation details and tested executable fingerprints.
@@ -70,7 +71,7 @@ Height=2160
 
 ### Troubleshooting switches
 
-The fixes are enabled by default. `ARLAND_MENU_FIX=0` disables the executable-specific menu hooks while retaining D3D11 forwarding and synchronization. `ARLAND_ATLAS_CACHE=0` disables atlas-read caching. Rorona also accepts `ARLAND_FRAME_ATLAS_CACHE=0` to restrict snapshots to the older queue-scoped behavior. These switches are intended for diagnosis and A/B testing, not normal installation.
+The fixes are enabled by default. `ARLAND_MENU_FIX=0` disables the executable-specific menu hooks while retaining D3D11 forwarding and synchronization. `ARLAND_ATLAS_CACHE=0` disables atlas-read caching. Rorona also accepts `ARLAND_FRAME_ATLAS_CACHE=0` to restrict snapshots to the older queue-scoped behavior, and `ARLAND_BATTLE_SHADOWS=0` to disable the restored battle shadows. These switches are intended for diagnosis and A/B testing, not normal installation.
 
 ## Build
 
