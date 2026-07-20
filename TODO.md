@@ -4,6 +4,7 @@ This file tracks work in progress and ideas under consideration. Items here are 
 
 ## Rendering enhancements under consideration
 
+- Battle-character shadows: **overview SOLVED** (opt-in `ARLAND_BATTLE_SHADOWS=1 ARLAND_BATTLE_SHADOW_TARGET=battle`; see REPORT §28). Follow-ups: (a) fix the attack cut-in, a separate receiver/projection-side problem needing D3D-level analysis of the cut-in shadow-SRV sampling; (b) remove the dead diagnostic scaffolding (constructor collection, `0x39cfd0` scoped-swap, deferred-queue) and promote the registration+publish path to a clean opt-in feature; (c) configurable shadow-map resolution only after (a).
 - Investigate sharper font outlines through a font-only atlas or sampling improvement without sharpening other UI textures.
 - Add a signature-gated Borderless checkbox to the settings launcher and implement the corresponding game-window mode.
 - Evaluate anisotropic filtering and configurable texture LOD bias, including UI and shimmering regressions.

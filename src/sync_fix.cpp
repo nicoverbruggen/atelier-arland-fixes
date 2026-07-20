@@ -163,6 +163,120 @@ std::map<ReadMapKey, ReadMapStats> g_transitionWriteMaps;
 TransitionCounter g_transitionShadowFlush;
 std::atomic<uint64_t> g_transitionShadowFlushBytes = 0;
 
+struct ShadowDrawKey {
+  uintptr_t vertexShader = 0;
+  uintptr_t pixelShader = 0;
+  uintptr_t inputLayout = 0;
+  uintptr_t vertexBuffer = 0;
+  uint32_t targetWidth = 0;
+  uint32_t targetHeight = 0;
+  uint32_t targetFormat = 0;
+  uint32_t contextType = 0;
+  uint32_t indexed = 0;
+
+  bool operator<(const ShadowDrawKey& other) const {
+    return std::tie(vertexShader, pixelShader, inputLayout, vertexBuffer,
+      targetWidth, targetHeight, targetFormat, contextType, indexed) <
+      std::tie(other.vertexShader, other.pixelShader, other.inputLayout,
+        other.vertexBuffer, other.targetWidth, other.targetHeight,
+        other.targetFormat, other.contextType, other.indexed);
+  }
+};
+
+struct ShadowDrawStats {
+  uint64_t calls = 0;
+  uint64_t elements = 0;
+};
+
+mutex g_shadowTraceMutex;
+std::map<ShadowDrawKey, ShadowDrawStats> g_shadowDraws;
+uint64_t g_shadowDepthOnlyBinds = 0;
+uint64_t g_shadowTraceFrames = 0;
+uint64_t g_shadowTraceSequence = 0;
+
+bool shadowTraceEnabled() {
+  static const bool enabled = [] {
+    const char* value = std::getenv("ARLAND_SHADOW_TRACE");
+    return value && value[0] != '0';
+  }();
+  return enabled;
+}
+
+void traceShadowTargetBind(UINT renderTargetCount,
+                           ID3D11RenderTargetView* const* renderTargets,
+                           ID3D11DepthStencilView* depthTarget) {
+  if (!shadowTraceEnabled() || !depthTarget ||
+      renderTargetCount > D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT)
+    return;
+  bool haveColor = false;
+  for (UINT index = 0; index < renderTargetCount; ++index)
+    haveColor |= renderTargets && renderTargets[index];
+  if (haveColor)
+    return;
+  std::lock_guard lock(g_shadowTraceMutex);
+  ++g_shadowDepthOnlyBinds;
+}
+
+void traceShadowDraw(ID3D11DeviceContext* context, bool indexed,
+                     UINT elementCount, UINT instanceCount) {
+  if (!shadowTraceEnabled())
+    return;
+
+  ID3D11RenderTargetView* renderTarget = nullptr;
+  ID3D11DepthStencilView* depthTarget = nullptr;
+  context->OMGetRenderTargets(1, &renderTarget, &depthTarget);
+  if (renderTarget || !depthTarget) {
+    if (renderTarget) renderTarget->Release();
+    if (depthTarget) depthTarget->Release();
+    return;
+  }
+
+  ID3D11Resource* depthResource = nullptr;
+  ID3D11Texture2D* depthTexture = nullptr;
+  D3D11_TEXTURE2D_DESC depthDesc = { };
+  depthTarget->GetResource(&depthResource);
+  if (depthResource && SUCCEEDED(
+        depthResource->QueryInterface(IID_PPV_ARGS(&depthTexture))))
+    depthTexture->GetDesc(&depthDesc);
+
+  ID3D11VertexShader* vertexShader = nullptr;
+  ID3D11PixelShader* pixelShader = nullptr;
+  ID3D11InputLayout* inputLayout = nullptr;
+  ID3D11Buffer* vertexBuffer = nullptr;
+  UINT stride = 0;
+  UINT offset = 0;
+  context->VSGetShader(&vertexShader, nullptr, nullptr);
+  context->PSGetShader(&pixelShader, nullptr, nullptr);
+  context->IAGetInputLayout(&inputLayout);
+  context->IAGetVertexBuffers(0, 1, &vertexBuffer, &stride, &offset);
+
+  const ShadowDrawKey key = {
+    reinterpret_cast<uintptr_t>(vertexShader),
+    reinterpret_cast<uintptr_t>(pixelShader),
+    reinterpret_cast<uintptr_t>(inputLayout),
+    reinterpret_cast<uintptr_t>(vertexBuffer),
+    depthDesc.Width,
+    depthDesc.Height,
+    uint32_t(depthDesc.Format),
+    uint32_t(context->GetType()),
+    indexed ? 1u : 0u,
+  };
+  {
+    std::lock_guard lock(g_shadowTraceMutex);
+    auto& stats = g_shadowDraws[key];
+    ++stats.calls;
+    stats.elements += uint64_t(elementCount) * instanceCount;
+  }
+
+  if (vertexBuffer) vertexBuffer->Release();
+  if (inputLayout) inputLayout->Release();
+  if (pixelShader) pixelShader->Release();
+  if (vertexShader) vertexShader->Release();
+  if (depthTexture) depthTexture->Release();
+  if (depthResource) depthResource->Release();
+  depthTarget->Release();
+}
+
 bool transitionTraceEnabled() {
   static const bool enabled = [] {
     const char* value = std::getenv("ARLAND_MENU_TRANSITION_TRACE");
@@ -1903,6 +2017,7 @@ void STDMETHODCALLTYPE ID3D11DeviceContext_OMSetRenderTargets(
   updateRtvShadowResources(pContext);
   resolveBoundMSAA(pContext);
   getRasterState(pContext)->dirty.store(true, std::memory_order_release);
+  traceShadowTargetBind(RTVCount, ppRTVs, pDSV);
 
   ID3D11RenderTargetView* msaaRtv = nullptr;
   ID3D11DepthStencilView* msaaDsv = nullptr;
@@ -1937,6 +2052,7 @@ void STDMETHODCALLTYPE ID3D11DeviceContext_OMSetRenderTargetsAndUnorderedAccessV
   updateRtvShadowResources(pContext);
   resolveBoundMSAA(pContext);
   getRasterState(pContext)->dirty.store(true, std::memory_order_release);
+  traceShadowTargetBind(RTVCount, ppRTVs, pDSV);
 
   ID3D11RenderTargetView* msaaRtv = nullptr;
   ID3D11DepthStencilView* msaaDsv = nullptr;
@@ -2355,6 +2471,7 @@ void STDMETHODCALLTYPE ID3D11DeviceContext_Draw(
   auto procs = getContextProcs(pContext);
   flushDirtyShadows(pContext);
   updateViewportScissor(pContext);
+  traceShadowDraw(pContext, false, VertexCount, 1);
   traceResolutionDraw(pContext, "draw", VertexCount, 1);
 
   // Carry dialogue-snapshot identity through the three-vertex blur passes so
@@ -2397,6 +2514,7 @@ void STDMETHODCALLTYPE ID3D11DeviceContext_DrawIndexed(
   auto procs = getContextProcs(pContext);
   flushDirtyShadows(pContext);
   updateViewportScissor(pContext);
+  traceShadowDraw(pContext, true, IndexCount, 1);
   traceResolutionDraw(pContext, "indexed", IndexCount, 1);
 
   // The 48-byte 1920x1080 quad is shared by other cutscene layers. Keep the
@@ -2457,6 +2575,8 @@ void STDMETHODCALLTYPE ID3D11DeviceContext_DrawInstanced(
   auto procs = getContextProcs(pContext);
   flushDirtyShadows(pContext);
   updateViewportScissor(pContext);
+  traceShadowDraw(
+    pContext, false, VertexCountPerInstance, InstanceCount);
   traceResolutionDraw(
     pContext, "instanced", VertexCountPerInstance, InstanceCount);
   procs->DrawInstanced(pContext, VertexCountPerInstance, InstanceCount,
@@ -2470,6 +2590,8 @@ void STDMETHODCALLTYPE ID3D11DeviceContext_DrawIndexedInstanced(
   auto procs = getContextProcs(pContext);
   flushDirtyShadows(pContext);
   updateViewportScissor(pContext);
+  traceShadowDraw(
+    pContext, true, IndexCountPerInstance, InstanceCount);
   traceResolutionDraw(
     pContext, "indexed-instanced", IndexCountPerInstance, InstanceCount);
   procs->DrawIndexedInstanced(pContext, IndexCountPerInstance, InstanceCount,
@@ -2651,7 +2773,8 @@ void hookDevice(ID3D11Device* pDevice) {
 
   log("Hooking device ", pDevice,
       " msaa=", msaaSamples(),
-      " resolution_trace=", resolutionTraceEnabled());
+      " resolution_trace=", resolutionTraceEnabled(),
+      " shadow_trace=", shadowTraceEnabled());
 
   DeviceProcs* procs = &g_deviceProcs;
   HOOK_PROC(ID3D11Device, pDevice, procs, 3,  CreateBuffer);
@@ -2786,6 +2909,73 @@ void traceTransitionD3DFrame(uint64_t intervalMicros) {
       " calls=", stats.calls, " resources=", stats.resources.size(),
       " bytes=", stats.estimatedBytes,
       " api_us=", stats.nanos / 1000);
+  }
+}
+
+void traceShadowD3DFrame() {
+  if (!shadowTraceEnabled())
+    return;
+
+  std::map<ShadowDrawKey, ShadowDrawStats> draws;
+  uint64_t depthOnlyBinds = 0;
+  uint64_t sequence = 0;
+  {
+    std::lock_guard lock(g_shadowTraceMutex);
+    if (++g_shadowTraceFrames < 120)
+      return;
+    g_shadowTraceFrames = 0;
+    sequence = ++g_shadowTraceSequence;
+    depthOnlyBinds = g_shadowDepthOnlyBinds;
+    g_shadowDepthOnlyBinds = 0;
+    draws.swap(g_shadowDraws);
+  }
+
+  using GroupKey = std::tuple<uintptr_t, uintptr_t, uintptr_t,
+    uint32_t, uint32_t, uint32_t, uint32_t, uint32_t>;
+  struct GroupStats {
+    uint64_t calls = 0;
+    uint64_t elements = 0;
+    std::set<uintptr_t> vertexBuffers;
+  };
+  std::map<GroupKey, GroupStats> groups;
+  uint64_t totalCalls = 0;
+  uint64_t totalElements = 0;
+  for (const auto& [key, stats] : draws) {
+    const GroupKey groupKey = {
+      key.vertexShader, key.pixelShader, key.inputLayout,
+      key.targetWidth, key.targetHeight, key.targetFormat,
+      key.contextType, key.indexed,
+    };
+    auto& group = groups[groupKey];
+    group.calls += stats.calls;
+    group.elements += stats.elements;
+    if (key.vertexBuffer)
+      group.vertexBuffers.insert(key.vertexBuffer);
+    totalCalls += stats.calls;
+    totalElements += stats.elements;
+  }
+
+  log("SHADOW window=", sequence,
+      " frames=120 depth_only_binds=", depthOnlyBinds,
+      " draws=", totalCalls,
+      " elements=", totalElements,
+      " groups=", groups.size());
+  size_t reported = 0;
+  for (const auto& [key, stats] : groups) {
+    if (reported++ >= 64)
+      break;
+    const auto& [vs, ps, layout, width, height, format,
+                 contextType, indexed] = key;
+    log("SHADOW group window=", sequence,
+        " calls=", stats.calls,
+        " elements=", stats.elements,
+        " buffers=", stats.vertexBuffers.size(),
+        " target=", width, "x", height, "/", format,
+        " context=", contextType,
+        " indexed=", indexed,
+        " vs=", reinterpret_cast<void*>(vs),
+        " ps=", reinterpret_cast<void*>(ps),
+        " layout=", reinterpret_cast<void*>(layout));
   }
 }
 

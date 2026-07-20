@@ -59,6 +59,22 @@ using LayoutValidateF0Proc = uintptr_t (*)(
 using LayoutRebuildProc = uintptr_t (*)(uintptr_t, uintptr_t);
 using GameAllocProc = void* (*)(size_t);
 using GameFreeProc = void (*)(void*);
+using ShadowLayerBuildProc = void (*)(uintptr_t, uintptr_t);
+using ShadowNodeFactoryProc = uintptr_t (*)(
+  uintptr_t, uintptr_t, uintptr_t);
+using ShadowNodeMappingProc = uintptr_t (*)(uintptr_t, uintptr_t);
+using ShadowShaderBuildProc = uintptr_t (*)(
+  uintptr_t, uintptr_t, uintptr_t, uintptr_t);
+using ShadowGroupBuildProc = uintptr_t (*)(
+  uintptr_t, uintptr_t, uintptr_t, uintptr_t);
+using ShadowCharacterBuildProc = uintptr_t (*)(
+  uintptr_t, uintptr_t, uintptr_t, uintptr_t);
+using ShadowHelperInitProc = uintptr_t (*)(
+  uintptr_t, uintptr_t, uintptr_t, uintptr_t);
+using BattleActorInitProc = uintptr_t (*)(uintptr_t, uintptr_t);
+using BtlCharaCtorProc = uintptr_t (*)(
+  uintptr_t, uintptr_t, uintptr_t, uintptr_t);
+using ShadowScenePassProc = uintptr_t (*)(uintptr_t);
 
 struct Game {
   const char* executable;
@@ -114,6 +130,53 @@ LayoutVirtualProc originalLayoutAllocate = nullptr;
 LayoutBuildCoreProc originalLayoutTemplate = nullptr;
 GameAllocProc gameAlloc = nullptr;
 GameFreeProc gameFree = nullptr;
+ShadowLayerBuildProc originalShadowLayerBuild = nullptr;
+ShadowNodeFactoryProc originalShadowRenderNodeFactory = nullptr;
+ShadowNodeFactoryProc originalShadowSkinNodeFactory = nullptr;
+ShadowNodeMappingProc originalShadowRenderNodeMapping = nullptr;
+ShadowNodeMappingProc originalShadowSkinNodeMapping = nullptr;
+ShadowShaderBuildProc originalShadowShaderBuild = nullptr;
+ShadowGroupBuildProc originalShadowGroupBuild = nullptr;
+ShadowCharacterBuildProc originalShadowCharacterBuild = nullptr;
+ShadowHelperInitProc originalShadowHelperInit = nullptr;
+BattleActorInitProc originalBattleActorInit = nullptr;
+BtlCharaCtorProc originalBtlCharaPartyCtor = nullptr;
+BtlCharaCtorProc originalBtlCharaMonsterCtor = nullptr;
+
+struct PendingBattleShadow {
+  uintptr_t helper = 0;
+  uintptr_t scene = 0;
+  uintptr_t character = 0;
+};
+
+std::mutex pendingBattleShadowMutex;
+std::vector<PendingBattleShadow> pendingBattleShadows;
+
+// Opt-in battle-shadow reconstruction (ARLAND_BATTLE_SHADOWS). BtlChara-family
+// instances are collected as they are constructed; once the battle ShadowHelper
+// finishes initializing we register each one as a shadow caster, reproducing the
+// slot-45 init (RVA 0x1072a0) the battle flow never dispatches on its characters.
+std::mutex battleCharaMutex;
+std::vector<uintptr_t> battleCharas;
+std::unordered_set<uintptr_t> dispatchedBattleCharas;
+
+// Publish experiment: the per-frame scene shadow pass reads the active helper
+// from a manager global; battle never installs its own helper there, so the
+// pass keeps processing the stale field helper. When enabled we temporarily
+// point that global at the live battle helper for the duration of each pass.
+ShadowScenePassProc originalShadowScenePass = nullptr;
+std::atomic<uintptr_t> g_battleHelper{0};
+std::atomic<uintptr_t> g_battleGameMode{0};
+std::atomic<uintptr_t> g_battleScene{0};
+std::atomic<uintptr_t> g_battleCharaVectorAddr{0};
+std::atomic<uintptr_t> g_savedGlobalHelper{0};
+std::atomic<bool> g_battleActive{false};
+std::atomic<bool> g_battleContainerFound{false};
+std::atomic<bool> g_battleRegistered{false};
+std::atomic<uint64_t> g_scenePassCalls{0};
+std::atomic<uint64_t> g_battleTickCounter{0};
+thread_local uint64_t shadowRenderMappings = 0;
+thread_local uint64_t shadowSkinMappings = 0;
 std::once_flag initialization;
 bool supportedGame = false;
 BYTE* gameBase = nullptr;
@@ -346,6 +409,590 @@ bool deepMenuStatsEnabled() {
     return value && value[0] != '0';
   }();
   return enabled;
+}
+
+bool shadowLayerTraceEnabled() {
+  static const bool enabled = [] {
+    const char* value = std::getenv("ARLAND_SHADOW_LAYERS");
+    return value && value[0] != '0';
+  }();
+  return enabled;
+}
+
+bool shadowConstructorTraceEnabled() {
+  static const bool enabled = [] {
+    const char* value = std::getenv("ARLAND_SHADOW_CONSTRUCTORS");
+    return value && value[0] != '0';
+  }();
+  return enabled;
+}
+
+bool shadowMappingTraceEnabled() {
+  static const bool enabled = [] {
+    const char* value = std::getenv("ARLAND_SHADOW_MAPPING");
+    return value && value[0] != '0';
+  }();
+  return enabled;
+}
+
+bool battleShadowRestoreEnabled() {
+  static const bool enabled = [] {
+    const char* value = std::getenv("ARLAND_BATTLE_SHADOWS");
+    return value && value[0] != '0';
+  }();
+  return enabled;
+}
+
+bool battleShadowPublishEnabled() {
+  static const bool enabled = [] {
+    const char* value = std::getenv("ARLAND_BATTLE_SHADOW_PUBLISH");
+    return value && value[0] != '0';
+  }();
+  return enabled;
+}
+
+// Which helper the located battle characters are registered into:
+// "battle" = the game-mode-local helper (gameMode+0x68); anything else = the
+// global active helper the renderer currently traverses. Default global.
+bool battleShadowTargetsBattleHelper() {
+  static const bool battle = [] {
+    const char* value = std::getenv("ARLAND_BATTLE_SHADOW_TARGET");
+    return value && std::strcmp(value, "battle") == 0;
+  }();
+  return battle;
+}
+
+size_t shadowLayerCount(uintptr_t helper, size_t offset);
+
+uintptr_t tracedShadowRenderNodeMapping(uintptr_t mapping, uintptr_t node) {
+  ++shadowRenderMappings;
+  return originalShadowRenderNodeMapping(mapping, node);
+}
+
+uintptr_t tracedShadowSkinNodeMapping(uintptr_t mapping, uintptr_t node) {
+  ++shadowSkinMappings;
+  return originalShadowSkinNodeMapping(mapping, node);
+}
+
+uintptr_t tracedShadowShaderBuild(uintptr_t shader, uintptr_t a2,
+                                  uintptr_t a3, uintptr_t a4) {
+  const uintptr_t caller = reinterpret_cast<uintptr_t>(
+    __builtin_return_address(0));
+  const uintptr_t callerRva = gameBase && caller >= uintptr_t(gameBase)
+    ? caller - uintptr_t(gameBase) : 0;
+  size_t nodes = 0;
+  if (shader) {
+    const uintptr_t begin = *reinterpret_cast<const uintptr_t*>(shader + 0x10);
+    const uintptr_t end = *reinterpret_cast<const uintptr_t*>(shader + 0x18);
+    if (begin && end >= begin && (end - begin) % sizeof(uintptr_t) == 0)
+      nodes = size_t((end - begin) / sizeof(uintptr_t));
+  }
+  const uint64_t renderBefore = shadowRenderMappings;
+  const uint64_t skinBefore = shadowSkinMappings;
+  const uintptr_t result = originalShadowShaderBuild(shader, a2, a3, a4);
+  atfix::log("SHADOW_MAPPING caller_rva=0x", std::hex, callerRva, std::dec,
+    " shader=", reinterpret_cast<void*>(shader),
+    " nodes=", nodes,
+    " a2=", reinterpret_cast<void*>(a2),
+    " a3=", reinterpret_cast<void*>(a3),
+    " a4=", a4,
+    " render=", shadowRenderMappings - renderBefore,
+    " skin=", shadowSkinMappings - skinBefore,
+    " result=", result);
+  return result;
+}
+
+uintptr_t tracedShadowGroupBuild(uintptr_t group, uintptr_t a2,
+                                 uintptr_t a3, uintptr_t context) {
+  void* frames[12] = {};
+  const USHORT frameCount = CaptureStackBackTrace(
+    0, static_cast<DWORD>(std::size(frames)), frames, nullptr);
+  const uintptr_t caller = reinterpret_cast<uintptr_t>(
+    __builtin_return_address(0));
+  const uintptr_t callerRva = gameBase && caller >= uintptr_t(gameBase)
+    ? caller - uintptr_t(gameBase) : 0;
+  atfix::log("SHADOW_GROUP caller_rva=0x", std::hex, callerRva, std::dec,
+    " group=", reinterpret_cast<void*>(group),
+    " a2=", reinterpret_cast<void*>(a2),
+    " a3=", reinterpret_cast<void*>(a3),
+    " context=", reinterpret_cast<void*>(context),
+    " frames=", frameCount);
+  for (USHORT i = 0; i < frameCount; ++i) {
+    const uintptr_t address = reinterpret_cast<uintptr_t>(frames[i]);
+    if (gameBase && address >= uintptr_t(gameBase))
+      atfix::log("SHADOW_GROUP_FRAME index=", i, " rva=0x", std::hex,
+        address - uintptr_t(gameBase), std::dec);
+  }
+  return originalShadowGroupBuild(group, a2, a3, context);
+}
+
+uintptr_t tracedShadowCharacterBuild(uintptr_t helper, uintptr_t scene,
+                                     uintptr_t character, uintptr_t a4) {
+  const uintptr_t caller = reinterpret_cast<uintptr_t>(
+    __builtin_return_address(0));
+  const uintptr_t callerRva = gameBase && caller >= uintptr_t(gameBase)
+    ? caller - uintptr_t(gameBase) : 0;
+  const size_t before = helper ? shadowLayerCount(helper, 0x48) : 0;
+  const uintptr_t result = originalShadowCharacterBuild(
+    helper, scene, character, a4);
+  const size_t after = helper ? shadowLayerCount(helper, 0x48) : 0;
+  atfix::log("SHADOW_CHARACTER caller_rva=0x", std::hex, callerRva,
+    std::dec,
+    " helper=", reinterpret_cast<void*>(helper),
+    " scene=", reinterpret_cast<void*>(scene),
+    " character=", reinterpret_cast<void*>(character),
+    " registry_before=", before,
+    " registry_after=", after);
+  return result;
+}
+
+// BtlChara-family vtable RVAs (ImageBase 0x140000000). A collected pointer is
+// only dereferenced for the opt-in dispatch if it still carries one of these,
+// which rejects freed/reused objects left over from an earlier battle.
+const uintptr_t kBtlCharaVtableRvas[] = {
+  0x76e080,  // BtlChara
+  0x76e2c0,  // BtlCharaEffect
+  0x76e438,  // BtlCharaDummy
+  0x76e5b0,  // BtlCharaSynchro
+  0x76ec38,  // BtlCharaMonster
+  0x76edd8,  // BtlCharaParty
+  0x76f088,  // BtlCharaRefractionEffect
+  0x76f228,  // BtlCharaRemoteWeapon
+};
+
+bool isBattleCharaVtable(uintptr_t vtable) {
+  if (!gameBase || !vtable)
+    return false;
+  const uintptr_t rva = vtable - reinterpret_cast<uintptr_t>(gameBase);
+  for (uintptr_t known : kBtlCharaVtableRvas)
+    if (rva == known)
+      return true;
+  return false;
+}
+
+void recordBattleChara(uintptr_t chara) {
+  if (!chara)
+    return;
+  std::lock_guard<std::mutex> lock(battleCharaMutex);
+  if (std::find(battleCharas.begin(), battleCharas.end(), chara) ==
+      battleCharas.end())
+    battleCharas.push_back(chara);
+}
+
+uintptr_t tracedBtlCharaPartyCtor(uintptr_t self, uintptr_t a2, uintptr_t a3,
+                                  uintptr_t a4) {
+  const uintptr_t result = originalBtlCharaPartyCtor(self, a2, a3, a4);
+  recordBattleChara(self);
+  return result;
+}
+
+uintptr_t tracedBtlCharaMonsterCtor(uintptr_t self, uintptr_t a2, uintptr_t a3,
+                                    uintptr_t a4) {
+  const uintptr_t result = originalBtlCharaMonsterCtor(self, a2, a3, a4);
+  recordBattleChara(self);
+  return result;
+}
+
+// Register the collected battle characters as shadow casters. The battle
+// ShadowHelper lives embedded in the game mode at gameMode+0x68, so gameMode is
+// helper-0x68; only characters that belong to this game mode, still hold their
+// one-time init flag clear, and expose a model sub-object are registered. The
+// registration is exactly the ShadowCharacterBuild(helper, scene, character)
+// call that slot 45 makes internally, with character = [chara+0x18]; scene is
+// the helper-init resource argument, which the field path proves equals the
+// scene ShadowCharacterBuild expects.
+size_t dispatchBattleCharaShadows(uintptr_t helper, uintptr_t scene) {
+  const uintptr_t gameMode = helper ? helper - 0x68 : 0;
+  const bool contextLive = helper &&
+    *reinterpret_cast<const uintptr_t*>(helper + 0x18) != 0;
+  size_t dispatched = 0;
+  size_t candidates = 0;
+  {
+    std::lock_guard<std::mutex> lock(battleCharaMutex);
+    candidates = battleCharas.size();
+    if (originalShadowCharacterBuild && scene && contextLive) {
+      for (uintptr_t chara : battleCharas) {
+        if (!chara || dispatchedBattleCharas.count(chara))
+          continue;
+        const uintptr_t vtable = *reinterpret_cast<const uintptr_t*>(chara);
+        if (!isBattleCharaVtable(vtable))
+          continue;
+        if (*reinterpret_cast<const uintptr_t*>(chara + 0x10) != gameMode)
+          continue;
+        if (*reinterpret_cast<const uint8_t*>(chara + 0x2d0) != 0)
+          continue;
+        const uintptr_t character =
+          *reinterpret_cast<const uintptr_t*>(chara + 0x18);
+        if (!character)
+          continue;
+        const size_t before = shadowLayerCount(helper, 0x48);
+        originalShadowCharacterBuild(helper, scene, character, 0);
+        const size_t after = shadowLayerCount(helper, 0x48);
+        dispatchedBattleCharas.insert(chara);
+        ++dispatched;
+        atfix::log("BATTLE_SHADOW_DISPATCH chara=",
+          reinterpret_cast<void*>(chara), " vtable_rva=0x", std::hex,
+          vtable - reinterpret_cast<uintptr_t>(gameBase), std::dec,
+          " character=", reinterpret_cast<void*>(character),
+          " registry_before=", before, " registry_after=", after);
+      }
+    }
+  }
+  atfix::log("BATTLE_SHADOW_SCAN helper=", reinterpret_cast<void*>(helper),
+    " gamemode=", reinterpret_cast<void*>(gameMode),
+    " scene=", reinterpret_cast<void*>(scene),
+    " context_live=", contextLive,
+    " candidates=", candidates, " dispatched=", dispatched);
+  return dispatched;
+}
+
+// True if [p, p+n) is committed, readable, non-guard memory.
+bool readableRange(uintptr_t p, size_t n) {
+  if (!p)
+    return false;
+  MEMORY_BASIC_INFORMATION mbi = {};
+  if (!VirtualQuery(reinterpret_cast<void*>(p), &mbi, sizeof(mbi)))
+    return false;
+  if (mbi.State != MEM_COMMIT)
+    return false;
+  const DWORD readable = PAGE_READONLY | PAGE_READWRITE | PAGE_WRITECOPY |
+    PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY;
+  if (!(mbi.Protect & readable) || (mbi.Protect & PAGE_GUARD))
+    return false;
+  const uintptr_t base = reinterpret_cast<uintptr_t>(mbi.BaseAddress);
+  return p >= base && p + n <= base + mbi.RegionSize;
+}
+
+// Scan an object's memory for a std::vector<BtlChara*> — a (begin,end) pair
+// whose first element carries a known BtlChara-family vtable — recursing one
+// pointer level. Every access is VirtualQuery-guarded so wild members are safe.
+// Read-only: it only logs where the battle character list lives.
+size_t scanForBattleCharaVectors(uintptr_t obj, size_t window, int depth,
+                                 std::unordered_set<uintptr_t>& seen,
+                                 size_t& budget) {
+  if (!obj || (obj & 7) || budget == 0 || !seen.insert(obj).second)
+    return 0;
+  --budget;
+  if (!readableRange(obj, window))
+    return 0;
+  size_t found = 0;
+  for (size_t off = 0; off + 0x10 <= window; off += 8) {
+    const uintptr_t begin = *reinterpret_cast<const uintptr_t*>(obj + off);
+    const uintptr_t end = *reinterpret_cast<const uintptr_t*>(obj + off + 8);
+    if (begin && end > begin && (end - begin) <= 0x1000 &&
+        (end - begin) % sizeof(uintptr_t) == 0 &&
+        readableRange(begin, end - begin)) {
+      const uintptr_t elem0 = *reinterpret_cast<const uintptr_t*>(begin);
+      if (readableRange(elem0, sizeof(uintptr_t)) &&
+          isBattleCharaVtable(*reinterpret_cast<const uintptr_t*>(elem0))) {
+        const uintptr_t vt = *reinterpret_cast<const uintptr_t*>(elem0);
+        g_battleCharaVectorAddr.store(obj + off, std::memory_order_release);
+        atfix::log("BATTLE_CONTAINER obj=", reinterpret_cast<void*>(obj),
+          " offset=0x", std::hex, off, std::dec,
+          " count=", (end - begin) / sizeof(uintptr_t),
+          " elem0=", reinterpret_cast<void*>(elem0),
+          " vtable_rva=0x", std::hex,
+          vt - reinterpret_cast<uintptr_t>(gameBase), std::dec);
+        ++found;
+      }
+    }
+    if (depth > 0) {
+      const uintptr_t ptr = *reinterpret_cast<const uintptr_t*>(obj + off);
+      found += scanForBattleCharaVectors(ptr, 0x400, depth - 1, seen, budget);
+    }
+  }
+  return found;
+}
+
+// Scan the battle game-mode and scene (two pointer levels) for the party's
+// BtlChara vector, logging any hit. Returns the number of vectors found.
+size_t locateBattleCharaContainer(uintptr_t gameMode, uintptr_t scene,
+                                  const char* phase) {
+  std::unordered_set<uintptr_t> seen;
+  size_t budget = 2000;
+  size_t found = scanForBattleCharaVectors(gameMode, 0x1000, 2, seen, budget);
+  if (scene)
+    found += scanForBattleCharaVectors(scene, 0x1000, 2, seen, budget);
+  atfix::log("BATTLE_CONTAINER_SCAN phase=", phase,
+    " gamemode=", reinterpret_cast<void*>(gameMode),
+    " scene=", reinterpret_cast<void*>(scene),
+    " found=", found, " objects_scanned=", 2000 - budget);
+  return found;
+}
+
+// Address of the manager's active-helper slot ([0x1410c73c8]+0x9d0), or null.
+uintptr_t* globalActiveHelperSlot() {
+  if (!gameBase)
+    return nullptr;
+  const uintptr_t manager =
+    *reinterpret_cast<uintptr_t*>(gameBase + 0x10c73c8);
+  if (!manager)
+    return nullptr;
+  return reinterpret_cast<uintptr_t*>(manager + 0x9d0);
+}
+
+// Register the located battle party as shadow casters. For each BtlChara in the
+// game-mode's character vector, call ShadowCharacterBuild(helper, scene,
+// [chara+0x18]) — the same registration the field path performs per character —
+// so the renderer that already binds the battle depth targets has casters to
+// draw. Runs once per battle. Every access is VirtualQuery-guarded.
+void registerBattleCharaShadows() {
+  if (g_battleRegistered.load(std::memory_order_acquire) ||
+      !originalShadowCharacterBuild)
+    return;
+  const uintptr_t vecAddr =
+    g_battleCharaVectorAddr.load(std::memory_order_acquire);
+  if (!vecAddr || !readableRange(vecAddr, 0x10))
+    return;
+  const uintptr_t begin = *reinterpret_cast<const uintptr_t*>(vecAddr);
+  const uintptr_t end = *reinterpret_cast<const uintptr_t*>(vecAddr + 8);
+  if (!begin || end <= begin || (end - begin) > 0x1000 ||
+      (end - begin) % sizeof(uintptr_t) || !readableRange(begin, end - begin))
+    return;
+
+  uintptr_t helper = 0;
+  const char* which = "global";
+  if (battleShadowTargetsBattleHelper()) {
+    helper = g_battleHelper.load(std::memory_order_acquire);
+    which = "battle";
+  } else if (uintptr_t* slot = globalActiveHelperSlot()) {
+    helper = *slot;
+  }
+  const uintptr_t scene = g_battleScene.load(std::memory_order_acquire);
+  if (!helper || !scene)
+    return;
+
+  g_battleRegistered.store(true, std::memory_order_release);
+  size_t registered = 0;
+  for (uintptr_t p = begin; p < end; p += sizeof(uintptr_t)) {
+    const uintptr_t chara = *reinterpret_cast<const uintptr_t*>(p);
+    if (!readableRange(chara, 0x20) ||
+        !isBattleCharaVtable(*reinterpret_cast<const uintptr_t*>(chara)))
+      continue;
+    const uintptr_t character = *reinterpret_cast<const uintptr_t*>(chara + 0x18);
+    if (!character)
+      continue;
+    const size_t before = shadowLayerCount(helper, 0x48);
+    originalShadowCharacterBuild(helper, scene, character, 0);
+    const size_t after = shadowLayerCount(helper, 0x48);
+    ++registered;
+    atfix::log("BATTLE_SHADOW_REGISTER which=", which,
+      " helper=", reinterpret_cast<void*>(helper),
+      " chara=", reinterpret_cast<void*>(chara),
+      " character=", reinterpret_cast<void*>(character),
+      " registry_before=", before, " registry_after=", after);
+  }
+
+  // Registering into the battle helper only matters if the renderer traverses
+  // it, so publish it into the global slot (saving the field helper to restore
+  // on field re-entry). The global-helper target is already the rendered one.
+  bool published = false;
+  if (battleShadowTargetsBattleHelper()) {
+    if (uintptr_t* slot = globalActiveHelperSlot()) {
+      g_savedGlobalHelper.store(*slot, std::memory_order_release);
+      *slot = helper;
+      published = true;
+    }
+  }
+  atfix::log("BATTLE_SHADOW_REGISTER_SUMMARY which=", which,
+    " helper=", reinterpret_cast<void*>(helper),
+    " scene=", reinterpret_cast<void*>(scene), " registered=", registered,
+    " published=", published);
+}
+
+// Detour of the per-frame scene shadow pass (RVA 0x39cfd0). It reads the active
+// helper from the manager global and early-outs / processes whatever it finds.
+// While a battle is active and publishing is enabled, we swap that global to the
+// live battle helper only for the duration of this call, then restore it, so the
+// pass renders the battle helper's casters without leaving the global mutated.
+uintptr_t tracedShadowScenePass(uintptr_t self) {
+  const bool battleActive = g_battleActive.load(std::memory_order_acquire);
+  const uintptr_t battleHelper = g_battleHelper.load(std::memory_order_acquire);
+  uintptr_t* slot = globalActiveHelperSlot();
+  const uintptr_t globalBefore = slot ? *slot : 0;
+  const uint64_t call = ++g_scenePassCalls;
+
+  bool swapped = false;
+  if (battleShadowPublishEnabled() && battleActive && battleHelper && slot &&
+      globalBefore != battleHelper) {
+    *slot = battleHelper;
+    swapped = true;
+  }
+  const uintptr_t result = originalShadowScenePass(self);
+  if (swapped)
+    *slot = globalBefore;
+
+  if (battleActive && (call % 120) == 0)
+    atfix::log("SCENE_PASS call=", call, " battle_active=1",
+      " global=", reinterpret_cast<void*>(globalBefore),
+      " battle_helper=", reinterpret_cast<void*>(battleHelper),
+      " swapped=", swapped, " result=", result);
+  return result;
+}
+
+uintptr_t tracedShadowHelperInit(uintptr_t helper, uintptr_t id,
+                                 uintptr_t resource, uintptr_t config) {
+  const uintptr_t caller = reinterpret_cast<uintptr_t>(
+    __builtin_return_address(0));
+  const uintptr_t callerRva = gameBase && caller >= uintptr_t(gameBase)
+    ? caller - uintptr_t(gameBase) : 0;
+  const uintptr_t result = originalShadowHelperInit(
+    helper, id, resource, config);
+  // Track which helper the render path should use: battle publishes at 0xfe6e1,
+  // field re-entry at 0x397307 hands control back to the field helper.
+  if (callerRva == 0xfe6e1) {
+    const uintptr_t gameMode = helper ? helper - 0x68 : 0;
+    g_battleHelper.store(helper, std::memory_order_release);
+    g_battleGameMode.store(gameMode, std::memory_order_release);
+    g_battleScene.store(resource, std::memory_order_release);
+    g_battleContainerFound.store(false, std::memory_order_release);
+    g_battleRegistered.store(false, std::memory_order_release);
+    g_battleCharaVectorAddr.store(0, std::memory_order_release);
+    g_battleTickCounter.store(0, std::memory_order_release);
+    g_battleActive.store(true, std::memory_order_release);
+    if (battleShadowRestoreEnabled() && gameMode &&
+        locateBattleCharaContainer(gameMode, resource, "init")) {
+      g_battleContainerFound.store(true, std::memory_order_release);
+      registerBattleCharaShadows();
+    }
+  } else if (callerRva == 0x397307) {
+    g_battleActive.store(false, std::memory_order_release);
+    // Undo a battle-helper publish so the field renders its own helper again.
+    const uintptr_t saved =
+      g_savedGlobalHelper.exchange(0, std::memory_order_acq_rel);
+    if (saved) {
+      if (uintptr_t* slot = globalActiveHelperSlot())
+        *slot = saved;
+    }
+  }
+  size_t replayed = 0;
+  if (battleShadowRestoreEnabled() && callerRva == 0xfe6e1)
+    replayed = dispatchBattleCharaShadows(helper, resource);
+  // The per-frame scene shadow pass (RVA 0x39cfd0) reads the active helper from
+  // this manager global ([0x1410c73c8]+0x9d0) and early-outs when it is null;
+  // log it here to see whether battle leaves it unset while field publishes it.
+  const uintptr_t globalMgr = gameBase
+    ? *reinterpret_cast<const uintptr_t*>(gameBase + 0x10c73c8) : 0;
+  const uintptr_t globalActiveHelper = globalMgr
+    ? *reinterpret_cast<const uintptr_t*>(globalMgr + 0x9d0) : 0;
+  atfix::log("SHADOW_HELPER_INIT caller_rva=0x", std::hex, callerRva,
+    std::dec,
+    " global_active_helper=", reinterpret_cast<void*>(globalActiveHelper),
+    " helper=", reinterpret_cast<void*>(helper),
+    " id=", id,
+    " resource=", reinterpret_cast<void*>(resource),
+    " config=", reinterpret_cast<void*>(config),
+    " slot08=", reinterpret_cast<void*>(
+      helper ? *reinterpret_cast<const uintptr_t*>(helper + 0x08) : 0),
+    " slot10=", reinterpret_cast<void*>(
+      helper ? *reinterpret_cast<const uintptr_t*>(helper + 0x10) : 0),
+    " slot18=", reinterpret_cast<void*>(
+      helper ? *reinterpret_cast<const uintptr_t*>(helper + 0x18) : 0),
+    " slot30=", reinterpret_cast<void*>(
+      helper ? *reinterpret_cast<const uintptr_t*>(helper + 0x30) : 0),
+    " slot38=", reinterpret_cast<void*>(
+      helper ? *reinterpret_cast<const uintptr_t*>(helper + 0x38) : 0),
+    " result=", result,
+    " replayed=", replayed);
+  return result;
+}
+
+uintptr_t tracedBattleActorInit(uintptr_t actor, uintptr_t scene) {
+  const bool alreadyInitialized = actor &&
+    *reinterpret_cast<const uint8_t*>(actor + 0x2d0) != 0;
+  const uintptr_t gameMode = actor
+    ? *reinterpret_cast<const uintptr_t*>(actor + 0x10) : 0;
+  const uintptr_t character = actor
+    ? *reinterpret_cast<const uintptr_t*>(actor + 0x18) : 0;
+  const uintptr_t helper = gameMode ? gameMode + 0x68 : 0;
+  const uintptr_t contextBefore = helper
+    ? *reinterpret_cast<const uintptr_t*>(helper + 0x18) : 0;
+  const uintptr_t result = originalBattleActorInit(actor, scene);
+  bool deferred = false;
+  if (battleShadowRestoreEnabled() && !alreadyInitialized && result &&
+      helper && character && !contextBefore) {
+    std::lock_guard<std::mutex> lock(pendingBattleShadowMutex);
+    const auto duplicate = std::find_if(
+      pendingBattleShadows.begin(), pendingBattleShadows.end(),
+      [&](const PendingBattleShadow& entry) {
+        return entry.helper == helper && entry.character == character;
+      });
+    if (duplicate == pendingBattleShadows.end()) {
+      pendingBattleShadows.push_back({helper, scene, character});
+      deferred = true;
+    }
+  }
+  atfix::log("BATTLE_ACTOR_INIT actor=", reinterpret_cast<void*>(actor),
+    " scene=", reinterpret_cast<void*>(scene),
+    " helper=", reinterpret_cast<void*>(helper),
+    " character=", reinterpret_cast<void*>(character),
+    " already_initialized=", alreadyInitialized,
+    " context_before=", reinterpret_cast<void*>(contextBefore),
+    " result=", result,
+    " deferred=", deferred);
+  return result;
+}
+
+uintptr_t tracedShadowNodeFactory(const char* kind,
+                                  ShadowNodeFactoryProc original,
+                                  uintptr_t allocator, uintptr_t source,
+                                  uintptr_t context, uintptr_t caller) {
+  const uintptr_t result = original(allocator, source, context);
+  const uintptr_t callerRva = gameBase && caller >= uintptr_t(gameBase)
+    ? caller - uintptr_t(gameBase) : 0;
+  atfix::log("SHADOW_CONSTRUCT kind=", kind,
+    " caller_rva=0x", std::hex, callerRva, std::dec,
+    " allocator=", reinterpret_cast<void*>(allocator),
+    " source=", reinterpret_cast<void*>(source),
+    " context=", reinterpret_cast<void*>(context),
+    " result=", reinterpret_cast<void*>(result));
+  return result;
+}
+
+uintptr_t tracedShadowRenderNodeFactory(uintptr_t allocator,
+                                        uintptr_t source,
+                                        uintptr_t context) {
+  return tracedShadowNodeFactory("render", originalShadowRenderNodeFactory,
+    allocator, source, context, reinterpret_cast<uintptr_t>(
+      __builtin_return_address(0)));
+}
+
+uintptr_t tracedShadowSkinNodeFactory(uintptr_t allocator,
+                                      uintptr_t source,
+                                      uintptr_t context) {
+  return tracedShadowNodeFactory("skin", originalShadowSkinNodeFactory,
+    allocator, source, context, reinterpret_cast<uintptr_t>(
+      __builtin_return_address(0)));
+}
+
+size_t shadowLayerCount(uintptr_t helper, size_t offset) {
+  const auto* vector = reinterpret_cast<const uintptr_t*>(helper + offset);
+  const uintptr_t begin = vector[0];
+  const uintptr_t end = vector[1];
+  if (!begin || end < begin || (end - begin) % sizeof(uintptr_t))
+    return 0;
+  return size_t((end - begin) / sizeof(uintptr_t));
+}
+
+void tracedShadowLayerBuild(uintptr_t helper, uintptr_t scene) {
+  const uintptr_t caller = reinterpret_cast<uintptr_t>(
+    __builtin_return_address(0));
+  const uintptr_t callerRva = gameBase && caller >= uintptr_t(gameBase)
+    ? caller - uintptr_t(gameBase) : 0;
+  originalShadowLayerBuild(helper, scene);
+  if (!helper)
+    return;
+  atfix::log("SHADOW_LAYERS helper=", reinterpret_cast<void*>(helper),
+    " scene=", reinterpret_cast<void*>(scene),
+    " caller_rva=0x", std::hex, callerRva, std::dec,
+    " registry=", shadowLayerCount(helper, 0x48),
+    " base=", shadowLayerCount(helper, 0x60),
+    " sky=", shadowLayerCount(helper, 0x78),
+    " shadow=", shadowLayerCount(helper, 0x90),
+    " transparent=", shadowLayerCount(helper, 0xa8),
+    " refraction=", shadowLayerCount(helper, 0xc0),
+    " front=", shadowLayerCount(helper, 0xd8),
+    " other=", shadowLayerCount(helper, 0xf0));
 }
 
 void rememberTarget(std::atomic<uintptr_t>& destination, uintptr_t target) {
@@ -1728,6 +2375,149 @@ bool installTextBitmapAllocator(BYTE* base, const Game& game) {
   return true;
 }
 
+bool installShadowLayerTrace(BYTE* base, const Game& game) {
+  if (!shadowLayerTraceEnabled() || game.atlasVariant != AtlasRorona)
+    return false;
+  auto* build = base + 0x163250;
+  const std::array<BYTE, 16> expected = {
+    0x40, 0x55, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55,
+    0x41, 0x56, 0x41, 0x57, 0x48, 0x8d, 0x6c, 0x24,
+  };
+  if (!matches(build, expected))
+    return false;
+  return installMinHookDetour(build,
+    reinterpret_cast<void*>(&tracedShadowLayerBuild),
+    reinterpret_cast<void**>(&originalShadowLayerBuild));
+}
+
+bool installShadowConstructorTrace(BYTE* base, const Game& game) {
+  if (!shadowConstructorTraceEnabled() || game.atlasVariant != AtlasRorona)
+    return false;
+  auto* render = base + 0x556720;
+  auto* skin = base + 0x557200;
+  const std::array<BYTE, 16> renderExpected = {
+    0x48, 0x89, 0x4c, 0x24, 0x08, 0x55, 0x56, 0x57,
+    0x48, 0x83, 0xec, 0x30, 0x48, 0xc7, 0x44, 0x24,
+  };
+  const std::array<BYTE, 16> skinExpected = {
+    0x48, 0x89, 0x4c, 0x24, 0x08, 0x55, 0x56, 0x57,
+    0x48, 0x83, 0xec, 0x30, 0x48, 0xc7, 0x44, 0x24,
+  };
+  if (!matches(render, renderExpected) || !matches(skin, skinExpected))
+    return false;
+  if (!installMinHookDetour(render,
+      reinterpret_cast<void*>(&tracedShadowRenderNodeFactory),
+      reinterpret_cast<void**>(&originalShadowRenderNodeFactory)))
+    return false;
+  return installMinHookDetour(skin,
+    reinterpret_cast<void*>(&tracedShadowSkinNodeFactory),
+    reinterpret_cast<void**>(&originalShadowSkinNodeFactory));
+}
+
+bool installShadowMappingTrace(BYTE* base, const Game& game) {
+  if ((!shadowMappingTraceEnabled() && !battleShadowRestoreEnabled()) ||
+      game.atlasVariant != AtlasRorona)
+    return false;
+  auto* shader = base + 0x15a730;
+  auto* group = base + 0x155da0;
+  auto* character = base + 0x1631a0;
+  auto* helperInit = base + 0x1611f0;
+  auto* battleActorInit = base + 0x1072a0;
+  auto* partyCtor = base + 0x110030;
+  auto* monsterCtor = base + 0x10f5d0;
+  auto* scenePass = base + 0x39cfd0;
+  auto* render = base + 0x555920;
+  auto* skin = base + 0x555a80;
+  const std::array<BYTE, 16> shaderExpected = {
+    0x4c, 0x8b, 0xdc, 0x53, 0x41, 0x54, 0x41, 0x55,
+    0x41, 0x56, 0x48, 0x83, 0xec, 0x58, 0x48, 0x8b,
+  };
+  const std::array<BYTE, 16> groupExpected = {
+    0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x6c,
+    0x24, 0x10, 0x48, 0x89, 0x74, 0x24, 0x18, 0x48,
+  };
+  const std::array<BYTE, 16> characterExpected = {
+    0x48, 0x89, 0x5c, 0x24, 0x10, 0x57, 0x48, 0x83,
+    0xec, 0x20, 0x49, 0x8b, 0xd8, 0x48, 0x8b, 0xf9,
+  };
+  const std::array<BYTE, 16> helperInitExpected = {
+    0x48, 0x8b, 0xc4, 0x55, 0x56, 0x57, 0x48, 0x81,
+    0xec, 0x00, 0x01, 0x00, 0x00, 0x48, 0xc7, 0x44,
+  };
+  const std::array<BYTE, 16> battleActorInitExpected = {
+    0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x74,
+    0x24, 0x10, 0x57, 0x48, 0x83, 0xec, 0x30, 0x48,
+  };
+  const std::array<BYTE, 16> partyCtorExpected = {
+    0x48, 0x89, 0x4c, 0x24, 0x08, 0x57, 0x48, 0x83,
+    0xec, 0x30, 0x48, 0xc7, 0x44, 0x24, 0x20, 0xfe,
+  };
+  const std::array<BYTE, 16> monsterCtorExpected = {
+    0x40, 0x53, 0x56, 0x57, 0x48, 0x83, 0xec, 0x60,
+    0x48, 0xc7, 0x44, 0x24, 0x20, 0xfe, 0xff, 0xff,
+  };
+  const std::array<BYTE, 16> scenePassExpected = {
+    0x48, 0x83, 0xec, 0x28, 0x48, 0x8b, 0x05, 0xed,
+    0xa3, 0xd2, 0x00, 0x4c, 0x8b, 0x90, 0xd0, 0x09,
+  };
+  const std::array<BYTE, 16> renderExpected = {
+    0x48, 0x8b, 0xc4, 0x56, 0x57, 0x41, 0x56, 0x48,
+    0x81, 0xec, 0xd0, 0x00, 0x00, 0x00, 0x48, 0xc7,
+  };
+  const std::array<BYTE, 16> skinExpected = {
+    0x48, 0x8b, 0xc4, 0x56, 0x57, 0x41, 0x56, 0x48,
+    0x81, 0xec, 0xd0, 0x00, 0x00, 0x00, 0x48, 0xc7,
+  };
+  if (!matches(shader, shaderExpected) || !matches(group, groupExpected) ||
+      !matches(character, characterExpected) ||
+      !matches(helperInit, helperInitExpected) ||
+      !matches(battleActorInit, battleActorInitExpected) ||
+      !matches(partyCtor, partyCtorExpected) ||
+      !matches(monsterCtor, monsterCtorExpected) ||
+      !matches(scenePass, scenePassExpected) ||
+      !matches(render, renderExpected) || !matches(skin, skinExpected))
+    return false;
+  if (!installMinHookDetour(render,
+      reinterpret_cast<void*>(&tracedShadowRenderNodeMapping),
+      reinterpret_cast<void**>(&originalShadowRenderNodeMapping)))
+    return false;
+  if (!installMinHookDetour(skin,
+      reinterpret_cast<void*>(&tracedShadowSkinNodeMapping),
+      reinterpret_cast<void**>(&originalShadowSkinNodeMapping)))
+    return false;
+  if (!installMinHookDetour(group,
+      reinterpret_cast<void*>(&tracedShadowGroupBuild),
+      reinterpret_cast<void**>(&originalShadowGroupBuild)))
+    return false;
+  if (!installMinHookDetour(character,
+      reinterpret_cast<void*>(&tracedShadowCharacterBuild),
+      reinterpret_cast<void**>(&originalShadowCharacterBuild)))
+    return false;
+  if (!installMinHookDetour(helperInit,
+      reinterpret_cast<void*>(&tracedShadowHelperInit),
+      reinterpret_cast<void**>(&originalShadowHelperInit)))
+    return false;
+  if (!installMinHookDetour(battleActorInit,
+      reinterpret_cast<void*>(&tracedBattleActorInit),
+      reinterpret_cast<void**>(&originalBattleActorInit)))
+    return false;
+  if (!installMinHookDetour(partyCtor,
+      reinterpret_cast<void*>(&tracedBtlCharaPartyCtor),
+      reinterpret_cast<void**>(&originalBtlCharaPartyCtor)))
+    return false;
+  if (!installMinHookDetour(monsterCtor,
+      reinterpret_cast<void*>(&tracedBtlCharaMonsterCtor),
+      reinterpret_cast<void**>(&originalBtlCharaMonsterCtor)))
+    return false;
+  if (!installMinHookDetour(scenePass,
+      reinterpret_cast<void*>(&tracedShadowScenePass),
+      reinterpret_cast<void**>(&originalShadowScenePass)))
+    return false;
+  return installMinHookDetour(shader,
+    reinterpret_cast<void*>(&tracedShadowShaderBuild),
+    reinterpret_cast<void**>(&originalShadowShaderBuild));
+}
+
 void detectAndInstallGameHooks() {
   HMODULE module = GetModuleHandleW(nullptr);
   char imagePath[MAX_PATH] = {};
@@ -1760,18 +2550,57 @@ void detectAndInstallGameHooks() {
       installTextBitmapAllocator(gameBase, game);
     const bool deepStatsInstalled = atlasInstalled
       ? installDeepMenuStats(gameBase, game) : false;
+    const bool shadowLayerTraceInstalled =
+      installShadowLayerTrace(gameBase, game);
+    const bool shadowConstructorTraceInstalled =
+      installShadowConstructorTrace(gameBase, game);
+    const bool shadowMappingTraceInstalled =
+      installShadowMappingTrace(gameBase, game);
     atfix::log("Menu hooks pssg=", pathInstalled,
       " atlas=", atlasInstalled,
       " frame_atlas_cache=", frameAtlasCacheEnabled(),
       " text_bitmap_cache=", textBitmapCacheEnabled(),
       " text_bitmap_allocator=", textBitmapAllocatorInstalled,
       " stats=", menuStatsEnabled(),
-      " deep_stats=", deepStatsInstalled);
+      " deep_stats=", deepStatsInstalled,
+      " shadow_layers=", shadowLayerTraceInstalled,
+      " shadow_constructors=", shadowConstructorTraceInstalled,
+      " shadow_mapping=", shadowMappingTraceInstalled);
     return;
   }
 }
 
 } // namespace
+
+// Per-battle-frame work: (1) locate the party vector and register once (actors
+// may spawn after helper-init), then (2) monitor the active helper so we can see
+// whether an attack cut-in swaps it out from under our published battle helper.
+void battleShadowFrameTick() {
+  if (!battleShadowRestoreEnabled() ||
+      !g_battleActive.load(std::memory_order_acquire))
+    return;
+  const uint64_t tick = g_battleTickCounter.fetch_add(
+    1, std::memory_order_relaxed);
+  const uintptr_t gameMode = g_battleGameMode.load(std::memory_order_acquire);
+  const uintptr_t scene = g_battleScene.load(std::memory_order_acquire);
+
+  if (!g_battleContainerFound.load(std::memory_order_acquire) &&
+      tick % 30 == 0 && tick / 30 <= 40 && gameMode &&
+      locateBattleCharaContainer(gameMode, scene, "frame")) {
+    g_battleContainerFound.store(true, std::memory_order_release);
+    registerBattleCharaShadows();
+  }
+
+  if (tick % 120 == 0 && tick <= 120 * 200) {
+    uintptr_t* slot = globalActiveHelperSlot();
+    const uintptr_t global = slot ? *slot : 0;
+    const uintptr_t ours = g_battleHelper.load(std::memory_order_acquire);
+    atfix::log("BATTLE_MONITOR tick=", tick,
+      " global_active_helper=", reinterpret_cast<void*>(global),
+      " battle_helper=", reinterpret_cast<void*>(ours),
+      " matches=", global == ours && ours != 0);
+  }
+}
 
 namespace arland {
 
@@ -1785,6 +2614,7 @@ bool frameAtlasCacheEnabled() {
 }
 
 void traceMenuPresent(uint64_t durationMicros, uint64_t intervalMicros) {
+  battleShadowFrameTick();
   if (frameAtlasCacheEnabled()) {
     std::lock_guard lock(atlasMutex);
     atlasReads.clear();
