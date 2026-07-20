@@ -153,11 +153,15 @@ struct ReadMapKey {
 struct ReadMapStats {
   uint64_t calls = 0;
   uint64_t nanos = 0;
+  uint64_t estimatedBytes = 0;
   std::set<uintptr_t> resources;
 };
 
 mutex g_transitionReadMapMutex;
 std::map<ReadMapKey, ReadMapStats> g_transitionReadMaps;
+std::map<ReadMapKey, ReadMapStats> g_transitionWriteMaps;
+TransitionCounter g_transitionShadowFlush;
+std::atomic<uint64_t> g_transitionShadowFlushBytes = 0;
 
 bool transitionTraceEnabled() {
   static const bool enabled = [] {
@@ -864,8 +868,9 @@ bool getResourceInfo(
   }
 }
 
-void recordTransitionReadMap(ID3D11Resource* resource, uintptr_t caller,
-                             uint64_t nanos) {
+void recordTransitionMapDetail(ID3D11Resource* resource, UINT subresource,
+                               D3D11_MAP mapType, uintptr_t caller,
+                               uint64_t nanos) {
   if (!transitionTraceEnabled() || !resource)
     return;
   ATFIX_RESOURCE_INFO info = { };
@@ -875,10 +880,18 @@ void recordTransitionReadMap(ID3D11Resource* resource, uintptr_t caller,
     caller, uint32_t(info.Dim), uint32_t(info.Format), info.Width, info.Height,
     uint32_t(info.Usage), info.BindFlags, info.CPUFlags,
   };
+  const uint32_t mip = info.Mips ? subresource % info.Mips : 0;
+  const uint64_t width = std::max(info.Width >> mip, 1u);
+  const uint64_t height = std::max(info.Height >> mip, 1u);
+  const uint64_t depth = std::max(info.Depth >> mip, 1u);
+  const uint64_t bytes = width * height * depth * getFormatPixelSize(info.Format);
   std::lock_guard lock(g_transitionReadMapMutex);
-  auto& stats = g_transitionReadMaps[key];
+  auto& maps = mapType == D3D11_MAP_READ
+    ? g_transitionReadMaps : g_transitionWriteMaps;
+  auto& stats = maps[key];
   stats.calls++;
   stats.nanos += nanos;
+  stats.estimatedBytes += bytes;
   stats.resources.insert(reinterpret_cast<uintptr_t>(resource));
 }
 
@@ -2028,6 +2041,7 @@ void flushDirtyShadows(ID3D11DeviceContext* pContext) {
 
   auto procs = getContextProcs(pContext);
   for (const auto& ref : dirty) {
+    TransitionTimer flushTimer(g_transitionShadowFlush);
     ID3D11Resource* resource = ref.first;
     const UINT subresource = ref.second;
     bool stillMapped = false;
@@ -2061,6 +2075,15 @@ void flushDirtyShadows(ID3D11DeviceContext* pContext) {
       hr = procs->Map(pContext, shadow, subresource, D3D11_MAP_READ, 0, &src);
       if (SUCCEEDED(hr)) {
         copyMappedSubresource(&info, subresource, &dst, &src);
+        if (transitionTraceEnabled()) {
+          const uint32_t mip = info.Mips ? subresource % info.Mips : 0;
+          const uint64_t width = std::max(info.Width >> mip, 1u);
+          const uint64_t height = std::max(info.Height >> mip, 1u);
+          const uint64_t depth = std::max(info.Depth >> mip, 1u);
+          g_transitionShadowFlushBytes.fetch_add(
+            width * height * depth * getFormatPixelSize(info.Format),
+            std::memory_order_relaxed);
+        }
         procs->Unmap(pContext, shadow, subresource);
       } else {
         log("Failed to map a shadow resource for upload, hr 0x", std::hex, hr);
@@ -2099,8 +2122,9 @@ HRESULT STDMETHODCALLTYPE ID3D11DeviceContext_Map(
   ID3D11Resource* shadow = getShadowResource(pResource);
   if (!shadow) {
     mapKindTimer.setBranch(1);
-    const auto directStarted = MapType == D3D11_MAP_READ &&
-        transitionTraceEnabled()
+    const bool detailedMap = transitionTraceEnabled() &&
+      (MapType == D3D11_MAP_READ || MapType == D3D11_MAP_WRITE_DISCARD);
+    const auto directStarted = detailedMap
       ? std::chrono::steady_clock::now()
       : std::chrono::steady_clock::time_point{};
     const HRESULT hr = procs->Map(
@@ -2108,7 +2132,8 @@ HRESULT STDMETHODCALLTYPE ID3D11DeviceContext_Map(
     if (directStarted != std::chrono::steady_clock::time_point{}) {
       const auto nanos = std::chrono::duration_cast<std::chrono::nanoseconds>(
         std::chrono::steady_clock::now() - directStarted).count();
-      recordTransitionReadMap(pResource, caller, uint64_t(nanos));
+      recordTransitionMapDetail(
+        pResource, Subresource, MapType, caller, uint64_t(nanos));
     }
     if (SUCCEEDED(hr))
       trackCompositeMap(pResource, Subresource, pMappedResource);
@@ -2700,14 +2725,19 @@ void traceTransitionD3DFrame(uint64_t intervalMicros) {
   const auto copy = take(g_transitionCopy);
   const auto update = take(g_transitionUpdate);
   const auto commands = take(g_transitionCommands);
+  const auto shadowFlush = take(g_transitionShadowFlush);
+  const uint64_t shadowFlushBytes = g_transitionShadowFlushBytes.exchange(
+    0, std::memory_order_acq_rel);
   std::array<std::array<std::array<uint64_t, 2>, 6>, 3> mapKinds = { };
   for (size_t branch = 0; branch < mapKinds.size(); branch++)
     for (size_t type = 0; type < mapKinds[branch].size(); type++)
       mapKinds[branch][type] = take(g_transitionMapKinds[branch][type]);
   std::map<ReadMapKey, ReadMapStats> readMaps;
+  std::map<ReadMapKey, ReadMapStats> writeMaps;
   {
     std::lock_guard lock(g_transitionReadMapMutex);
     readMaps.swap(g_transitionReadMaps);
+    writeMaps.swap(g_transitionWriteMaps);
   }
   if (!transitionTraceEnabled() || intervalMicros < 15000)
     return;
@@ -2716,7 +2746,10 @@ void traceTransitionD3DFrame(uint64_t intervalMicros) {
     " map_calls=", map[0], " map_us=", map[1],
     " copy_calls=", copy[0], " copy_us=", copy[1],
     " update_calls=", update[0], " update_us=", update[1],
-    " command_calls=", commands[0], " command_us=", commands[1]);
+    " command_calls=", commands[0], " command_us=", commands[1],
+    " shadow_flushes=", shadowFlush[0],
+    " shadow_flush_us=", shadowFlush[1],
+    " shadow_flush_bytes=", shadowFlushBytes);
   static const std::array<const char*, 3> branches = {
     "other-context", "direct", "shadow",
   };
@@ -2739,6 +2772,19 @@ void traceTransitionD3DFrame(uint64_t intervalMicros) {
       " usage=", key.usage, " bind=0x", std::hex, key.bindFlags,
       " cpu=0x", key.cpuFlags, std::dec,
       " calls=", stats.calls, " resources=", stats.resources.size(),
+      " bytes=", stats.estimatedBytes,
+      " api_us=", stats.nanos / 1000);
+  }
+  for (const auto& [key, stats] : writeMaps) {
+    log("TRANSITION write-map interval_us=", intervalMicros,
+      " caller_rva=0x", std::hex,
+      module && key.caller >= module ? key.caller - module : key.caller,
+      std::dec, " dim=", key.dimension, " format=", key.format,
+      " size=", key.width, "x", key.height,
+      " usage=", key.usage, " bind=0x", std::hex, key.bindFlags,
+      " cpu=0x", key.cpuFlags, std::dec,
+      " calls=", stats.calls, " resources=", stats.resources.size(),
+      " bytes=", stats.estimatedBytes,
       " api_us=", stats.nanos / 1000);
   }
 }
