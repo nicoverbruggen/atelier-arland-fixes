@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.4
+
+### Added
+
+- All game languages are now supported. The mod previously only recognized the English executables; it now also recognizes the multilingual executables that the launcher runs for Japanese, Simplified Chinese, and Traditional Chinese, in all three games. This covers the synchronization and menu fixes, higher-resolution rendering, optional MSAA, and the restored Rorona battle shadows. No configuration is required; the correct executable is detected automatically.
+
+### Fixed
+
+- The restored Rorona battle shadows no longer depend on the frame atlas cache: disabling the cache with `ARLAND_FRAME_ATLAS_CACHE=0` previously also disabled the shadows.
+
 ## v0.3
 
 ### Added

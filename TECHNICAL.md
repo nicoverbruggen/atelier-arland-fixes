@@ -11,7 +11,7 @@ This repository combines established synchronization work with new Arland-specif
 - Nico, the author of this repository, led the reverse-engineering and runtime investigation of the Arland English menu slowdown. The successful `.PSSG` validation cache and font-atlas read caches are results of that work; they are not features of the original `atelier-sync-fix`.
 - MinHook is an independent library by Tsuda Kageyu and contributors, bundled unchanged under `vendor/minhook`.
 
-The current code supports only the exact tested English Arland DX executables and contains the validated D3D11 synchronization and menu-performance fixes described below.
+The current code supports the exact tested Arland DX executables — the English builds and, since v0.4, the multilingual builds used for Japanese and Chinese — and contains the validated D3D11 synchronization and menu-performance fixes described below.
 
 ## D3D11 synchronization stalls
 
@@ -118,21 +118,33 @@ The D3D11 layer also contains an optional multisample render-target and resolve 
 
 ## Hook boundaries
 
-D3D11 hooks are installed only after the process is recognized as one of the three tested Arland executables. Menu detours additionally verify `.text` size and complete instruction prologues before patching anything.
+D3D11 hooks are installed only after the process is recognized as one of the six tested Arland executables. Menu detours additionally verify `.text` size and complete instruction prologues before patching anything.
 
-| Game | Executable | SHA-256 | Path-check RVA | Validation behavior | Atlas-read cache |
-|---|---|---|---:|---|---|
-| Rorona DX | `A11R_x64_Release_en.exe` | `2afd19db0cef3e3f0888fb62e02c9ca5929264ff5ee8c780af06213642988276` | `0x12cc70` | Metadata plus filename-case enumeration | Yes |
-| Totori DX | `A12V_x64_Release_en.exe` | `38c41df799b207786a11c08d6bf83cec8ac10414757f935311549f74474bfd90` | `0x18b140` | Repeated metadata validation | Yes |
-| Meruru DX | `A13V_x64_Release_EN.exe` | `d69cad45700457128cc8805ea3cf80dfaea0e155e6dfd2d1123277f4ebd7c19b` | `0x1533c0` | Metadata plus filename-case enumeration | Yes |
+Each game ships two game executables: the launcher runs the English build for `Language=2` and the multilingual build (Japanese and both Chinese locales) for every other language. The multilingual builds are separate compiles with distinct RVAs. Their entry points were located by static homologue matching against the tested English builds (shared exact byte n-grams voted per `.pdata` function, verified in both directions plus prologue and, where applicable, vtable-slot checks); at runtime the same complete-prologue verification applies before any detour is installed. Meruru's multilingual executable is SteamStub-wrapped on disk; recognition and patching happen after the stub has decrypted `.text` in memory, so the same fingerprints apply.
 
-The atlas cache verifies four independent entry points per game:
+| Game | Executable | SHA-256 | `.text` size | Path-check RVA | Atlas-read cache |
+|---|---|---|---:|---:|---|
+| Rorona DX | `A11R_x64_Release_en.exe` | `2afd19db0cef3e3f0888fb62e02c9ca5929264ff5ee8c780af06213642988276` | `0x709a9c` | `0x12cc70` | Yes |
+| Rorona DX (multilingual) | `A11R_x64_Release.exe` | `b6f8726df7d6cea3ffdeb171d669f8035df322552abdc90a4763523df2b4730d` | `0x72141c` | `0x135130` | Yes |
+| Totori DX | `A12V_x64_Release_en.exe` | `38c41df799b207786a11c08d6bf83cec8ac10414757f935311549f74474bfd90` | `0x67da5c` | `0x18b140` | Yes |
+| Totori DX (multilingual) | `A12V_x64_Release.exe` | `f8544d7b0ed22a223f080dbcdaa5f387287bccedc1f975d5ad9c304764f0aa6f` | `0x90e1ec` | `0x3a7b20` | Yes |
+| Meruru DX | `A13V_x64_Release_EN.exe` | `d69cad45700457128cc8805ea3cf80dfaea0e155e6dfd2d1123277f4ebd7c19b` | `0x61ecec` | `0x1533c0` | Yes |
+| Meruru DX (multilingual) | `A13V_x64_Release.exe` | `a39b854771fab1044d03c2da94afda84996eaa2ce9d60e85ca718f29b1700c73` | `0x61ae4c` | `0x140d20` | Yes |
 
-| Game | Queue drain | Text renderer | Atlas lock | Atlas unlock |
+Rorona validates paths with metadata plus filename-case enumeration, Totori with repeated metadata validation, and Meruru with metadata plus filename-case enumeration; each multilingual build matches its English sibling's behavior.
+
+The atlas cache verifies four independent entry points per executable:
+
+| Executable | Queue drain | Text renderer | Atlas lock | Atlas unlock |
 |---|---:|---:|---:|---:|
-| Rorona | `0x08d4b0` | `0x5613b0` | `0x3eea10` | `0x3eea60` |
-| Totori | `0x038a00` | `0x430bf0` | `0x4c2080` | `0x4c20c0` |
-| Meruru | `0x0d6210` | `0x5115d0` | `0x3ea7d0` | `0x3ea7f0` |
+| Rorona EN | `0x08d4b0` | `0x5613b0` | `0x3eea10` | `0x3eea60` |
+| Rorona multilingual | `0x094890` | `0x577280` | `0x4048e0` | `0x404930` |
+| Totori EN | `0x038a00` | `0x430bf0` | `0x4c2080` | `0x4c20c0` |
+| Totori multilingual | `0x255020` | `0x6ae1f0` | `0x73f680` | `0x73f6c0` |
+| Meruru EN | `0x0d6210` | `0x5115d0` | `0x3ea7d0` | `0x3ea7f0` |
+| Meruru multilingual | `0x0c2e20` | `0x510c30` | `0x3e9cf0` | `0x3e9d10` |
+
+The Rorona battle-shadow restoration is likewise dual-fingerprinted: all ten hooked shadow functions, the BtlChara-family and battle-state vtables, the shadow-manager global, and the two `ShadowHelperInit` caller return addresses have verified multilingual homologues. English-only diagnostics (deep menu statistics, the opt-in text-bitmap cache, and the shadow layer/constructor traces) remain gated to the English builds, whose RVAs are the only ones mapped for them.
 
 A lock is eligible only while the verified text renderer is active, the middleware texture reports 512×512 dimensions, and the appropriate queue- or frame-scoped cache lifetime is active. Synthetic locks and first real candidate locks are tracked per thread so only matching synthetic unlocks are suppressed; a different real lock invalidates any frame snapshot for that texture. Installation order keeps partially installed atlas hooks inert. MinHook is used for these four entry points because Totori and Meruru expose atlas unlock through a short relative-jump thunk; every target is still checked against its complete expected prologue before MinHook is invoked.
 

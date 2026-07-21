@@ -97,7 +97,8 @@ bool menuTransitionTraceEnabled() {
   const char* shadowTrace = std::getenv("ARLAND_SHADOW_TRACE");
   return (trace && trace[0] != '0') ||
     (shadowTrace && shadowTrace[0] != '0') ||
-    arland::frameAtlasCacheEnabled();
+    arland::frameAtlasCacheEnabled() ||
+    arland::battleShadowRestoreActive();
 }
 
 HRESULT STDMETHODCALLTYPE tracedPresent(

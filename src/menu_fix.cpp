@@ -86,6 +86,7 @@ struct Game {
   uintptr_t atlasLockRva;
   uintptr_t atlasUnlockRva;
   uint8_t atlasVariant;
+  uint8_t exeBuild;
 };
 
 enum : uint8_t {
@@ -95,13 +96,30 @@ enum : uint8_t {
   AtlasLaterArland,
 };
 
+// Each game ships two executables: the English build (launcher Language=2) and
+// the multilingual build (Japanese and both Chinese locales). They are separate
+// compiles with distinct RVAs; the multilingual entries below were located by
+// static homologue matching against the English build and every hooked prologue
+// byte-verified in the multilingual binary (REPORT §31). Hooks whose RVAs are
+// only known for the English build stay gated on BuildEnglish.
+enum : uint8_t {
+  BuildEnglish,
+  BuildMultilingual,
+};
+
 constexpr Game games[] = {
   { "A11R_x64_Release_en.exe", 0x709a9c, 0x12cc70, 0x57,
-    0x08d4b0, 0x5613b0, 0x3eea10, 0x3eea60, AtlasRorona },
+    0x08d4b0, 0x5613b0, 0x3eea10, 0x3eea60, AtlasRorona, BuildEnglish },
+  { "A11R_x64_Release.exe", 0x72141c, 0x135130, 0x57,
+    0x094890, 0x577280, 0x4048e0, 0x404930, AtlasRorona, BuildMultilingual },
   { "A12V_x64_Release_en.exe", 0x67da5c, 0x18b140, 0x56,
-    0x038a00, 0x430bf0, 0x4c2080, 0x4c20c0, AtlasTotori },
+    0x038a00, 0x430bf0, 0x4c2080, 0x4c20c0, AtlasTotori, BuildEnglish },
+  { "A12V_x64_Release.exe", 0x90e1ec, 0x3a7b20, 0x56,
+    0x255020, 0x6ae1f0, 0x73f680, 0x73f6c0, AtlasTotori, BuildMultilingual },
   { "A13V_x64_Release_EN.exe", 0x61ecec, 0x1533c0, 0x57,
-    0x0d6210, 0x5115d0, 0x3ea7d0, 0x3ea7f0, AtlasLaterArland },
+    0x0d6210, 0x5115d0, 0x3ea7d0, 0x3ea7f0, AtlasLaterArland, BuildEnglish },
+  { "A13V_x64_Release.exe", 0x61ae4c, 0x140d20, 0x57,
+    0x0c2e20, 0x510c30, 0x3e9cf0, 0x3e9d10, AtlasLaterArland, BuildMultilingual },
 };
 
 PathCheckProc originalPathCheck = nullptr;
@@ -584,7 +602,9 @@ uintptr_t tracedShadowCharacterBuild(uintptr_t helper, uintptr_t scene,
 // BtlChara-family vtable RVAs (ImageBase 0x140000000). A collected pointer is
 // only dereferenced for the opt-in dispatch if it still carries one of these,
 // which rejects freed/reused objects left over from an earlier battle.
-const uintptr_t kBtlCharaVtableRvas[] = {
+// Same class order in both builds; multilingual values homologue-matched and
+// slot-verified (REPORT §31).
+const uintptr_t kBtlCharaVtableRvasEn[] = {
   0x76e080,  // BtlChara
   0x76e2c0,  // BtlCharaEffect
   0x76e438,  // BtlCharaDummy
@@ -594,13 +614,83 @@ const uintptr_t kBtlCharaVtableRvas[] = {
   0x76f088,  // BtlCharaRefractionEffect
   0x76f228,  // BtlCharaRemoteWeapon
 };
+const uintptr_t kBtlCharaVtableRvasMulti[] = {
+  0x78bcb0,  // BtlChara
+  0x78bef0,  // BtlCharaEffect
+  0x78c068,  // BtlCharaDummy
+  0x78c1e0,  // BtlCharaSynchro
+  0x78c868,  // BtlCharaMonster
+  0x78ca30,  // BtlCharaParty
+  0x78cce0,  // BtlCharaRefractionEffect
+  0x78ce80,  // BtlCharaRemoteWeapon
+};
+
+// Per-executable-build Rorona addresses used by the battle-shadow machinery
+// outside the hook installers. Selected once at detection time.
+struct RoronaBuildAddrs {
+  const uintptr_t* btlCharaVtables;
+  size_t btlCharaVtableCount;
+  uintptr_t charaVtable;
+  uintptr_t charaBaseVtable;
+  uintptr_t eventExecBtlChara;
+  uintptr_t eventExecChara;
+  uintptr_t managerSlot;       // [gameBase+managerSlot]+0x9d0 = active helper
+  uintptr_t battlePublishRet;  // ShadowHelperInit return address, battle setup
+  uintptr_t fieldReentryRet;   // ShadowHelperInit return address, field re-entry
+};
+
+constexpr RoronaBuildAddrs kRoronaAddrsEn = {
+  kBtlCharaVtableRvasEn, std::size(kBtlCharaVtableRvasEn),
+  0x74e598, 0x74eb70, 0x76e018, 0x74e3f8,
+  0x10c73c8, 0xfe6e1, 0x397307,
+};
+constexpr RoronaBuildAddrs kRoronaAddrsMulti = {
+  kBtlCharaVtableRvasMulti, std::size(kBtlCharaVtableRvasMulti),
+  0x76c138, 0x76c710, 0x78bc48, 0x76bf98,
+  0x11044c8, 0x106781, 0x3ac8d7,
+};
+
+// Null until a Rorona build is recognized; battle-shadow code paths treat that
+// as "feature unavailable".
+const RoronaBuildAddrs* g_roronaAddrs = nullptr;
+
+// Battle state-machine vtables (RVA, ImageBase 0x140000000) → name. The current
+// state's Update (vtable slot 1) is what runs each frame; recognizing the state
+// object lets us log exactly when the attack cut-in (ExecCommand) and victory
+// (ResultStart) are active without needing manual F8 marks. Same state order in
+// both builds; multilingual values homologue-matched (REPORT §31).
+struct BattleStateEntry { uintptr_t rva; const char* name; };
+const BattleStateEntry kBattleStatesEn[] = {
+  {0x76d9a0, "Enter"}, {0x76dd60, "StartWait"}, {0x76da40, "SelectCommand"},
+  {0x76da90, "SelectTarget"}, {0x76d8c8, "SelectSkill"}, {0x76d830, "SelectItem"},
+  {0x76d798, "SelectDefence"}, {0x76dbd0, "WaitAction"}, {0x76dae0, "ExecCommand"},
+  {0x76dc70, "Reaction"}, {0x76db80, "ReactionSkillBefore"},
+  {0x76db30, "HelpSkillBefore"}, {0x76dc20, "HelpSkillAfter"},
+  {0x76d9f0, "ChangeActiveChara"}, {0x76dcc0, "EndCheck"},
+  {0x76ddb0, "TurnEventWait"}, {0x76de00, "EndWait"}, {0x76dea0, "AfterBattle"},
+  {0x76dd10, "DeadBoss"}, {0x76de50, "ResultStart"}, {0x76d570, "ResultCountExp"},
+  {0x76d630, "ResultDropItem"}, {0x76d6a8, "ResultLevelUp"},
+};
+const BattleStateEntry kBattleStatesMulti[] = {
+  {0x78b5d0, "Enter"}, {0x78b990, "StartWait"}, {0x78b670, "SelectCommand"},
+  {0x78b6c0, "SelectTarget"}, {0x78b4f0, "SelectSkill"}, {0x78b458, "SelectItem"},
+  {0x78b398, "SelectDefence"}, {0x78b800, "WaitAction"}, {0x78b710, "ExecCommand"},
+  {0x78b8a0, "Reaction"}, {0x78b7b0, "ReactionSkillBefore"},
+  {0x78b760, "HelpSkillBefore"}, {0x78b850, "HelpSkillAfter"},
+  {0x78b620, "ChangeActiveChara"}, {0x78b8f0, "EndCheck"},
+  {0x78b9e0, "TurnEventWait"}, {0x78ba30, "EndWait"}, {0x78bad0, "AfterBattle"},
+  {0x78b940, "DeadBoss"}, {0x78ba80, "ResultStart"}, {0x78b170, "ResultCountExp"},
+  {0x78b230, "ResultDropItem"}, {0x78b2a8, "ResultLevelUp"},
+};
+const BattleStateEntry* g_battleStates = nullptr;
+size_t g_battleStateCount = 0;
 
 bool isBattleCharaVtable(uintptr_t vtable) {
-  if (!gameBase || !vtable)
+  if (!gameBase || !vtable || !g_roronaAddrs)
     return false;
   const uintptr_t rva = vtable - reinterpret_cast<uintptr_t>(gameBase);
-  for (uintptr_t known : kBtlCharaVtableRvas)
-    if (rva == known)
+  for (size_t i = 0; i < g_roronaAddrs->btlCharaVtableCount; i++)
+    if (rva == g_roronaAddrs->btlCharaVtables[i])
       return true;
   return false;
 }
@@ -610,14 +700,13 @@ bool isBattleCharaVtable(uintptr_t vtable) {
 // nullptr. Used to catch a cut-in character the Event system drives outside the
 // BtlChara party vector.
 const char* charaFamilyName(uintptr_t vtable) {
-  if (!gameBase || !vtable)
+  if (!gameBase || !vtable || !g_roronaAddrs)
     return nullptr;
+  if (isBattleCharaVtable(vtable))
+    return "BtlChara";
   const uintptr_t rva = vtable - reinterpret_cast<uintptr_t>(gameBase);
-  for (uintptr_t known : kBtlCharaVtableRvas)
-    if (rva == known)
-      return "BtlChara";
-  if (rva == 0x74e598) return "Chara";
-  if (rva == 0x74eb70) return "CharaBase";
+  if (rva == g_roronaAddrs->charaVtable) return "Chara";
+  if (rva == g_roronaAddrs->charaBaseVtable) return "CharaBase";
   return nullptr;
 }
 
@@ -625,11 +714,11 @@ const char* charaFamilyName(uintptr_t vtable) {
 // dumping its referenced pointers should reveal the active render node the cut-in
 // draws (which is NOT the character's registered [+0x18] node).
 const char* eventExecName(uintptr_t vtable) {
-  if (!gameBase || !vtable)
+  if (!gameBase || !vtable || !g_roronaAddrs)
     return nullptr;
   const uintptr_t rva = vtable - reinterpret_cast<uintptr_t>(gameBase);
-  if (rva == 0x76e018) return "EventExecBtlChara";
-  if (rva == 0x74e3f8) return "EventExecChara";
+  if (rva == g_roronaAddrs->eventExecBtlChara) return "EventExecBtlChara";
+  if (rva == g_roronaAddrs->eventExecChara) return "EventExecChara";
   return nullptr;
 }
 
@@ -824,12 +913,15 @@ size_t locateBattleCharaContainer(uintptr_t gameMode, uintptr_t scene,
   return found;
 }
 
-// Address of the manager's active-helper slot ([0x1410c73c8]+0x9d0), or null.
+// Address of the manager's active-helper slot ([manager global]+0x9d0), or
+// null. The manager global RVA is per-build (EN 0x10c73c8, multi 0x11044c8);
+// both values are pinned by the scenePass install signature, whose RIP
+// displacement encodes exactly this slot.
 uintptr_t* globalActiveHelperSlot() {
-  if (!gameBase)
+  if (!gameBase || !g_roronaAddrs)
     return nullptr;
   const uintptr_t manager =
-    *reinterpret_cast<uintptr_t*>(gameBase + 0x10c73c8);
+    *reinterpret_cast<uintptr_t*>(gameBase + g_roronaAddrs->managerSlot);
   if (!manager)
     return nullptr;
   return reinterpret_cast<uintptr_t*>(manager + 0x9d0);
@@ -1001,9 +1093,11 @@ uintptr_t tracedShadowHelperInit(uintptr_t helper, uintptr_t id,
     ? caller - uintptr_t(gameBase) : 0;
   const uintptr_t result = originalShadowHelperInit(
     helper, id, resource, config);
-  // Track which helper the render path should use: battle publishes at 0xfe6e1,
-  // field re-entry at 0x397307 hands control back to the field helper.
-  if (callerRva == 0xfe6e1) {
+  // Track which helper the render path should use: the battle-setup call site
+  // publishes the battle helper, the field re-entry call site hands control
+  // back to the field helper. Both return addresses are per-build (EN
+  // 0xfe6e1/0x397307, multi 0x106781/0x3ac8d7).
+  if (g_roronaAddrs && callerRva == g_roronaAddrs->battlePublishRet) {
     const uintptr_t gameMode = helper ? helper - 0x68 : 0;
     g_battleHelper.store(helper, std::memory_order_release);
     g_battleGameMode.store(gameMode, std::memory_order_release);
@@ -1030,7 +1124,7 @@ uintptr_t tracedShadowHelperInit(uintptr_t helper, uintptr_t id,
       g_battleContainerFound.store(true, std::memory_order_release);
       registerBattleCharaShadows();
     }
-  } else if (callerRva == 0x397307) {
+  } else if (g_roronaAddrs && callerRva == g_roronaAddrs->fieldReentryRet) {
     g_battleActive.store(false, std::memory_order_release);
     // Undo a battle-helper publish so the field renders its own helper again.
     const uintptr_t saved =
@@ -1041,13 +1135,15 @@ uintptr_t tracedShadowHelperInit(uintptr_t helper, uintptr_t id,
     }
   }
   size_t replayed = 0;
-  if (battleShadowRestoreEnabled() && callerRva == 0xfe6e1)
+  if (battleShadowRestoreEnabled() && g_roronaAddrs &&
+      callerRva == g_roronaAddrs->battlePublishRet)
     replayed = dispatchBattleCharaShadows(helper, resource);
-  // The per-frame scene shadow pass (RVA 0x39cfd0) reads the active helper from
-  // this manager global ([0x1410c73c8]+0x9d0) and early-outs when it is null;
-  // log it here to see whether battle leaves it unset while field publishes it.
-  const uintptr_t globalMgr = gameBase
-    ? *reinterpret_cast<const uintptr_t*>(gameBase + 0x10c73c8) : 0;
+  // The per-frame scene shadow pass reads the active helper from the manager
+  // global (+0x9d0) and early-outs when it is null; log it here to see whether
+  // battle leaves it unset while field publishes it.
+  const uintptr_t globalMgr = gameBase && g_roronaAddrs
+    ? *reinterpret_cast<const uintptr_t*>(
+        gameBase + g_roronaAddrs->managerSlot) : 0;
   const uintptr_t globalActiveHelper = globalMgr
     ? *reinterpret_cast<const uintptr_t*>(globalMgr + 0x9d0) : 0;
   atfix::log("SHADOW_HELPER_INIT caller_rva=0x", std::hex, callerRva,
@@ -2334,7 +2430,8 @@ bool installAtlasCache(BYTE* base, const Game& game) {
 }
 
 bool installDeepMenuStats(BYTE* base, const Game& game) {
-  if (!deepMenuStatsEnabled() || game.atlasVariant != AtlasRorona)
+  if (!deepMenuStatsEnabled() || game.atlasVariant != AtlasRorona ||
+      game.exeBuild != BuildEnglish)
     return false;
 
   auto* resource = base + 0x167840;
@@ -2531,7 +2628,8 @@ bool installDeepMenuStats(BYTE* base, const Game& game) {
 }
 
 bool installTextBitmapAllocator(BYTE* base, const Game& game) {
-  if (!textBitmapCacheEnabled() || game.atlasVariant != AtlasRorona)
+  if (!textBitmapCacheEnabled() || game.atlasVariant != AtlasRorona ||
+      game.exeBuild != BuildEnglish)
     return false;
   auto* allocate = base + 0x262e90;
   auto* release = base + 0x262d60;
@@ -2551,7 +2649,8 @@ bool installTextBitmapAllocator(BYTE* base, const Game& game) {
 }
 
 bool installShadowLayerTrace(BYTE* base, const Game& game) {
-  if (!shadowLayerTraceEnabled() || game.atlasVariant != AtlasRorona)
+  if (!shadowLayerTraceEnabled() || game.atlasVariant != AtlasRorona ||
+      game.exeBuild != BuildEnglish)
     return false;
   auto* build = base + 0x163250;
   const std::array<BYTE, 16> expected = {
@@ -2566,7 +2665,8 @@ bool installShadowLayerTrace(BYTE* base, const Game& game) {
 }
 
 bool installShadowConstructorTrace(BYTE* base, const Game& game) {
-  if (!shadowConstructorTraceEnabled() || game.atlasVariant != AtlasRorona)
+  if (!shadowConstructorTraceEnabled() || game.atlasVariant != AtlasRorona ||
+      game.exeBuild != BuildEnglish)
     return false;
   auto* render = base + 0x556720;
   auto* skin = base + 0x557200;
@@ -2589,20 +2689,47 @@ bool installShadowConstructorTrace(BYTE* base, const Game& game) {
     reinterpret_cast<void**>(&originalShadowSkinNodeFactory));
 }
 
+// Battle-shadow hook RVAs per executable build. The multilingual values were
+// homologue-matched from the English build; every prologue below except
+// scenePass is byte-identical across the two builds, so the shared expected
+// arrays verify both. scenePass embeds a RIP displacement to the manager
+// global, so its expected bytes are per-build and double as a consistency
+// check on RoronaBuildAddrs::managerSlot.
+struct RoronaShadowHookRvas {
+  uintptr_t shader, group, character, helperInit, battleActorInit;
+  uintptr_t partyCtor, monsterCtor, scenePass, renderMapping, skinMapping;
+  std::array<BYTE, 16> scenePassExpected;
+};
+
+constexpr RoronaShadowHookRvas kShadowHooksEn = {
+  0x15a730, 0x155da0, 0x1631a0, 0x1611f0, 0x1072a0,
+  0x110030, 0x10f5d0, 0x39cfd0, 0x555920, 0x555a80,
+  { 0x48, 0x83, 0xec, 0x28, 0x48, 0x8b, 0x05, 0xed,
+    0xa3, 0xd2, 0x00, 0x4c, 0x8b, 0x90, 0xd0, 0x09 },
+};
+constexpr RoronaShadowHookRvas kShadowHooksMulti = {
+  0x162c30, 0x15e2a0, 0x16b6a0, 0x1696f0, 0x10f3a0,
+  0x118130, 0x1176d0, 0x3b25a0, 0x56b7f0, 0x56b950,
+  { 0x48, 0x83, 0xec, 0x28, 0x48, 0x8b, 0x05, 0x1d,
+    0x1f, 0xd5, 0x00, 0x4c, 0x8b, 0x90, 0xd0, 0x09 },
+};
+
 bool installShadowMappingTrace(BYTE* base, const Game& game) {
   if ((!shadowMappingTraceEnabled() && !battleShadowRestoreEnabled()) ||
       game.atlasVariant != AtlasRorona)
     return false;
-  auto* shader = base + 0x15a730;
-  auto* group = base + 0x155da0;
-  auto* character = base + 0x1631a0;
-  auto* helperInit = base + 0x1611f0;
-  auto* battleActorInit = base + 0x1072a0;
-  auto* partyCtor = base + 0x110030;
-  auto* monsterCtor = base + 0x10f5d0;
-  auto* scenePass = base + 0x39cfd0;
-  auto* render = base + 0x555920;
-  auto* skin = base + 0x555a80;
+  const RoronaShadowHookRvas& rvas = game.exeBuild == BuildMultilingual
+    ? kShadowHooksMulti : kShadowHooksEn;
+  auto* shader = base + rvas.shader;
+  auto* group = base + rvas.group;
+  auto* character = base + rvas.character;
+  auto* helperInit = base + rvas.helperInit;
+  auto* battleActorInit = base + rvas.battleActorInit;
+  auto* partyCtor = base + rvas.partyCtor;
+  auto* monsterCtor = base + rvas.monsterCtor;
+  auto* scenePass = base + rvas.scenePass;
+  auto* render = base + rvas.renderMapping;
+  auto* skin = base + rvas.skinMapping;
   const std::array<BYTE, 16> shaderExpected = {
     0x4c, 0x8b, 0xdc, 0x53, 0x41, 0x54, 0x41, 0x55,
     0x41, 0x56, 0x48, 0x83, 0xec, 0x58, 0x48, 0x8b,
@@ -2631,10 +2758,7 @@ bool installShadowMappingTrace(BYTE* base, const Game& game) {
     0x40, 0x53, 0x56, 0x57, 0x48, 0x83, 0xec, 0x60,
     0x48, 0xc7, 0x44, 0x24, 0x20, 0xfe, 0xff, 0xff,
   };
-  const std::array<BYTE, 16> scenePassExpected = {
-    0x48, 0x83, 0xec, 0x28, 0x48, 0x8b, 0x05, 0xed,
-    0xa3, 0xd2, 0x00, 0x4c, 0x8b, 0x90, 0xd0, 0x09,
-  };
+  const std::array<BYTE, 16>& scenePassExpected = rvas.scenePassExpected;
   const std::array<BYTE, 16> renderExpected = {
     0x48, 0x8b, 0xc4, 0x56, 0x57, 0x41, 0x56, 0x48,
     0x81, 0xec, 0xd0, 0x00, 0x00, 0x00, 0x48, 0xc7,
@@ -2705,7 +2829,17 @@ void detectAndInstallGameHooks() {
     supportedGame = true;
     frameAtlasCacheDefault.store(
       game.atlasVariant == AtlasRorona, std::memory_order_relaxed);
-    atfix::log("Recognized menu-fix executable ", game.executable);
+    if (game.atlasVariant == AtlasRorona) {
+      g_roronaAddrs = game.exeBuild == BuildMultilingual
+        ? &kRoronaAddrsMulti : &kRoronaAddrsEn;
+      g_battleStates = game.exeBuild == BuildMultilingual
+        ? kBattleStatesMulti : kBattleStatesEn;
+      g_battleStateCount = game.exeBuild == BuildMultilingual
+        ? std::size(kBattleStatesMulti) : std::size(kBattleStatesEn);
+    }
+    atfix::log("Recognized menu-fix executable ", game.executable,
+      game.exeBuild == BuildMultilingual ? " (multilingual build)"
+                                         : " (English build)");
     const char* enabled = std::getenv("ARLAND_MENU_FIX");
     if (enabled && enabled[0] == '0')
       return;
@@ -2753,10 +2887,10 @@ void detectAndInstallGameHooks() {
 // catches a brief cut-in the coarse per-120-frame monitor would miss. Reads
 // only fields the game populates; every access is VirtualQuery-guarded.
 void sceneIdentityTick() {
-  if (!sceneTraceEnabled() || !gameBase)
+  if (!sceneTraceEnabled() || !gameBase || !g_roronaAddrs)
     return;
   const uintptr_t managerSlot =
-    reinterpret_cast<uintptr_t>(gameBase) + 0x10c73c8;
+    reinterpret_cast<uintptr_t>(gameBase) + g_roronaAddrs->managerSlot;
   if (!readableRange(managerSlot, sizeof(uintptr_t)))
     return;
   const uintptr_t manager = *reinterpret_cast<const uintptr_t*>(managerSlot);
@@ -2778,30 +2912,13 @@ void sceneIdentityTick() {
       g_battleHelper.load(std::memory_order_acquire)));
 }
 
-// Battle state-machine vtables (RVA, ImageBase 0x140000000) → name. The current
-// state's Update (vtable slot 1) is what runs each frame; recognizing the state
-// object lets us log exactly when the attack cut-in (ExecCommand) and victory
-// (ResultStart) are active without needing manual F8 marks.
-struct BattleStateEntry { uintptr_t rva; const char* name; };
-const BattleStateEntry kBattleStates[] = {
-  {0x76d9a0, "Enter"}, {0x76dd60, "StartWait"}, {0x76da40, "SelectCommand"},
-  {0x76da90, "SelectTarget"}, {0x76d8c8, "SelectSkill"}, {0x76d830, "SelectItem"},
-  {0x76d798, "SelectDefence"}, {0x76dbd0, "WaitAction"}, {0x76dae0, "ExecCommand"},
-  {0x76dc70, "Reaction"}, {0x76db80, "ReactionSkillBefore"},
-  {0x76db30, "HelpSkillBefore"}, {0x76dc20, "HelpSkillAfter"},
-  {0x76d9f0, "ChangeActiveChara"}, {0x76dcc0, "EndCheck"},
-  {0x76ddb0, "TurnEventWait"}, {0x76de00, "EndWait"}, {0x76dea0, "AfterBattle"},
-  {0x76dd10, "DeadBoss"}, {0x76de50, "ResultStart"}, {0x76d570, "ResultCountExp"},
-  {0x76d630, "ResultDropItem"}, {0x76d6a8, "ResultLevelUp"},
-};
-
 const char* battleStateName(uintptr_t vtable) {
-  if (!gameBase || !vtable)
+  if (!gameBase || !vtable || !g_battleStates)
     return nullptr;
   const uintptr_t rva = vtable - reinterpret_cast<uintptr_t>(gameBase);
-  for (const auto& e : kBattleStates)
-    if (e.rva == rva)
-      return e.name;
+  for (size_t i = 0; i < g_battleStateCount; i++)
+    if (g_battleStates[i].rva == rva)
+      return g_battleStates[i].name;
   return nullptr;
 }
 
@@ -3112,6 +3229,13 @@ bool initializeGameHooks() {
 
 bool frameAtlasCacheEnabled() {
   return ::frameAtlasCacheEnabled();
+}
+
+// True when the recognized executable is a Rorona build with the battle-shadow
+// restore enabled; the per-frame battle machinery then needs the Present hook
+// regardless of the frame-atlas-cache setting.
+bool battleShadowRestoreActive() {
+  return supportedGame && g_roronaAddrs && battleShadowRestoreEnabled();
 }
 
 void traceMenuPresent(uint64_t durationMicros, uint64_t intervalMicros) {

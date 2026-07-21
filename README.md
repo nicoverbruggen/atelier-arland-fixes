@@ -1,6 +1,6 @@
 # Atelier Arland Fixes
 
-This mod significantly improves performance in the English Steam releases of **Atelier Rorona DX, Atelier Totori DX, and Atelier Meruru DX**. It removes severe menu hitches, reduces costly D3D11 synchronization stalls, prevents text corruption caused by the synchronization optimization, and adds game-side 2560×1440 and 3840×2160 rendering support.
+This mod significantly improves performance in the Steam releases of **Atelier Rorona DX, Atelier Totori DX, and Atelier Meruru DX**, in every supported language. It removes severe menu hitches, reduces costly D3D11 synchronization stalls, prevents text corruption caused by the synchronization optimization, and adds game-side 2560×1440 and 3840×2160 rendering support.
 
 The mod ships with a 64-bit `d3d11.dll` for the games and a 32-bit `msimg32.dll` for their shared settings launcher. The game DLL combines the synchronization fix required by the Arland ports with the Arland-specific menu fixes discovered during this project. The launcher DLL always exposes 1920×1080, 2560×1440, and 3840×2160 in both windowed and fullscreen mode despite DPI, desktop-resolution, and display-mode filtering. No separate `atelier-sync-fix` or `dinput8.dll` is required.
 
@@ -13,14 +13,14 @@ For newer Atelier games, use the upstream [atelier-sync-fix](https://github.com/
 - Correct text rendering without the corruption produced by older synchronization fixes in these games.
 - Correct direct rendering at 2560×1440 and 3840×2160 instead of leaving internal render targets and raster state at 1920×1080.
 - Restored character and enemy shadows during battles in Atelier Rorona DX, which the port omitted entirely.
-- One installation covering the relevant performance fixes for the complete Arland trilogy.
+- One installation covering the relevant performance fixes for the complete Arland trilogy, in all languages: both the English executable and the multilingual executable used for Japanese and Chinese are supported.
 
 The mod is intended for the Steam versions of the games. See [TECHNICAL.md](TECHNICAL.md) for implementation details and tested executable fingerprints.
 
 ## Installation on Windows
 
 1. Open the game's installation directory from Steam by selecting **Manage → Browse local files**.
-2. Copy `d3d11.dll` and `msimg32.dll` into that directory, beside the English game executable and `ArlandDXEnv.exe`.
+2. Copy `d3d11.dll` and `msimg32.dll` into that directory, beside the game executables and `ArlandDXEnv.exe`.
 3. Launch the game normally through Steam.
 
 Remove older copies of this mod's `dinput8.dll` and `winmm.dll`, and do not install another `d3d11.dll` wrapper alongside it. The game loads `d3d11.dll`; the settings launcher loads `msimg32.dll` and makes 1920×1080, 2560×1440, and 3840×2160 available.

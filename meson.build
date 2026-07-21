@@ -1,4 +1,4 @@
-project('atelier-arland-fixes', ['c', 'cpp'], version : '0.2.0',
+project('atelier-arland-fixes', ['c', 'cpp'], version : '0.4.0',
   default_options : ['cpp_std=c++17', 'buildtype=release', 'strip=true'])
 
 cpp = meson.get_compiler('cpp')
