@@ -20,7 +20,10 @@
 
 namespace atfix {
 extern Log log;
+bool arlandInCinematicBattle();   // defined later in this TU
 }
+
+const char* currentBattleState();
 
 namespace {
 
@@ -504,6 +507,45 @@ bool battleShadowSweepEnabled() {
 bool sceneTraceEnabled() {
   static const bool enabled = [] {
     const char* value = std::getenv("ARLAND_SCENE_TRACE");
+    return value && value[0] != '0';
+  }();
+  return enabled;
+}
+
+// Cut-in probe: during WaitAction the engine clears bit 0x10000 at +0xc0 of
+// selected registered shadow nodes (SNODE_SNAP diff, REPORT §30m) — its own
+// per-node caster kill-switch for the action camera. This experiment re-sets
+// the bit on our registered battle casters at the top of each shadow scene
+// pass, so the engine itself rebuilds their caster state; if the flag gates
+// the transform bake, the resulting shadows are engine-correct (pose included).
+// §33j: runtime tracer for the PSSG shadow-node flag functions — static
+// analysis found the +0xC2 clearer (0x553960) and initializer (0x551f40) but
+// NO static callers (function-pointer dispatch); log who calls them live.
+bool cutinFlagTraceEnabled() {
+  static const bool enabled = [] {
+    const char* value = std::getenv("ARLAND_CUTIN_FLAG_TRACE");
+    return value && value[0] != '0';
+  }();
+  return enabled;
+}
+
+// §19: trace the engine's by-name shader-uniform setter (0xc61e0) to catch which
+// global (gamma/color/exposure/desat) a fullscreen post-effect drives during the
+// cut-in — the 54% dim isn't in the ground material's cbuffer (all flat), so it
+// must be a post pass. Enabled by ARLAND_UNIFORM_TRACE or, for convenience, the
+// same ARLAND_CUTIN_LIGHT_RESTORE the light probes already use.
+bool uniformTraceEnabled() {
+  static const bool enabled = [] {
+    const char* a = std::getenv("ARLAND_UNIFORM_TRACE");
+    const char* b = std::getenv("ARLAND_CUTIN_LIGHT_RESTORE");
+    return (a && a[0] != '0') || (b && b[0] != '0');
+  }();
+  return enabled;
+}
+
+bool cutinSnodeFlagEnabled() {
+  static const bool enabled = [] {
+    const char* value = std::getenv("ARLAND_CUTIN_SNODE_FLAG");
     return value && value[0] != '0';
   }();
   return enabled;
@@ -1055,6 +1097,59 @@ void sweepRegisterBattleCharas() {
   }
 }
 
+// Cut-in probe (§30m): during WaitAction the engine clears bit 0x10000 at
+// +0xc0 of selected registered shadow nodes — its per-node caster kill-switch
+// for the action camera. Re-set the bit on our registered battle casters so
+// the engine itself rebuilds their caster state. Runs on the game's render
+// thread; every access is VirtualQuery-guarded.
+void restoreBattleSnodeFlags(const char* site) {
+  const uintptr_t battleHelper = g_battleHelper.load(std::memory_order_acquire);
+  if (!battleHelper || !readableRange(battleHelper + 0x48, 0x10))
+    return;
+  const uintptr_t rb = *reinterpret_cast<const uintptr_t*>(battleHelper + 0x48);
+  const uintptr_t re = *reinterpret_cast<const uintptr_t*>(battleHelper + 0x50);
+  if (!rb || re <= rb || (re - rb) > 0x200 || !readableRange(rb, re - rb))
+    return;
+  // §33p: the disable wrapper (0x552aa0) clears BOTH byte +0xC2 (the caster
+  // flag) and byte +0xBC (low byte of the per-pass stamp dword). Restore both:
+  // flag set, stamp copied from the healthiest sibling in the same registry.
+  uint32_t restored = 0, nodes = 0, stamped = 0;
+  uint32_t bestStamp = 0;
+  for (uintptr_t p = rb; p < re; p += sizeof(uintptr_t)) {
+    const uintptr_t snode = *reinterpret_cast<const uintptr_t*>(p);
+    if (!snode || !readableRange(snode, 0xc4))
+      continue;
+    const uint32_t f = *reinterpret_cast<const uint32_t*>(snode + 0xc0);
+    if (f & 0x10000)
+      bestStamp = std::max(bestStamp,
+        *reinterpret_cast<const uint32_t*>(snode + 0xbc));
+  }
+  for (uintptr_t p = rb; p < re; p += sizeof(uintptr_t)) {
+    const uintptr_t snode = *reinterpret_cast<const uintptr_t*>(p);
+    if (!snode || !readableRange(snode, 0xc4))
+      continue;
+    ++nodes;
+    auto* flag = reinterpret_cast<uint32_t*>(snode + 0xc0);
+    auto* stamp = reinterpret_cast<uint32_t*>(snode + 0xbc);
+    if ((*flag & 0x10000) == 0) {
+      *flag |= 0x10000;
+      ++restored;
+    }
+    if (bestStamp && *stamp < bestStamp) {
+      *stamp = bestStamp;
+      ++stamped;
+    }
+  }
+  static std::atomic<uint64_t> tick{0};
+  static std::atomic<uint32_t> lastRestored{0xffffffff};
+  const uint64_t t = tick.fetch_add(1, std::memory_order_relaxed);
+  if (restored != lastRestored.exchange(restored) || (t % 300) == 0)
+    atfix::log("CUTIN_SNODE_FLAG site=", site, " restored=", restored,
+      " stamped=", stamped, " nodes=", nodes,
+      " state=", currentBattleState() ? currentBattleState() : "?",
+      " tick=", t);
+}
+
 // Detour of the per-frame scene shadow pass (RVA 0x39cfd0). It reads the active
 // helper from the manager global and early-outs / processes whatever it finds.
 // While a battle is active and publishing is enabled, we swap that global to the
@@ -1073,6 +1168,14 @@ uintptr_t tracedShadowScenePass(uintptr_t self) {
     *slot = battleHelper;
     swapped = true;
   }
+
+  // Cut-in probe (§30m): restore the engine-cleared caster flag before the
+  // pass consumes the registry. NOTE: this pass is only invoked for field
+  // scenes — the battle-frame call site is the D3D shadow-map clear (see
+  // atfix::arlandCutinShadowMapCleared); this one is kept for completeness.
+  if (cutinSnodeFlagEnabled() && battleActive)
+    restoreBattleSnodeFlags("scene_pass");
+
   const uintptr_t result = originalShadowScenePass(self);
   if (swapped)
     *slot = globalBefore;
@@ -1085,6 +1188,8 @@ uintptr_t tracedShadowScenePass(uintptr_t self) {
   return result;
 }
 
+std::atomic<uint32_t> g_sceneGeneration{0};
+
 uintptr_t tracedShadowHelperInit(uintptr_t helper, uintptr_t id,
                                  uintptr_t resource, uintptr_t config) {
   const uintptr_t caller = reinterpret_cast<uintptr_t>(
@@ -1093,6 +1198,13 @@ uintptr_t tracedShadowHelperInit(uintptr_t helper, uintptr_t id,
     ? caller - uintptr_t(gameBase) : 0;
   const uintptr_t result = originalShadowHelperInit(
     helper, id, resource, config);
+  // §33u: any shadow-helper init is a scene (re)build — field re-entry OR
+  // battle setup. Bump the generation so the D3D layer drops cross-scene
+  // caches (light-VP, proxy pairings, recordings) that reference freed
+  // geometry from the previous scene.
+  if (g_roronaAddrs && (callerRva == g_roronaAddrs->battlePublishRet ||
+                        callerRva == g_roronaAddrs->fieldReentryRet))
+    g_sceneGeneration.fetch_add(1, std::memory_order_release);
   // Track which helper the render path should use: the battle-setup call site
   // publishes the battle helper, the field re-entry call site hands control
   // back to the field helper. Both return addresses are per-build (EN
@@ -2714,6 +2826,119 @@ constexpr RoronaShadowHookRvas kShadowHooksMulti = {
     0x1f, 0xd5, 0x00, 0x4c, 0x8b, 0x90, 0xd0, 0x09 },
 };
 
+using SnodeFlagProc = uintptr_t (*)(uintptr_t, uintptr_t, uintptr_t,
+                                    uintptr_t);
+SnodeFlagProc originalSnodeFlagClear = nullptr;
+SnodeFlagProc originalSnodeInit = nullptr;
+
+uintptr_t tracedSnodeFlagClear(uintptr_t a1, uintptr_t a2, uintptr_t a3,
+                               uintptr_t a4) {
+  const uintptr_t caller =
+    reinterpret_cast<uintptr_t>(__builtin_return_address(0));
+  const uintptr_t rva = gameBase && caller >= uintptr_t(gameBase)
+    ? caller - uintptr_t(gameBase) : 0;
+  static std::atomic<uint32_t> logs{0};
+  if (logs.fetch_add(1, std::memory_order_relaxed) % 20 == 0)
+    atfix::log("CUTIN_FLAGCLEAR caller_rva=0x", std::hex, rva, std::dec,
+      " node=", reinterpret_cast<void*>(a1),
+      " state=", currentBattleState() ? currentBattleState() : "-");
+  return originalSnodeFlagClear(a1, a2, a3, a4);
+}
+
+uintptr_t tracedSnodeInit(uintptr_t a1, uintptr_t a2, uintptr_t a3,
+                          uintptr_t a4) {
+  const uintptr_t caller =
+    reinterpret_cast<uintptr_t>(__builtin_return_address(0));
+  const uintptr_t rva = gameBase && caller >= uintptr_t(gameBase)
+    ? caller - uintptr_t(gameBase) : 0;
+  static std::atomic<uint32_t> logs{0};
+  if (logs.fetch_add(1, std::memory_order_relaxed) % 20 == 0)
+    atfix::log("CUTIN_FLAGINIT caller_rva=0x", std::hex, rva, std::dec,
+      " node=", reinterpret_cast<void*>(a1),
+      " state=", currentBattleState() ? currentBattleState() : "-");
+  return originalSnodeInit(a1, a2, a3, a4);
+}
+
+// The engine's universal "set shader float uniform by name": prologue at 0xc61e0
+// is  push rbx/rsi/rdi; sub rsp,0xc0; movaps [rsp+0xb0],xmm6  and it consumes
+// rcx=object, rdx=name, xmm2=value, r9=arg3 (verified by disasm). Match that
+// signature exactly so the pass-through can't corrupt the call.
+using SetUniformProc = void* (*)(void*, const char*, float, void*);
+SetUniformProc originalSetUniform = nullptr;
+
+void* tracedSetUniform(void* obj, const char* name, float value, void* arg3) {
+  if (uniformTraceEnabled() && name) {
+    const char* state = currentBattleState();
+    if (state) {
+      // Log first sight of each name and thereafter only when its value has
+      // CHANGED (>1e-4) and at most ~4/sec/name — so a step at the cut-in shows
+      // without a smoothly-animating uniform flooding the log.
+      static std::mutex m;
+      static std::unordered_map<const char*, std::pair<float, uint64_t>> seen;
+      const uint64_t tick = GetTickCount64();
+      bool doLog = false;
+      {
+        std::lock_guard<std::mutex> lock(m);
+        auto it = seen.find(name);
+        const float d = it == seen.end() ? 1.0f : value - it->second.first;
+        const float ad = d < 0 ? -d : d;
+        if (it == seen.end()) {
+          seen[name] = {value, tick};
+          doLog = true;
+        } else if (ad > 1e-4f && tick - it->second.second > 250) {
+          it->second = {value, tick};
+          doLog = true;
+        }
+      }
+      if (doLog)
+        atfix::log("UNIFORM_SET name=", name, " val=", value,
+          " cine=", atfix::arlandInCinematicBattle(), " state=", state);
+    }
+  }
+  return originalSetUniform(obj, name, value, arg3);
+}
+
+bool installUniformTrace(BYTE* base, const Game& game) {
+  if (!uniformTraceEnabled() || game.atlasVariant != AtlasRorona ||
+      game.exeBuild != BuildEnglish)
+    return false;
+  auto* target = base + 0xc61e0;
+  const std::array<BYTE, 16> expected = {
+    0x40, 0x53, 0x56, 0x57, 0x48, 0x81, 0xec, 0xc0,
+    0x00, 0x00, 0x00, 0x0f, 0x29, 0xb4, 0x24, 0xb0,
+  };
+  if (!matches(target, expected))
+    return false;
+  return installMinHookDetour(target,
+    reinterpret_cast<void*>(&tracedSetUniform),
+    reinterpret_cast<void**>(&originalSetUniform));
+}
+
+bool installCutinFlagTrace(BYTE* base, const Game& game) {
+  if (!cutinFlagTraceEnabled() || game.atlasVariant != AtlasRorona ||
+      game.exeBuild != BuildEnglish)
+    return false;
+  auto* clear = base + 0x553960;
+  auto* init = base + 0x551f40;
+  const std::array<BYTE, 15> clearExpected = {
+    0x48, 0x83, 0xec, 0x38, 0x80, 0xb9, 0xc0, 0x00,
+    0x00, 0x00, 0x00, 0x0f, 0x85, 0x82, 0x00,
+  };
+  const std::array<BYTE, 16> initExpected = {
+    0x48, 0x8b, 0xc4, 0x55, 0x41, 0x54, 0x41, 0x55,
+    0x41, 0x56, 0x41, 0x57, 0x48, 0x8d, 0xa8, 0xe8,
+  };
+  if (!matches(clear, clearExpected) || !matches(init, initExpected))
+    return false;
+  if (!installMinHookDetour(clear,
+      reinterpret_cast<void*>(&tracedSnodeFlagClear),
+      reinterpret_cast<void**>(&originalSnodeFlagClear)))
+    return false;
+  return installMinHookDetour(init,
+    reinterpret_cast<void*>(&tracedSnodeInit),
+    reinterpret_cast<void**>(&originalSnodeInit));
+}
+
 bool installShadowMappingTrace(BYTE* base, const Game& game) {
   if ((!shadowMappingTraceEnabled() && !battleShadowRestoreEnabled()) ||
       game.atlasVariant != AtlasRorona)
@@ -2865,6 +3090,14 @@ void detectAndInstallGameHooks() {
       installShadowConstructorTrace(gameBase, game);
     const bool shadowMappingTraceInstalled =
       installShadowMappingTrace(gameBase, game);
+    const bool cutinFlagTraceInstalled =
+      installCutinFlagTrace(gameBase, game);
+    if (cutinFlagTraceEnabled())
+      atfix::log("Cutin flag trace installed=", cutinFlagTraceInstalled);
+    const bool uniformTraceInstalled =
+      installUniformTrace(gameBase, game);
+    if (uniformTraceEnabled())
+      atfix::log("Uniform trace installed=", uniformTraceInstalled);
     atfix::log("Menu hooks pssg=", pathInstalled,
       " atlas=", atlasInstalled,
       " frame_atlas_cache=", frameAtlasCacheEnabled(),
@@ -3047,6 +3280,26 @@ bool isCinematicState(const char* name) {
 namespace atfix {
 bool arlandInCinematicBattle() {
   return isCinematicState(currentBattleState());
+}
+
+uint32_t arlandSceneGeneration() {
+  return g_sceneGeneration.load(std::memory_order_acquire);
+}
+
+// Current battle state name for D3D-side logging, or null outside battle.
+const char* arlandBattleStateName() {
+  return currentBattleState();
+}
+
+// Called by the D3D layer when the 1024x1024 battle shadow map is cleared —
+// the only reliable per-battle-frame hook on the render thread (the scene
+// shadow pass 0x39cfd0 is field-only). Restores engine-cleared caster flags
+// before this frame's caster draws are issued (§30m probe).
+void arlandCutinShadowMapCleared() {
+  if (!cutinSnodeFlagEnabled() ||
+      !g_battleActive.load(std::memory_order_acquire))
+    return;
+  restoreBattleSnodeFlags("map_clear");
 }
 }
 

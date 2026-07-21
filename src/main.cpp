@@ -108,6 +108,7 @@ HRESULT STDMETHODCALLTYPE tracedPresent(
     started.time_since_epoch()).count();
   const int64_t previous = previousPresentNanos.exchange(
     startedNanos, std::memory_order_relaxed);
+  atfix::cutinDrawContactBlobs(swapChain);
   const HRESULT result = originalPresent(swapChain, syncInterval, flags);
   const auto finished = std::chrono::steady_clock::now();
   const uint64_t durationMicros = uint64_t(
