@@ -13,6 +13,7 @@ For newer Atelier games, use the upstream [atelier-sync-fix](https://github.com/
 - Correct text rendering without the corruption produced by older synchronization fixes in these games.
 - Correct direct rendering at 2560×1440 and 3840×2160 instead of leaving internal render targets and raster state at 1920×1080.
 - Restored character and enemy shadows during battles in Atelier Rorona DX, which the port omitted entirely.
+- Restored ground shadows during Atelier Rorona DX battle cut-ins, the action close-ups, which had no shadows on any platform and also dimmed the scene; the mod keeps the close-up lit and the shadows visible. Enabled by default and configurable.
 - One installation covering the relevant performance fixes for the complete Arland trilogy, in all languages: both the English executable and the multilingual executable used for Japanese and Chinese are supported.
 
 The mod is intended for the Steam versions of the games. See [TECHNICAL.md](TECHNICAL.md) for implementation details and tested executable fingerprints.
@@ -39,6 +40,19 @@ MSAA=4
 Width=
 Height=
 ```
+
+### Battle shadows
+
+Atelier Rorona DX's restored battle shadows are enabled by default and need no configuration. They are governed by a `[Battle]` section that the mod adds to `arland-fix.ini` on launch:
+
+```ini
+[Battle]
+BattleShadows=true
+BattleCutInShadows=true
+BattleCutInDimming=false
+```
+
+`BattleShadows` toggles the restored character and enemy shadows during ordinary battle. `BattleCutInShadows` toggles the restored shadows during the action cut-ins. `BattleCutInDimming` controls the original close-up dimming: it is `false` by default, so the cut-in keeps full brightness; set it to `true` to restore the darker vanilla cut-in while still choosing whether shadows appear. The two cut-in options are independent. Missing keys are rewritten with these defaults, so an existing `arland-fix.ini` gains the section automatically. All three apply to Atelier Rorona DX only; the other games are unaffected.
 
 ## Advanced use
 
@@ -71,7 +85,7 @@ Height=2160
 
 ### Troubleshooting switches
 
-The fixes are enabled by default. `ARLAND_MENU_FIX=0` disables the executable-specific menu hooks while retaining D3D11 forwarding and synchronization. `ARLAND_ATLAS_CACHE=0` disables atlas-read caching. Rorona also accepts `ARLAND_FRAME_ATLAS_CACHE=0` to restrict snapshots to the older queue-scoped behavior, and `ARLAND_BATTLE_SHADOWS=0` to disable the restored battle shadows. These switches are intended for diagnosis and A/B testing, not normal installation.
+The fixes are enabled by default. `ARLAND_MENU_FIX=0` disables the executable-specific menu hooks while retaining D3D11 forwarding and synchronization. `ARLAND_ATLAS_CACHE=0` disables atlas-read caching. Rorona also accepts `ARLAND_FRAME_ATLAS_CACHE=0` to restrict snapshots to the older queue-scoped behavior. The `[Battle]` shadow settings each have an environment override that takes precedence over `arland-fix.ini` for the session: `ARLAND_BATTLE_SHADOWS`, `ARLAND_CUTIN_SHADOWS`, and `ARLAND_CUTIN_DIMMING` (`0` or `1`). These switches are intended for diagnosis and A/B testing, not normal installation.
 
 ## Build
 
