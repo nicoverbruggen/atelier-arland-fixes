@@ -20,27 +20,21 @@ The mod is intended for the Steam versions of the games. See [TECHNICAL.md](TECH
 
 ## Feature support by game
 
-Not every enhancement applies to every game. The table below is the quick
-reference; the details are in the sections that follow.
+The table below tracks which enhancements have been validated in each game; the
+details are in the sections that follow. A ✓ marks a feature confirmed working in
+that game.
 
-| Enhancement | Rorona | Totori | Meruru |
-| --- | :---: | :---: | :---: |
-| Faster menus, sync fix, text-corruption fix | ✓ | ✓ | ✓ |
-| Atlas read cache | ✓ | ✓ | ✓ |
-| Frame-scoped atlas cache | ✓ | — | — |
-| Direct 2560×1440 / 3840×2160 rendering | ✓ | ✓ | ✓ |
-| MSAA (optional, off by default) | ✓ | ✓ | ✓ |
-| Shadow multiplier (optional, off by default) | ✓ | ✓ † | ✓ |
-| Battle shadows while fighting | ✓ (restored) | — ‡ | ✓ (native) |
-| Cut-in shadows | ✓ | — ‡ | ✓ |
-| Cut-in brightness hold | ✓ | — ‡ | ✓ |
-
-✓ present · — not present or not applicable. The frame-scoped atlas cache is a
-Rorona-only optimization. Rorona's battle and cut-in shadows are restored by this
-mod; Meruru casts battle shadows natively and gains the cut-in fix here.
-† The shadow multiplier is wired for Totori but its high-resolution shadow path is
-not yet validated there. ‡ Totori's battle and cut-in shadows are not yet
-covered — they are planned (see `TODO.md`).
+| Enhancement                                  | Rorona | Totori | Meruru |
+| -------------------------------------------- | :----: | :----: | :----: |
+| Faster menus, sync fix, text-corruption fix  |        |        |        |
+| Atlas read cache                             |        |        |        |
+| Frame-scoped atlas cache                     |        |        |        |
+| Direct 2560×1440 / 3840×2160 rendering       |        |        |        |
+| MSAA (optional, off by default)              |        |        |        |
+| Shadow multiplier (optional, off by default) |        |        |        |
+| Battle shadows while fighting                |        |        |        |
+| Cut-in shadows                               |        |        |        |
+| Cut-in brightness hold                       |        |        |        |
 
 ## Installation on Windows
 

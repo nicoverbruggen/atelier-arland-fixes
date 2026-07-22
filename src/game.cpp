@@ -58,7 +58,6 @@ const Descriptor& descriptor(Feature f) {
     /* BattleShadows      */ { "ARLAND_BATTLE_SHADOWS", "Battle", "BattleShadows", false },
     /* CutInShadows       */ { "ARLAND_CUTIN_SHADOWS", "Battle", "BattleCutInShadows", false },
     /* CutInDimHold       */ { "ARLAND_CUTIN_DIMMING", "Battle", "BattleCutInDimming", true },
-    /* CutsceneFramerate  */ { "ARLAND_CUTSCENE_FRAMERATE", "Rendering", "CutsceneFramerateFix", false },
   };
   return table[static_cast<int>(f)];
 }
@@ -74,10 +73,10 @@ constexpr Support X = Support::OnByDefault;
 // natively and Totori's are still broken (planned, see TODO.md); Totori has no
 // cut-in state detection yet, so its cut-in cells are Unsupported for now.
 constexpr Support kMatrix[3][static_cast<int>(Feature::Count)] = {
-  //           Sync Menu Atls Frme Res  MSAA ShMl Bat  CutS CutD CutFR
-  /* Rorona */ { X,   X,   X,   X,   X,   O,   O,   X,   X,   X,   O },
-  /* Totori */ { X,   X,   X,   U,   X,   O,   O,   U,   U,   U,   O },
-  /* Meruru */ { X,   X,   X,   U,   X,   O,   O,   U,   X,   X,   X },
+  //           Sync Menu Atls Frme Res  MSAA ShMl Bat  CutS CutD
+  /* Rorona */ { X,   X,   X,   X,   X,   O,   O,   X,   X,   X },
+  /* Totori */ { X,   X,   X,   U,   X,   O,   O,   U,   U,   U },
+  /* Meruru */ { X,   X,   X,   U,   X,   O,   O,   U,   X,   X },
 };
 
 int titleRow(Title t) {

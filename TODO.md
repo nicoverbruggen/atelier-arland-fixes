@@ -5,6 +5,8 @@ This file tracks work in progress and ideas under consideration. Items here are 
 ## Rendering enhancements under consideration
 
 - Supersampling factor: a new `[Rendering]` field (e.g. `SupersamplingFactor` / `ARLAND_SUPERSAMPLING`) independent of `Width`/`Height`. `Width`/`Height` continue to set the actual output/window size; the supersampling factor renders the scene internally at `factor ×` that output resolution and downscales to it. Example: on a 1080p display, `SupersamplingFactor=2` renders at 4K internally and resolves down to 1080p (SSAA), without requiring a 4K output. Default 1 (no supersampling); orthogonal to the existing MSAA and direct-resolution paths.
+- Add a configurable framerate lock/cap through `arland-fix.ini` (e.g. a `[Rendering]` field such as `FramerateCap`): let the user cap or lock the game to a chosen frame rate.
+- Identify where the game or the mod is locked to a 30 fps assumption — the code path(s) that assume or impose 30 fps. This informs both the configurable framerate cap above and the Meruru framerate drop.
 - Investigate sharper font outlines through a font-only atlas or sampling improvement without sharpening other UI textures.
 - Add a signature-gated Borderless checkbox to the settings launcher and implement the corresponding game-window mode.
 - Evaluate anisotropic filtering and configurable texture LOD bias, including UI and shimmering regressions.
@@ -24,26 +26,7 @@ Totori does not, so its shadow features need their own porting rather than reuse
 ## Atelier Meruru
 
 - Fix a cut-in shadow artifact just before the victory screen: for a few frames, shadows are visible with the characters apparently positioned up in the sky. Investigate the cause and suppress it during the victory/result transition. (This is the "verify victory screens" item.)
-- Fix the Meruru framerate drop. Observed facts only: the framerate drops and then stays low; the user first noticed it when a conversation with animated character portraits animated in; it reads more like a per-frame frame drop than a clean 60→30 halving, but that is not confirmed. The cause is not yet known — do not assume a mechanism. Under investigation via a static study of Meruru's conversation/ADV state in the binary and via runtime logging (the deployed build logs any change in the `Present` sync interval, which is one signal among several, not a presumed cause). Confirm the mechanism with a live capture before choosing a fix.
-
-## Feature validation
-
-A complete per-game validation checklist. Mark each cell as validated once the
-feature is confirmed working in that game. Legend: ⬜ to validate · ✔ validated ·
-— not applicable / not present.
-
-| Feature | Rorona | Totori | Meruru |
-| --- | :---: | :---: | :---: |
-| Faster menus + sync fix + text-corruption fix | ⬜ | ⬜ | ⬜ |
-| Atlas read cache | ⬜ | ⬜ | ⬜ |
-| Frame-scoped atlas cache | ⬜ | — | — |
-| Direct 2560×1440 / 3840×2160 rendering | ⬜ | ⬜ | ⬜ |
-| MSAA (optional) | ⬜ | ⬜ | ⬜ |
-| Shadow multiplier (optional) | ⬜ | ⬜ | ⬜ |
-| Battle shadows while fighting | ⬜ | — | ⬜ |
-| Cut-in shadows | ⬜ | — | ⬜ |
-| Cut-in brightness hold | ⬜ | — | ⬜ |
-| Cutscene framerate restore | — | — | ⬜ |
+- Fix the Meruru framerate drop during animated-portrait conversations (the game's "BUC" bust-up-conversation mode). Cause identified statically (verified; the exact conversation-exit persistence still needs one live capture to confirm): the mode owns a full-screen `Contrast` post-process enabled through a global (EN build RVA `0x1089C60`) that is set on enter and cleared only when the mode object is destroyed, so a conversation that ends by hiding rather than destroying leaves the full-screen pass running every frame. It is not a framerate/sync-interval cap (ruled out for this path). Confirm via the D3D11 layer (read `gameBase+0x1089C60` each Present; check it stays non-zero and an extra full-screen pass persists after the portrait leaves), then apply the self-healing fix: detour `Contrast::apply` (RVA `0x1f06a0`) to zero the global once the effect is disabled. Present in both Meruru builds (multilingual global `0x10E7040`) and in Rorona; Totori uses a different `Contrast` implementation and needs its own pass. Full address map is in the project memory.
 
 ## Performance work
 

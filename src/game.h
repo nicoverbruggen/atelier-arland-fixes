@@ -31,7 +31,6 @@ enum class Feature : uint8_t {
   BattleShadows,       // restored ordinary-battle caster shadows
   CutInShadows,        // reopen the reception gate during attack cut-ins
   CutInDimHold,        // hold scene light up during cut-ins (prevent dimming)
-  CutsceneFramerate,   // re-assert 60 fps after cutscenes that stick at 30
   Count,
 };
 
