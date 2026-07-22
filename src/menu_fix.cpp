@@ -655,34 +655,84 @@ const uintptr_t kBtlCharaVtableRvasMulti[] = {
   0x78ce80,  // BtlCharaRemoteWeapon
 };
 
-// Per-executable-build Rorona addresses used by the battle-shadow machinery
-// outside the hook installers. Selected once at detection time.
-struct RoronaBuildAddrs {
+// Meruru (A13V) BtlChara-family vtables, both builds, located via MSVC RTTI
+// (complete-object-locator back-references; method validated by reproducing
+// every Rorona EN value first). Meruru has no BtlCharaDummy/BtlCharaSynchro.
+const uintptr_t kBtlCharaVtableRvasMeruruEn[] = {
+  0x670020,  // BtlChara
+  0x6701c8,  // BtlCharaEffect
+  0x670498,  // BtlCharaMonster
+  0x670600,  // BtlCharaParty
+  0x670768,  // BtlCharaRefractionEffect
+  0x670330,  // BtlCharaRemoteWeapon
+};
+const uintptr_t kBtlCharaVtableRvasMeruruMulti[] = {
+  0x66c010,  // BtlChara
+  0x66c1b8,  // BtlCharaEffect
+  0x66c488,  // BtlCharaMonster
+  0x66c5f0,  // BtlCharaParty
+  0x66c758,  // BtlCharaRefractionEffect
+  0x66c320,  // BtlCharaRemoteWeapon
+};
+
+// Per-game, per-executable-build addresses used by the battle-shadow machinery
+// outside the hook installers. Selected once at detection time. Rorona gets the
+// full v0.3 caster restoration (casterRestore); Meruru's engine revision
+// registers battle casters natively (per-character model-build path calls
+// ShadowCharacterBuild — a call site Rorona lacks), so Meruru only needs the
+// battle state tracking that drives the cut-in gate/dim patches in sync_fix.
+struct BattleBuildAddrs {
   const uintptr_t* btlCharaVtables;
   size_t btlCharaVtableCount;
   uintptr_t charaVtable;
   uintptr_t charaBaseVtable;
   uintptr_t eventExecBtlChara;
   uintptr_t eventExecChara;
-  uintptr_t managerSlot;       // [gameBase+managerSlot]+0x9d0 = active helper
+  uintptr_t managerSlot;       // [gameBase+managerSlot]+helperSlotOffset = active helper
   uintptr_t battlePublishRet;  // ShadowHelperInit return address, battle setup
   uintptr_t fieldReentryRet;   // ShadowHelperInit return address, field re-entry
+  uintptr_t helperSlotOffset;  // active-helper offset inside the scene manager
+  uintptr_t partyVectorOffset; // party std::vector<BtlChara*> offset in gameMode
+  uintptr_t initFlagOffset;    // BtlChara one-time actor-init flag byte offset
+  bool casterRestore;          // install the full caster-restoration hook set
 };
 
-constexpr RoronaBuildAddrs kRoronaAddrsEn = {
+constexpr BattleBuildAddrs kRoronaAddrsEn = {
   kBtlCharaVtableRvasEn, std::size(kBtlCharaVtableRvasEn),
   0x74e598, 0x74eb70, 0x76e018, 0x74e3f8,
   0x10c73c8, 0xfe6e1, 0x397307,
+  0x9d0, 0x658, 0x2d0, true,
 };
-constexpr RoronaBuildAddrs kRoronaAddrsMulti = {
+constexpr BattleBuildAddrs kRoronaAddrsMulti = {
   kBtlCharaVtableRvasMulti, std::size(kBtlCharaVtableRvasMulti),
   0x76c138, 0x76c710, 0x78bc48, 0x76bf98,
   0x11044c8, 0x106781, 0x3ac8d7,
+  0x9d0, 0x658, 0x2d0, true,
+};
+// Meruru: managerSlot/helperSlotOffset read straight from the caster-group
+// build's prologue (EN 0x396f80: mov rax,[rip+...]=0xfe0b30; mov r10,[rax+0x960];
+// ML 0x394030 -> 0x1040410). battlePublishRet/fieldReentryRet are the two (and
+// only) static ShadowHelperInit call sites; the battle one is preceded by
+// lea rcx,[r14+0x68] exactly like Rorona's, the field one is followed by the
+// group-build call. partyVectorOffset from the BtlCharaMgr embed (gameMode+0x638
+// + vector at +0x10; Rorona control run reproduced the known 0x658). Chara /
+// EventExec vtables via RTTI.
+constexpr BattleBuildAddrs kMeruruAddrsEn = {
+  kBtlCharaVtableRvasMeruruEn, std::size(kBtlCharaVtableRvasMeruruEn),
+  0x6681e8, 0x667fe8, 0x66ffb8, 0x668048,
+  0xfe0b30, 0x119a47, 0x392875,
+  0x960, 0x648, 0x2c0, false,
+};
+constexpr BattleBuildAddrs kMeruruAddrsMulti = {
+  kBtlCharaVtableRvasMeruruMulti, std::size(kBtlCharaVtableRvasMeruruMulti),
+  0x664268, 0x664068, 0x66bfa8, 0x6640c8,
+  0x1040410, 0x106e97, 0x38f925,
+  0x960, 0x648, 0x2c0, false,
 };
 
-// Null until a Rorona build is recognized; battle-shadow code paths treat that
-// as "feature unavailable".
-const RoronaBuildAddrs* g_roronaAddrs = nullptr;
+// Null until a battle-capable build is recognized; battle-shadow code paths
+// treat that as "feature unavailable".
+const BattleBuildAddrs* g_battleAddrs = nullptr;
 
 // Battle state-machine vtables (RVA, ImageBase 0x140000000) → name. The current
 // state's Update (vtable slot 1) is what runs each frame; recognizing the state
@@ -712,15 +762,42 @@ const BattleStateEntry kBattleStatesMulti[] = {
   {0x78b940, "DeadBoss"}, {0x78ba80, "ResultStart"}, {0x78b170, "ResultCountExp"},
   {0x78b230, "ResultDropItem"}, {0x78b2a8, "ResultLevelUp"},
 };
+// Meruru (A13V) battle states, both builds, located via MSVC RTTI — Meruru
+// ships full .?AVGmStateBtl*@@ type descriptors, so each vtable was resolved
+// from its complete-object locator (the locator method reproduced all 23
+// Rorona EN entries above exactly before being applied to Meruru). Same state
+// names as Rorona, so isCinematicState applies unchanged.
+const BattleStateEntry kBattleStatesMeruruEn[] = {
+  {0x66f268, "Enter"}, {0x66f718, "StartWait"}, {0x66f308, "SelectCommand"},
+  {0x66f448, "SelectTarget"}, {0x66f358, "SelectSkill"}, {0x66f3a8, "SelectItem"},
+  {0x66f3f8, "SelectDefence"}, {0x66f588, "WaitAction"}, {0x66f498, "ExecCommand"},
+  {0x66f628, "Reaction"}, {0x66f538, "ReactionSkillBefore"},
+  {0x66f4e8, "HelpSkillBefore"}, {0x66f5d8, "HelpSkillAfter"},
+  {0x66f2b8, "ChangeActiveChara"}, {0x66f678, "EndCheck"},
+  {0x66f768, "TurnEventWait"}, {0x66f7b8, "EndWait"}, {0x66f948, "AfterBattle"},
+  {0x66f6c8, "DeadBoss"}, {0x66f808, "ResultStart"}, {0x66f858, "ResultCountExp"},
+  {0x66f8f8, "ResultDropItem"}, {0x66f8a8, "ResultLevelUp"},
+};
+const BattleStateEntry kBattleStatesMeruruMulti[] = {
+  {0x66b260, "Enter"}, {0x66b710, "StartWait"}, {0x66b300, "SelectCommand"},
+  {0x66b440, "SelectTarget"}, {0x66b350, "SelectSkill"}, {0x66b3a0, "SelectItem"},
+  {0x66b3f0, "SelectDefence"}, {0x66b580, "WaitAction"}, {0x66b490, "ExecCommand"},
+  {0x66b620, "Reaction"}, {0x66b530, "ReactionSkillBefore"},
+  {0x66b4e0, "HelpSkillBefore"}, {0x66b5d0, "HelpSkillAfter"},
+  {0x66b2b0, "ChangeActiveChara"}, {0x66b670, "EndCheck"},
+  {0x66b760, "TurnEventWait"}, {0x66b7b0, "EndWait"}, {0x66b940, "AfterBattle"},
+  {0x66b6c0, "DeadBoss"}, {0x66b800, "ResultStart"}, {0x66b850, "ResultCountExp"},
+  {0x66b8f0, "ResultDropItem"}, {0x66b8a0, "ResultLevelUp"},
+};
 const BattleStateEntry* g_battleStates = nullptr;
 size_t g_battleStateCount = 0;
 
 bool isBattleCharaVtable(uintptr_t vtable) {
-  if (!gameBase || !vtable || !g_roronaAddrs)
+  if (!gameBase || !vtable || !g_battleAddrs)
     return false;
   const uintptr_t rva = vtable - reinterpret_cast<uintptr_t>(gameBase);
-  for (size_t i = 0; i < g_roronaAddrs->btlCharaVtableCount; i++)
-    if (rva == g_roronaAddrs->btlCharaVtables[i])
+  for (size_t i = 0; i < g_battleAddrs->btlCharaVtableCount; i++)
+    if (rva == g_battleAddrs->btlCharaVtables[i])
       return true;
   return false;
 }
@@ -730,13 +807,13 @@ bool isBattleCharaVtable(uintptr_t vtable) {
 // nullptr. Used to catch a cut-in character the Event system drives outside the
 // BtlChara party vector.
 const char* charaFamilyName(uintptr_t vtable) {
-  if (!gameBase || !vtable || !g_roronaAddrs)
+  if (!gameBase || !vtable || !g_battleAddrs)
     return nullptr;
   if (isBattleCharaVtable(vtable))
     return "BtlChara";
   const uintptr_t rva = vtable - reinterpret_cast<uintptr_t>(gameBase);
-  if (rva == g_roronaAddrs->charaVtable) return "Chara";
-  if (rva == g_roronaAddrs->charaBaseVtable) return "CharaBase";
+  if (rva == g_battleAddrs->charaVtable) return "Chara";
+  if (rva == g_battleAddrs->charaBaseVtable) return "CharaBase";
   return nullptr;
 }
 
@@ -744,11 +821,11 @@ const char* charaFamilyName(uintptr_t vtable) {
 // dumping its referenced pointers should reveal the active render node the cut-in
 // draws (which is NOT the character's registered [+0x18] node).
 const char* eventExecName(uintptr_t vtable) {
-  if (!gameBase || !vtable || !g_roronaAddrs)
+  if (!gameBase || !vtable || !g_battleAddrs)
     return nullptr;
   const uintptr_t rva = vtable - reinterpret_cast<uintptr_t>(gameBase);
-  if (rva == g_roronaAddrs->eventExecBtlChara) return "EventExecBtlChara";
-  if (rva == g_roronaAddrs->eventExecChara) return "EventExecChara";
+  if (rva == g_battleAddrs->eventExecBtlChara) return "EventExecBtlChara";
+  if (rva == g_battleAddrs->eventExecChara) return "EventExecChara";
   return nullptr;
 }
 
@@ -801,7 +878,8 @@ size_t dispatchBattleCharaShadows(uintptr_t helper, uintptr_t scene) {
           continue;
         if (*reinterpret_cast<const uintptr_t*>(chara + 0x10) != gameMode)
           continue;
-        if (*reinterpret_cast<const uint8_t*>(chara + 0x2d0) != 0)
+        if (*reinterpret_cast<const uint8_t*>(
+              chara + g_battleAddrs->initFlagOffset) != 0)
           continue;
         const uintptr_t character =
           *reinterpret_cast<const uintptr_t*>(chara + 0x18);
@@ -943,18 +1021,20 @@ size_t locateBattleCharaContainer(uintptr_t gameMode, uintptr_t scene,
   return found;
 }
 
-// Address of the manager's active-helper slot ([manager global]+0x9d0), or
-// null. The manager global RVA is per-build (EN 0x10c73c8, multi 0x11044c8);
-// both values are pinned by the scenePass install signature, whose RIP
-// displacement encodes exactly this slot.
+// Address of the manager's active-helper slot
+// ([manager global]+helperSlotOffset: 0x9d0 Rorona, 0x960 Meruru), or null.
+// The manager global RVA is per-game/per-build; on Rorona both values are
+// pinned by the scenePass install signature, whose RIP displacement encodes
+// exactly this slot; on Meruru both were read from the caster-group build's
+// own manager load.
 uintptr_t* globalActiveHelperSlot() {
-  if (!gameBase || !g_roronaAddrs)
+  if (!gameBase || !g_battleAddrs)
     return nullptr;
   const uintptr_t manager =
-    *reinterpret_cast<uintptr_t*>(gameBase + g_roronaAddrs->managerSlot);
+    *reinterpret_cast<uintptr_t*>(gameBase + g_battleAddrs->managerSlot);
   if (!manager)
     return nullptr;
-  return reinterpret_cast<uintptr_t*>(manager + 0x9d0);
+  return reinterpret_cast<uintptr_t*>(manager + g_battleAddrs->helperSlotOffset);
 }
 
 // The helper the fix registers casters into: the battle-local one when
@@ -1190,14 +1270,14 @@ uintptr_t tracedShadowHelperInit(uintptr_t helper, uintptr_t id,
   // battle setup. Bump the generation so the D3D layer drops cross-scene
   // caches (light-VP, proxy pairings, recordings) that reference freed
   // geometry from the previous scene.
-  if (g_roronaAddrs && (callerRva == g_roronaAddrs->battlePublishRet ||
-                        callerRva == g_roronaAddrs->fieldReentryRet))
+  if (g_battleAddrs && (callerRva == g_battleAddrs->battlePublishRet ||
+                        callerRva == g_battleAddrs->fieldReentryRet))
     g_sceneGeneration.fetch_add(1, std::memory_order_release);
   // Track which helper the render path should use: the battle-setup call site
   // publishes the battle helper, the field re-entry call site hands control
   // back to the field helper. Both return addresses are per-build (EN
   // 0xfe6e1/0x397307, multi 0x106781/0x3ac8d7).
-  if (g_roronaAddrs && callerRva == g_roronaAddrs->battlePublishRet) {
+  if (g_battleAddrs && callerRva == g_battleAddrs->battlePublishRet) {
     const uintptr_t gameMode = helper ? helper - 0x68 : 0;
     g_battleHelper.store(helper, std::memory_order_release);
     g_battleGameMode.store(gameMode, std::memory_order_release);
@@ -1219,13 +1299,18 @@ uintptr_t tracedShadowHelperInit(uintptr_t helper, uintptr_t id,
       " gamemode=", reinterpret_cast<void*>(gameMode),
       " helper=", reinterpret_cast<void*>(helper),
       " scene=", reinterpret_cast<void*>(resource), " ====");
-    if (battleShadowRestoreEnabled() && gameMode &&
+    if (battleShadowRestoreEnabled() && g_battleAddrs->casterRestore &&
+        gameMode &&
         locateBattleCharaContainer(gameMode, resource, "init", false)) {
       g_battleContainerFound.store(true, std::memory_order_release);
       registerBattleCharaShadows();
     }
-  } else if (g_roronaAddrs && callerRva == g_roronaAddrs->fieldReentryRet) {
+  } else if (g_battleAddrs && callerRva == g_battleAddrs->fieldReentryRet) {
     g_battleActive.store(false, std::memory_order_release);
+    // Drop the last observed battle state so arlandInCinematicBattle() cannot
+    // stay latched true in the field after a battle that ended in a cinematic
+    // state (the tracker only runs while a battle is active).
+    g_lastBattleStateVt.store(0, std::memory_order_release);
     // Undo a battle-helper publish so the field renders its own helper again.
     const uintptr_t saved =
       g_savedGlobalHelper.exchange(0, std::memory_order_acq_rel);
@@ -1235,17 +1320,19 @@ uintptr_t tracedShadowHelperInit(uintptr_t helper, uintptr_t id,
     }
   }
   size_t replayed = 0;
-  if (battleShadowRestoreEnabled() && g_roronaAddrs &&
-      callerRva == g_roronaAddrs->battlePublishRet)
+  if (battleShadowRestoreEnabled() && g_battleAddrs &&
+      g_battleAddrs->casterRestore &&
+      callerRva == g_battleAddrs->battlePublishRet)
     replayed = dispatchBattleCharaShadows(helper, resource);
   // The per-frame scene shadow pass reads the active helper from the manager
-  // global (+0x9d0) and early-outs when it is null; log it here to see whether
-  // battle leaves it unset while field publishes it.
-  const uintptr_t globalMgr = gameBase && g_roronaAddrs
+  // global (+helperSlotOffset) and early-outs when it is null; log it here to
+  // see whether battle leaves it unset while field publishes it.
+  const uintptr_t globalMgr = gameBase && g_battleAddrs
     ? *reinterpret_cast<const uintptr_t*>(
-        gameBase + g_roronaAddrs->managerSlot) : 0;
+        gameBase + g_battleAddrs->managerSlot) : 0;
   const uintptr_t globalActiveHelper = globalMgr
-    ? *reinterpret_cast<const uintptr_t*>(globalMgr + 0x9d0) : 0;
+    ? *reinterpret_cast<const uintptr_t*>(
+        globalMgr + g_battleAddrs->helperSlotOffset) : 0;
   atfix::log("SHADOW_HELPER_INIT caller_rva=0x", std::hex, callerRva,
     std::dec,
     " global_active_helper=", reinterpret_cast<void*>(globalActiveHelper),
@@ -1269,8 +1356,9 @@ uintptr_t tracedShadowHelperInit(uintptr_t helper, uintptr_t id,
 }
 
 uintptr_t tracedBattleActorInit(uintptr_t actor, uintptr_t scene) {
-  const bool alreadyInitialized = actor &&
-    *reinterpret_cast<const uint8_t*>(actor + 0x2d0) != 0;
+  const bool alreadyInitialized = actor && g_battleAddrs &&
+    *reinterpret_cast<const uint8_t*>(
+      actor + g_battleAddrs->initFlagOffset) != 0;
   const uintptr_t gameMode = actor
     ? *reinterpret_cast<const uintptr_t*>(actor + 0x10) : 0;
   const uintptr_t character = actor
@@ -2794,7 +2882,7 @@ bool installShadowConstructorTrace(BYTE* base, const Game& game) {
 // scenePass is byte-identical across the two builds, so the shared expected
 // arrays verify both. scenePass embeds a RIP displacement to the manager
 // global, so its expected bytes are per-build and double as a consistency
-// check on RoronaBuildAddrs::managerSlot.
+// check on BattleBuildAddrs::managerSlot.
 struct RoronaShadowHookRvas {
   uintptr_t shader, group, character, helperInit, battleActorInit;
   uintptr_t partyCtor, monsterCtor, scenePass, renderMapping, skinMapping;
@@ -2975,6 +3063,38 @@ bool installShadowMappingTrace(BYTE* base, const Game& game) {
     reinterpret_cast<void**>(&originalShadowShaderBuild));
 }
 
+// Meruru (A13V) battle wiring. Unlike Rorona, Meruru's engine revision already
+// registers battle casters natively (its per-character model-build path calls
+// ShadowCharacterBuild into the gameMode+0x68 helper — a call site absent from
+// Rorona), so the overview has shadows without any caster restoration and none
+// of the v0.3 hook set is installed (casterRestore=false in the address pack).
+// What Meruru lacks — identically to Rorona — is shadows during the attack
+// cut-in, where the designed scene-dim closes the ground receiver's shadow-
+// reception gate. The fix is the game-agnostic dim/gate hold in sync_fix.cpp,
+// which fires on arlandInCinematicBattle(); all it needs from this side is
+// battle-state tracking. That takes exactly one hook: the ShadowHelperInit
+// observer, whose battle/field call sites (battlePublishRet/fieldReentryRet)
+// flip g_battleActive and seed g_battleGameMode for the per-frame state scan.
+// The hooked prologue is byte-identical across Rorona EN and both Meruru
+// builds; the RVAs are per-build (EN 0x17b540, multilingual 0x168b20), each
+// confirmed as the target of the two known call sites.
+bool installMeruruBattleStateHook(BYTE* base, const Game& game) {
+  if (!battleShadowRestoreEnabled() || game.atlasVariant != AtlasLaterArland)
+    return false;
+  const uintptr_t helperInitRva = game.exeBuild == BuildMultilingual
+    ? 0x168b20 : 0x17b540;
+  auto* helperInit = base + helperInitRva;
+  const std::array<BYTE, 16> helperInitExpected = {
+    0x48, 0x8b, 0xc4, 0x55, 0x56, 0x57, 0x48, 0x81,
+    0xec, 0x00, 0x01, 0x00, 0x00, 0x48, 0xc7, 0x44,
+  };
+  if (!matches(helperInit, helperInitExpected))
+    return false;
+  return installMinHookDetour(helperInit,
+    reinterpret_cast<void*>(&tracedShadowHelperInit),
+    reinterpret_cast<void**>(&originalShadowHelperInit));
+}
+
 void detectAndInstallGameHooks() {
   HMODULE module = GetModuleHandleW(nullptr);
   char imagePath[MAX_PATH] = {};
@@ -2988,12 +3108,21 @@ void detectAndInstallGameHooks() {
     frameAtlasCacheDefault.store(
       game.atlasVariant == AtlasRorona, std::memory_order_relaxed);
     if (game.atlasVariant == AtlasRorona) {
-      g_roronaAddrs = game.exeBuild == BuildMultilingual
+      g_battleAddrs = game.exeBuild == BuildMultilingual
         ? &kRoronaAddrsMulti : &kRoronaAddrsEn;
       g_battleStates = game.exeBuild == BuildMultilingual
         ? kBattleStatesMulti : kBattleStatesEn;
       g_battleStateCount = game.exeBuild == BuildMultilingual
         ? std::size(kBattleStatesMulti) : std::size(kBattleStatesEn);
+    } else if (game.atlasVariant == AtlasLaterArland) {
+      // Meruru: battle-state tracking only (cut-in gate/dim support); no
+      // caster restoration — Meruru registers battle casters natively.
+      g_battleAddrs = game.exeBuild == BuildMultilingual
+        ? &kMeruruAddrsMulti : &kMeruruAddrsEn;
+      g_battleStates = game.exeBuild == BuildMultilingual
+        ? kBattleStatesMeruruMulti : kBattleStatesMeruruEn;
+      g_battleStateCount = game.exeBuild == BuildMultilingual
+        ? std::size(kBattleStatesMeruruMulti) : std::size(kBattleStatesMeruruEn);
     }
     atfix::log("Recognized menu-fix executable ", game.executable,
       game.exeBuild == BuildMultilingual ? " (multilingual build)"
@@ -3023,6 +3152,11 @@ void detectAndInstallGameHooks() {
       installShadowConstructorTrace(gameBase, game);
     const bool shadowMappingTraceInstalled =
       installShadowMappingTrace(gameBase, game);
+    const bool meruruBattleStateInstalled =
+      installMeruruBattleStateHook(gameBase, game);
+    if (game.atlasVariant == AtlasLaterArland)
+      atfix::log("Meruru battle-state hook installed=",
+        meruruBattleStateInstalled);
     const bool cutinFlagTraceInstalled =
       installCutinFlagTrace(gameBase, game);
     if (cutinFlagTraceEnabled())
@@ -3049,15 +3183,16 @@ void detectAndInstallGameHooks() {
 // catches a brief cut-in the coarse per-120-frame monitor would miss. Reads
 // only fields the game populates; every access is VirtualQuery-guarded.
 void sceneIdentityTick() {
-  if (!sceneTraceEnabled() || !gameBase || !g_roronaAddrs)
+  if (!sceneTraceEnabled() || !gameBase || !g_battleAddrs)
     return;
   const uintptr_t managerSlot =
-    reinterpret_cast<uintptr_t>(gameBase) + g_roronaAddrs->managerSlot;
+    reinterpret_cast<uintptr_t>(gameBase) + g_battleAddrs->managerSlot;
   if (!readableRange(managerSlot, sizeof(uintptr_t)))
     return;
   const uintptr_t manager = *reinterpret_cast<const uintptr_t*>(managerSlot);
   const uintptr_t helper = readableRange(manager, 0xa00)
-    ? *reinterpret_cast<const uintptr_t*>(manager + 0x9d0) : 0;
+    ? *reinterpret_cast<const uintptr_t*>(
+        manager + g_battleAddrs->helperSlotOffset) : 0;
 
   // The active scene manager pointer ([0x1410c73c8]) is swapped per scene; log
   // when it or its active helper changes. A cut-in that installs its own manager
@@ -3149,10 +3284,13 @@ void trackBattleStateTick() {
   if (!target || snaps >= 4)
     return;
   const uintptr_t gameMode = g_battleGameMode.load(std::memory_order_acquire);
-  if (!gameMode || !readableRange(gameMode + 0x658, 0x10))
+  if (!gameMode || !g_battleAddrs ||
+      !readableRange(gameMode + g_battleAddrs->partyVectorOffset, 0x10))
     return;
-  const uintptr_t begin = *reinterpret_cast<const uintptr_t*>(gameMode + 0x658);
-  const uintptr_t end = *reinterpret_cast<const uintptr_t*>(gameMode + 0x658 + 8);
+  const uintptr_t begin = *reinterpret_cast<const uintptr_t*>(
+    gameMode + g_battleAddrs->partyVectorOffset);
+  const uintptr_t end = *reinterpret_cast<const uintptr_t*>(
+    gameMode + g_battleAddrs->partyVectorOffset + 8);
   if (!begin || end <= begin || (end - begin) > 0x200 ||
       !readableRange(begin, end - begin))
     return;
@@ -3317,16 +3455,18 @@ void cutinReregisterTick() {
     scanCutinCharas(scene, 0x1000, 3, seen, budget, helper, scene, state);
 }
 
-// Is the battle game-mode still a live battle (party vector at +0x658 still
-// holds BtlChara objects)? Used to detect battle exit so we can un-publish the
-// battle helper before the field renders through a freed pointer.
+// Is the battle game-mode still a live battle (party vector — gameMode +
+// partyVectorOffset, 0x658 Rorona / 0x648 Meruru — still holds BtlChara
+// objects)? Used to detect battle exit so we can un-publish the battle helper
+// before the field renders through a freed pointer.
 bool battleGameModeLive(uintptr_t gameMode) {
-  if (!gameMode || !readableRange(gameMode + 0x658, 0x10))
+  if (!gameMode || !g_battleAddrs)
     return false;
-  const uintptr_t begin =
-    *reinterpret_cast<const uintptr_t*>(gameMode + 0x658);
-  const uintptr_t end =
-    *reinterpret_cast<const uintptr_t*>(gameMode + 0x658 + 8);
+  const uintptr_t vec = gameMode + g_battleAddrs->partyVectorOffset;
+  if (!readableRange(vec, 0x10))
+    return false;
+  const uintptr_t begin = *reinterpret_cast<const uintptr_t*>(vec);
+  const uintptr_t end = *reinterpret_cast<const uintptr_t*>(vec + 8);
   if (!begin || end <= begin || (end - begin) > 0x1000 ||
       (end - begin) % sizeof(uintptr_t) || !readableRange(begin, end - begin))
     return false;
@@ -3365,6 +3505,7 @@ void battleShadowFrameTick() {
     } else if (g_battleDeadFrames.fetch_add(1, std::memory_order_acq_rel) >= 20) {
       restorePublishedHelper("gamemode_dead");
       g_battleActive.store(false, std::memory_order_release);
+      g_lastBattleStateVt.store(0, std::memory_order_release);
       g_battleContainerFound.store(false, std::memory_order_release);
       g_battleRegistered.store(false, std::memory_order_release);
       g_battleDeadFrames.store(0, std::memory_order_release);
@@ -3378,7 +3519,8 @@ void battleShadowFrameTick() {
     1, std::memory_order_relaxed);
   const uintptr_t scene = g_battleScene.load(std::memory_order_acquire);
 
-  if (!g_battleContainerFound.load(std::memory_order_acquire) &&
+  if (g_battleAddrs && g_battleAddrs->casterRestore &&
+      !g_battleContainerFound.load(std::memory_order_acquire) &&
       tick % 30 == 0 && tick / 30 <= 40 && gameMode &&
       locateBattleCharaContainer(gameMode, scene, "frame", false)) {
     g_battleContainerFound.store(true, std::memory_order_release);
@@ -3413,11 +3555,13 @@ bool frameAtlasCacheEnabled() {
   return ::frameAtlasCacheEnabled();
 }
 
-// True when the recognized executable is a Rorona build with the battle-shadow
-// restore enabled; the per-frame battle machinery then needs the Present hook
-// regardless of the frame-atlas-cache setting.
+// True when the recognized executable is a battle-capable build (Rorona:
+// caster restore + state tracking; Meruru: state tracking for the cut-in
+// gate/dim) with the battle-shadow machinery enabled; the per-frame battle
+// ticks then need the Present hook regardless of the frame-atlas-cache
+// setting.
 bool battleShadowRestoreActive() {
-  return supportedGame && g_roronaAddrs && battleShadowRestoreEnabled();
+  return supportedGame && g_battleAddrs && battleShadowRestoreEnabled();
 }
 
 void traceMenuPresent(uint64_t durationMicros, uint64_t intervalMicros) {

@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.5
+
+### Added
+
+- Extended the restored battle cut-in shadows to Atelier Meruru DX. Meruru casts its battle shadows normally in ordinary combat but lost them during the action close-ups for the same reason as Rorona—the cut-in drops the scene light below the shadow-reception threshold—so the same restoration now applies there. It is governed by the same `[Battle]` `BattleCutInShadows` and `BattleCutInDimming` settings (and the `ARLAND_CUTIN_SHADOWS` / `ARLAND_CUTIN_DIMMING` overrides) and is on by default.
+
 ## v0.4
 
 ### Added
