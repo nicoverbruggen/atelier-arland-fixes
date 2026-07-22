@@ -52,7 +52,18 @@ BattleCutInShadows=true
 BattleCutInDimming=false
 ```
 
-`BattleShadows` toggles the restored character and enemy shadows during ordinary Atelier Rorona DX battle (Meruru already casts these, so the toggle is Rorona-specific). `BattleCutInShadows` toggles the restored shadows during the action cut-ins in both Rorona and Meruru. `BattleCutInDimming` controls the original close-up dimming: it is `false` by default, so the cut-in keeps full brightness; set it to `true` to restore the darker vanilla cut-in while still choosing whether shadows appear. The two cut-in options are independent. Missing keys are rewritten with these defaults, so an existing `arland-fix.ini` gains the section automatically. These settings do not affect Atelier Totori DX.
+`BattleShadows` toggles the restored character and enemy shadows during ordinary Atelier Rorona DX battle (Meruru already casts these, so the toggle is Rorona-specific). `BattleCutInShadows` toggles the restored shadows during the action cut-ins in both Rorona and Meruru. `BattleCutInDimming` controls the original close-up dimming: it is `false` by default, so the cut-in keeps full brightness; set it to `true` to restore the darker vanilla cut-in while still choosing whether shadows appear. The two cut-in options are independent. Missing keys are rewritten with these defaults, so an existing `arland-fix.ini` gains the section automatically. The battle-shadow toggles do not affect Atelier Totori DX.
+
+### Shadow resolution
+
+The games render shadows into a 1024×1024 shadow map, so shadow edges can look blocky, most noticeably in Atelier Meruru DX. `ShadowMultiplier` in the `[Rendering]` section renders shadows at a higher internal resolution for crisper edges:
+
+```ini
+[Rendering]
+ShadowMultiplier=2
+```
+
+Accepted values are `1` (the default, unchanged 1024×1024), `2`, `4`, and `8`, which render the shadow map at 2048, 4096, and 8192 respectively; any other value falls back to `1`. The mod allocates its own higher-resolution shadow maps and redirects the shadow pipeline onto them, leaving the game's own 1024×1024 textures untouched so the engine's size and memory assumptions stay valid. This setting is off by default and higher multipliers increase GPU and video-memory cost. `ARLAND_SHADOW_MULTIPLIER` overrides the INI for a session.
 
 ## Advanced use
 

@@ -5,6 +5,7 @@
 ### Added
 
 - Extended the restored battle cut-in shadows to Atelier Meruru DX. Meruru casts its battle shadows normally in ordinary combat but lost them during the action close-ups for the same reason as Rorona—the cut-in drops the scene light below the shadow-reception threshold—so the same restoration now applies there. It is governed by the same `[Battle]` `BattleCutInShadows` and `BattleCutInDimming` settings (and the `ARLAND_CUTIN_SHADOWS` / `ARLAND_CUTIN_DIMMING` overrides) and is on by default.
+- Configurable shadow-map resolution through `ShadowMultiplier` in the `[Rendering]` section of `arland-fix.ini`. The games render shadows into a 1024×1024 map, so shadow edges can look blocky, most noticeably in Atelier Meruru DX. Setting `ShadowMultiplier` to `2`, `4`, or `8` renders the shadow map at 2048, 4096, or 8192 for sharper-edged shadows. The mod allocates its own higher-resolution shadow maps and redirects the shadow pipeline onto them, leaving the game's own 1024×1024 textures untouched so the engine's size and memory assumptions stay valid. Default `1` (unchanged), and `ARLAND_SHADOW_MULTIPLIER` overrides it per session. Higher multipliers increase GPU and video-memory cost.
 
 ## v0.4
 

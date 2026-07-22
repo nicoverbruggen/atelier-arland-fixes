@@ -203,6 +203,126 @@ std::set<uintptr_t> g_nonShadowSrvs;   // classified as not the shadow map
 // absent so it appears in the file for the user. Defined below with configPath.
 bool arlandConfigBool(const char* section, const char* key, bool def);
 
+// ShadowMultiplier (arland-fix.ini [Rendering], default 1 = unchanged): scales
+// the engine's two 1024x1024 R24G8 shadow maps. Values 2, 4 and 8 enlarge the
+// maps to 2048/4096/8192 (plus the caster viewport, the A->B copy box and the
+// receiver's PCF tap scale); anything else keeps vanilla behaviour.
+// ARLAND_SHADOW_MULTIPLIER overrides the ini. Defined below with configPath.
+UINT shadowMapResolution();
+
+// ---- shadow-res twin plumbing ------------------------------------------
+// The enlarged shadow maps are SEPARATE mod-owned textures ("twins"), not
+// in-place resizes: the engine's own 1024x1024 maps stay untouched so every
+// engine-side size/memory assumption remains valid. The twin texture hangs
+// off the engine texture via SetPrivateDataInterface (released with it), the
+// caster DSV bind / receiver SRV bind / A->B copy are redirected or mirrored
+// onto the twins, and the tag below marks twin textures for the viewport
+// rewrite and the shadow-SRV classifier.
+static const GUID IID_ShadowResResized  = {0xe2728d9e,0x9fdd,0x40d0,{0x87,0xa8,0x09,0xb6,0x2d,0xf3,0x14,0x9a}};
+static const GUID IID_ShadowResTwin     = {0xe2728d9f,0x9fdd,0x40d0,{0x87,0xa8,0x09,0xb6,0x2d,0xf3,0x14,0x9a}};
+static const GUID IID_ShadowResTwinView = {0xe2728da0,0x9fdd,0x40d0,{0x87,0xa8,0x09,0xb6,0x2d,0xf3,0x14,0x9a}};
+
+bool isShadowResResized(ID3D11Resource* resource) {
+  UINT marker = 0;
+  UINT size = sizeof(marker);
+  return resource && SUCCEEDED(resource->GetPrivateData(
+    IID_ShadowResResized, &size, &marker)) && marker != 0;
+}
+
+// Host SRV pointers known to have no twin (fast negative path for the hot
+// PSSetShaderResources hook). Cleared whenever a new twin is created so a
+// scene rebuild that recycles pointers cannot permanently suppress the
+// redirect; a stale negative costs at most a low-res shadow, never a crash.
+mutex g_twinSrvNegMutex;
+std::set<uintptr_t> g_twinSrvNegative;
+
+// AddRef'd twin texture of an engine shadow map, or null.
+ID3D11Resource* getShadowResTwinResource(ID3D11Resource* host) {
+  ID3D11Resource* twin = nullptr;
+  UINT size = sizeof(twin);
+  if (host && SUCCEEDED(host->GetPrivateData(IID_ShadowResTwin, &size, &twin))
+      && twin)
+    return twin;
+  return nullptr;
+}
+
+// AddRef'd DSV over the twin of the host DSV's texture (cached on the host
+// DSV), or null when the host texture has no twin or creation fails.
+ID3D11DepthStencilView* getShadowResTwinDsv(ID3D11DepthStencilView* hostDsv) {
+  ID3D11DepthStencilView* twinDsv = nullptr;
+  UINT size = sizeof(twinDsv);
+  if (SUCCEEDED(hostDsv->GetPrivateData(IID_ShadowResTwinView, &size, &twinDsv))
+      && twinDsv)
+    return twinDsv;
+  ID3D11Resource* hostRes = nullptr;
+  hostDsv->GetResource(&hostRes);
+  ID3D11Resource* twinRes = hostRes ? getShadowResTwinResource(hostRes) : nullptr;
+  if (hostRes)
+    hostRes->Release();
+  if (!twinRes)
+    return nullptr;
+  D3D11_DEPTH_STENCIL_VIEW_DESC viewDesc = { };
+  hostDsv->GetDesc(&viewDesc);
+  ID3D11Device* device = nullptr;
+  hostDsv->GetDevice(&device);
+  HRESULT hr = E_FAIL;
+  if (device) {
+    hr = device->CreateDepthStencilView(twinRes, &viewDesc, &twinDsv);
+    device->Release();
+  }
+  twinRes->Release();
+  if (FAILED(hr) || !twinDsv) {
+    log("SHADOWRES twin DSV creation FAILED hr=0x", std::hex, hr);
+    return nullptr;
+  }
+  hostDsv->SetPrivateDataInterface(IID_ShadowResTwinView, twinDsv);
+  return twinDsv;   // creation ref belongs to the caller
+}
+
+// AddRef'd SRV over the twin of the host SRV's texture (cached on the host
+// SRV), or null. Negative-cached by pointer for the hot path.
+ID3D11ShaderResourceView* getShadowResTwinSrv(
+    ID3D11ShaderResourceView* hostSrv) {
+  {
+    std::lock_guard lock(g_twinSrvNegMutex);
+    if (g_twinSrvNegative.count(reinterpret_cast<uintptr_t>(hostSrv)))
+      return nullptr;
+  }
+  ID3D11ShaderResourceView* twinSrv = nullptr;
+  UINT size = sizeof(twinSrv);
+  if (SUCCEEDED(hostSrv->GetPrivateData(IID_ShadowResTwinView, &size, &twinSrv))
+      && twinSrv)
+    return twinSrv;
+  ID3D11Resource* hostRes = nullptr;
+  hostSrv->GetResource(&hostRes);
+  ID3D11Resource* twinRes = hostRes ? getShadowResTwinResource(hostRes) : nullptr;
+  if (hostRes)
+    hostRes->Release();
+  if (!twinRes) {
+    std::lock_guard lock(g_twinSrvNegMutex);
+    g_twinSrvNegative.insert(reinterpret_cast<uintptr_t>(hostSrv));
+    return nullptr;
+  }
+  D3D11_SHADER_RESOURCE_VIEW_DESC viewDesc = { };
+  hostSrv->GetDesc(&viewDesc);
+  ID3D11Device* device = nullptr;
+  hostSrv->GetDevice(&device);
+  HRESULT hr = E_FAIL;
+  if (device) {
+    hr = device->CreateShaderResourceView(twinRes, &viewDesc, &twinSrv);
+    device->Release();
+  }
+  twinRes->Release();
+  if (FAILED(hr) || !twinSrv) {
+    log("SHADOWRES twin SRV creation FAILED hr=0x", std::hex, hr);
+    std::lock_guard lock(g_twinSrvNegMutex);
+    g_twinSrvNegative.insert(reinterpret_cast<uintptr_t>(hostSrv));
+    return nullptr;
+  }
+  hostSrv->SetPrivateDataInterface(IID_ShadowResTwinView, twinSrv);
+  return twinSrv;   // creation ref belongs to the caller
+}
+
 // BattleCutInShadows (arland-fix.ini [Battle], default true): open the receiver's
 // shadow-reception gate during cut-ins. ARLAND_CUTIN_SHADOWS overrides the ini.
 bool cutinGateHoldEnabled() {
@@ -268,10 +388,34 @@ bool gateHoldPatch(void* data, uint32_t size) {
   return false;
 }
 
+// With an enlarged shadow map, keep the receiver's soft-PCF edge one texel
+// wide: rescale the 880 receiver material's tapScale (float4 @816, components
+// ~±1/1024 = one 1024-map texel in UV) to ~±1/<new size>. Value-conditional
+// like dimHoldPatch/gateHoldPatch: only components whose magnitude looks like
+// the vanilla one-texel offset are touched, so unrelated 880-byte buffers (and
+// already-rescaled payloads) are left alone. Returns true if it patched.
+bool tapScalePatch(void* data, uint32_t size) {
+  const UINT res = shadowMapResolution();
+  if (size != 880 || res <= 1024)
+    return false;
+  float* v = reinterpret_cast<float*>(static_cast<uint8_t*>(data) + 816);
+  const float ratio = 1024.0f / static_cast<float>(res);
+  bool patched = false;
+  for (int i = 0; i < 4; i++) {
+    const float mag = v[i] < 0.0f ? -v[i] : v[i];
+    if (mag > 0.8f / 1024.0f && mag < 1.25f / 1024.0f) {
+      v[i] *= ratio;
+      patched = true;
+    }
+  }
+  return patched;
+}
+
 // The write-path patches and the blob's cb0 reads consume CPU-side captures of
 // constant-buffer writes (a Map payload is only visible between Map and Unmap).
 bool cbCaptureEnabled() {
-  return cutinShadowsEnabled() || cutinBlobEnabled();
+  return cutinShadowsEnabled() || cutinBlobEnabled() ||
+    shadowMapResolution() > 1024;
 }
 
 // Snapshot payload width. Covers the full 880-byte field/receiver material,
@@ -343,6 +487,8 @@ void captureCbUnmap(ID3D11DeviceContext*, ID3D11Resource* resource,
     if (cutinGateHoldEnabled())
       gateHoldPatch(const_cast<void*>(pending.first), pending.second);
   }
+  if (shadowMapResolution() > 1024)
+    tapScalePatch(const_cast<void*>(pending.first), pending.second);
   if (cutinBlobEnabled())
     snapCbWrite(resource, pending.first, pending.second);
 }
@@ -434,6 +580,9 @@ void cutinShadowMapCleared(ID3D11DeviceContext*,
   if (SUCCEEDED(res->QueryInterface(IID_PPV_ARGS(&tex)))) {
     D3D11_TEXTURE2D_DESC d = {};
     tex->GetDesc(&d);
+    // The engine clears its own (always 1024) maps even when the twin
+    // redirect is active, so the shipped size-only match stays correct in
+    // every mode; the mirrored twin clear must NOT re-fire the callback.
     shadowMap = d.Width == 1024 && d.Height == 1024;
     tex->Release();
   }
@@ -798,8 +947,12 @@ bool isShadowSrvLocked(ID3D11ShaderResourceView* srv) {
     if (SUCCEEDED(resource->QueryInterface(IID_PPV_ARGS(&texture)))) {
       D3D11_TEXTURE2D_DESC desc = {};
       texture->GetDesc(&desc);
-      shadow = desc.Width == 1024 && desc.Height == 1024 &&
-        desc.Format == DXGI_FORMAT_R24G8_TYPELESS;
+      // The shadow SRV bound at draw time is either the engine's own 1024
+      // map (vanilla / redirect not engaged) or our tagged enlarged twin
+      // (redirect engaged) — accept both; nothing else qualifies.
+      shadow = desc.Format == DXGI_FORMAT_R24G8_TYPELESS &&
+        ((desc.Width == 1024 && desc.Height == 1024) ||
+         isShadowResResized(resource));
       texture->Release();
     }
     resource->Release();
@@ -1183,6 +1336,7 @@ const char* configPath() {
       WritePrivateProfileStringA("Rendering", "MSAA", "1", result.data());
       WritePrivateProfileStringA("Rendering", "Width", "", result.data());
       WritePrivateProfileStringA("Rendering", "Height", "", result.data());
+      WritePrivateProfileStringA("Rendering", "ShadowMultiplier", "1", result.data());
       WritePrivateProfileStringA("Battle", "BattleShadows", "true", result.data());
       WritePrivateProfileStringA("Battle", "BattleCutInShadows", "true", result.data());
       WritePrivateProfileStringA("Battle", "BattleCutInDimming", "false", result.data());
@@ -1207,6 +1361,39 @@ bool arlandConfigBool(const char* section, const char* key, bool def) {
   }
   return value[0] == 't' || value[0] == 'T' || value[0] == '1' ||
          value[0] == 'y' || value[0] == 'Y';
+}
+
+// Shadow-map edge length. Opt-in: only 2048/4096/8192 enlarge the maps; any
+// other value (or no config) keeps the vanilla 1024 behaviour byte-identical.
+// ARLAND_SHADOW_MULTIPLIER overrides arland-fix.ini [Rendering] ShadowMultiplier;
+// like arlandConfigBool, a missing ini key is written back for discovery. The
+// multiplier (1, 2, 4 or 8) scales the engine's 1024x1024 shadow map.
+UINT shadowMapResolution() {
+  static const UINT resolution = []() -> UINT {
+    unsigned long multiplier = 1;
+    char value[16] = { };
+    const DWORD length = GetEnvironmentVariableA(
+      "ARLAND_SHADOW_MULTIPLIER", value, sizeof(value));
+    if (length && length < sizeof(value)) {
+      multiplier = std::strtoul(value, nullptr, 10);
+    } else if (const char* path = configPath()) {
+      char iniValue[16] = { };
+      GetPrivateProfileStringA("Rendering", "ShadowMultiplier", "\x01",
+        iniValue, sizeof(iniValue), path);
+      if (iniValue[0] == '\x01')
+        WritePrivateProfileStringA("Rendering", "ShadowMultiplier", "1", path);
+      else
+        multiplier = std::strtoul(iniValue, nullptr, 10);
+    }
+    if (multiplier == 2 || multiplier == 4 || multiplier == 8) {
+      const UINT size = 1024u * static_cast<UINT>(multiplier);
+      log("Shadow-map resolution override: ", std::dec, size, "x", size,
+        " (", multiplier, "x)");
+      return size;
+    }
+    return 1024u;
+  }();
+  return resolution;
 }
 
 bool configuredResolution(UINT* width, UINT* height) {
@@ -2077,6 +2264,7 @@ HRESULT STDMETHODCALLTYPE ID3D11Device_CreateTexture2D(
   D3D11_TEXTURE2D_DESC desc;
   D3D11_TEXTURE2D_DESC originalDesc = { };
   const bool haveOriginalDesc = pDesc != nullptr;
+  bool createShadowTwin = false;
 
   if (pDesc) {
     originalDesc = *pDesc;
@@ -2138,11 +2326,67 @@ HRESULT STDMETHODCALLTYPE ID3D11Device_CreateTexture2D(
       }
     }
 
+    // Opt-in shadow-map upscale, twin-allocation flavour: the engine's two
+    // 1024x1024 R24G8 shadow maps (caster A and receiver B, §8 two-map
+    // architecture; §33a probe: exactly two such textures exist) are left
+    // COMPLETELY untouched so every engine-side size/memory assumption stays
+    // valid. Eligible hosts get a separate mod-owned enlarged twin created
+    // below (after the host), and the caster DSV / receiver SRV / A->B copy
+    // are redirected onto the twins. Anything ambiguous (initial data,
+    // staging/CPU-accessible, mips, arrays, MSAA, misc flags) DECLINES the
+    // twin and is logged; that host simply keeps the vanilla 1024 path.
+    if (shadowMapResolution() > 1024 &&
+        originalDesc.Width == 1024 && originalDesc.Height == 1024 &&
+        originalDesc.Format == DXGI_FORMAT_R24G8_TYPELESS) {
+      createShadowTwin = !pData &&
+        originalDesc.Usage == D3D11_USAGE_DEFAULT &&
+        originalDesc.CPUAccessFlags == 0 &&
+        originalDesc.MiscFlags == 0 &&
+        originalDesc.MipLevels == 1 && originalDesc.ArraySize == 1 &&
+        originalDesc.SampleDesc.Count == 1;
+      if (!createShadowTwin)
+        log("SHADOWRES DECLINE 1024x1024 R24G8 candidate:",
+            " data=", pData != nullptr,
+            " usage=", std::dec, originalDesc.Usage,
+            " cpu=0x", std::hex, originalDesc.CPUAccessFlags,
+            " misc=0x", originalDesc.MiscFlags,
+            " bind=0x", originalDesc.BindFlags,
+            " mips=", std::dec, originalDesc.MipLevels,
+            " array=", originalDesc.ArraySize,
+            " samples=", originalDesc.SampleDesc.Count);
+    }
+
     if (changed)
       pDesc = &desc;
   }
 
   const HRESULT hr = procs->CreateTexture2D(pDevice, pDesc, pData, ppTexture);
+  if (createShadowTwin && SUCCEEDED(hr) && ppTexture && *ppTexture) {
+    const UINT shadowRes = shadowMapResolution();
+    D3D11_TEXTURE2D_DESC twinDesc = originalDesc;
+    twinDesc.Width = shadowRes;
+    twinDesc.Height = shadowRes;
+    ID3D11Texture2D* twin = nullptr;
+    const HRESULT twinHr =
+      procs->CreateTexture2D(pDevice, &twinDesc, nullptr, &twin);
+    if (SUCCEEDED(twinHr) && twin) {
+      const UINT marker = 1;
+      twin->SetPrivateData(IID_ShadowResResized, sizeof(marker), &marker);
+      (*ppTexture)->SetPrivateDataInterface(IID_ShadowResTwin, twin);
+      twin->Release();   // host private data keeps the twin alive
+      {
+        std::lock_guard lock(g_twinSrvNegMutex);
+        g_twinSrvNegative.clear();   // new generation: re-probe SRVs
+      }
+      log("SHADOWRES twin created ", std::dec, shadowRes, "x", shadowRes,
+          " for host=", *ppTexture, " bind=0x", std::hex,
+          originalDesc.BindFlags);
+    } else {
+      // Fail-safe: no twin means this host silently keeps the vanilla path.
+      log("SHADOWRES twin creation FAILED hr=0x", std::hex, twinHr,
+          " (falling back to 1024 for this map)");
+    }
+  }
   if (resolutionTraceEnabled() && SUCCEEDED(hr) && ppTexture && *ppTexture &&
       haveOriginalDesc) {
     D3D11_TEXTURE2D_DESC actual = { };
@@ -2237,8 +2481,20 @@ void updateViewportScissor(ID3D11DeviceContext* pContext) {
   const bool halfSizeScissor = scissorCount == 1 &&
     scissor.left == 0 && scissor.top == 0 &&
     scissor.right == 960 && scissor.bottom == 540;
+  // The engine sizes the shadow caster pass viewport from its own texture
+  // metadata (still 1024 when the map is enlarged D3D-side). MinDepth/MaxDepth
+  // (the caster's 0.5..1.0 depth remap, §8) are preserved by only rewriting
+  // Width/Height.
+  const UINT shadowRes = shadowMapResolution();
+  const bool shadowSizeViewport = shadowRes > 1024 && viewportCount == 1 &&
+    viewport.TopLeftX == 0.0f && viewport.TopLeftY == 0.0f &&
+    viewport.Width == 1024.0f && viewport.Height == 1024.0f;
+  const bool shadowSizeScissor = shadowRes > 1024 && scissorCount == 1 &&
+    scissor.left == 0 && scissor.top == 0 &&
+    scissor.right == 1024 && scissor.bottom == 1024;
   if (!fullSizeViewport && !halfSizeViewport &&
-      !fullSizeScissor && !halfSizeScissor)
+      !fullSizeScissor && !halfSizeScissor &&
+      !shadowSizeViewport && !shadowSizeScissor)
     return;
 
   ID3D11RenderTargetView* rtv = nullptr;
@@ -2263,6 +2519,12 @@ void updateViewportScissor(ID3D11DeviceContext* pContext) {
     if (SUCCEEDED(hr)) {
       D3D11_TEXTURE2D_DESC desc = { };
       texture->GetDesc(&desc);
+      // Only a texture we resized at creation counts as the shadow target;
+      // a native target that merely matches the enlarged size is left alone.
+      const bool shadowTarget = (shadowSizeViewport || shadowSizeScissor) &&
+        desc.Width == shadowRes && desc.Height == shadowRes &&
+        desc.Format == DXGI_FORMAT_R24G8_TYPELESS &&
+        isShadowResResized(texture);
       texture->Release();
       const UINT mainWidth = g_mainRtWidth.load(std::memory_order_relaxed);
       const UINT mainHeight = g_mainRtHeight.load(std::memory_order_relaxed);
@@ -2271,9 +2533,11 @@ void updateViewportScissor(ID3D11DeviceContext* pContext) {
       const bool halfSizeTarget = desc.Width == mainWidth / 2 &&
         desc.Height == mainHeight / 2;
       resizeViewport = (fullSizeViewport && fullSizeTarget) ||
-        (halfSizeViewport && halfSizeTarget);
+        (halfSizeViewport && halfSizeTarget) ||
+        (shadowSizeViewport && shadowTarget);
       resizeScissor = (fullSizeScissor && fullSizeTarget) ||
-        (halfSizeScissor && halfSizeTarget);
+        (halfSizeScissor && halfSizeTarget) ||
+        (shadowSizeScissor && shadowTarget);
       if (resizeViewport) {
         viewport.Width = static_cast<FLOAT>(desc.Width);
         viewport.Height = static_cast<FLOAT>(desc.Height);
@@ -2281,6 +2545,14 @@ void updateViewportScissor(ID3D11DeviceContext* pContext) {
       if (resizeScissor) {
         scissor.right = static_cast<LONG>(desc.Width);
         scissor.bottom = static_cast<LONG>(desc.Height);
+      }
+      if (shadowTarget && (resizeViewport || resizeScissor)) {
+        static std::atomic<uint32_t> vpLogs{0};
+        const uint32_t n = vpLogs.fetch_add(1, std::memory_order_relaxed);
+        if (n < 16 || n % 1024 == 0)
+          log("SHADOWRES caster viewport/scissor 1024 -> ", std::dec,
+              desc.Width, " (vp=", resizeViewport,
+              " sc=", resizeScissor, ")");
       }
     }
   }
@@ -2336,6 +2608,17 @@ void STDMETHODCALLTYPE ID3D11DeviceContext_ClearDepthStencilView(
     ClearFlags, Depth, Stencil);
   if (msaa)
     msaa->Release();
+  // Shadow-res twin: keep the enlarged caster map in lockstep with the
+  // engine's own (untouched) map — the engine clears its map at the start of
+  // every shadow pass.
+  if (shadowMapResolution() > 1024 && pDSV) {
+    ID3D11DepthStencilView* twinDsv = getShadowResTwinDsv(pDSV);
+    if (twinDsv) {
+      procs->ClearDepthStencilView(pContext, twinDsv,
+        ClearFlags, Depth, Stencil);
+      twinDsv->Release();
+    }
+  }
   cutinShadowMapCleared(pContext, pDSV);
 }
 
@@ -2500,6 +2783,24 @@ void STDMETHODCALLTYPE ID3D11DeviceContext_CopyResource(
 
   ID3D11Resource* dstShadow = getShadowResource(pDstResource);
 
+  // Shadow-res twin: mirror a whole-resource copy between shadow maps onto
+  // the equal-sized twins (the engine's own 1024 copy stays untouched).
+  if (shadowMapResolution() > 1024) {
+    ID3D11Resource* dstTwin = getShadowResTwinResource(pDstResource);
+    if (dstTwin) {
+      ID3D11Resource* srcTwin = getShadowResTwinResource(pSrcResource);
+      if (srcTwin) {
+        procs->CopyResource(pContext, dstTwin, srcTwin);
+        static std::atomic<uint32_t> mirrorLogs{0};
+        const uint32_t n = mirrorLogs.fetch_add(1, std::memory_order_relaxed);
+        if (n < 16 || n % 4096 == 0)
+          log("SHADOWRES mirrored CopyResource on twins");
+        srcTwin->Release();
+      }
+      dstTwin->Release();
+    }
+  }
+
   bool needsBaseCopy = true;
   bool needsShadowCopy = true;
 
@@ -2568,6 +2869,29 @@ void STDMETHODCALLTYPE ID3D11DeviceContext_CopySubresourceRegion(
         IID_DialogSnapshotResource, sizeof(marker), &marker);
       log("Expanded hard-coded dialogue snapshot copy from 1920x1080 to ",
           std::dec, mainWidth, "x", mainHeight);
+    }
+  }
+
+  // Shadow-res twin: when the engine performs its (untouched, still valid)
+  // 1024 A->B shadow-map transfer, mirror it as a full-subresource copy
+  // between the enlarged twins so the high-res caster content reaches the
+  // twin the receiver samples. Both twins are identical in size, so the
+  // null-box copy is always legal; if either side has no twin, nothing
+  // happens and the vanilla path stands.
+  if (shadowMapResolution() > 1024) {
+    ID3D11Resource* dstTwin = getShadowResTwinResource(pDstResource);
+    if (dstTwin) {
+      ID3D11Resource* srcTwin = getShadowResTwinResource(pSrcResource);
+      if (srcTwin) {
+        procs->CopySubresourceRegion(pContext,
+          dstTwin, 0, 0, 0, 0, srcTwin, 0, nullptr);
+        static std::atomic<uint32_t> mirrorLogs{0};
+        const uint32_t n = mirrorLogs.fetch_add(1, std::memory_order_relaxed);
+        if (n < 16 || n % 4096 == 0)
+          log("SHADOWRES mirrored A->B copy on twins");
+        srcTwin->Release();
+      }
+      dstTwin->Release();
     }
   }
 
@@ -2670,6 +2994,30 @@ void STDMETHODCALLTYPE ID3D11DeviceContext_OMSetRenderTargets(
   resolveBoundMSAA(pContext);
   getRasterState(pContext)->dirty.store(true, std::memory_order_release);
 
+  // Shadow-res twin: redirect the depth-only caster pass onto the enlarged
+  // twin DSV so casters render at high resolution. Only depth-only binds are
+  // redirected — if a color RTV is bound alongside (never observed, §33b E
+  // events) the sizes could not match, so we fail safe to the engine's own
+  // 1024 pass and log it.
+  ID3D11DepthStencilView* shadowTwinDsv = nullptr;
+  if (shadowMapResolution() > 1024 && pDSV) {
+    shadowTwinDsv = getShadowResTwinDsv(pDSV);
+    if (shadowTwinDsv) {
+      static std::atomic<uint32_t> redirectLogs{0};
+      const uint32_t n = redirectLogs.fetch_add(1, std::memory_order_relaxed);
+      if (RTVCount == 0 || !ppRTVs || !ppRTVs[0]) {
+        pDSV = shadowTwinDsv;
+        if (n < 16 || n % 4096 == 0)
+          log("SHADOWRES caster DSV redirected to twin");
+      } else {
+        if (n < 16 || n % 256 == 0)
+          log("SHADOWRES DSV redirect SKIP: color RTV bound with shadow map");
+        shadowTwinDsv->Release();
+        shadowTwinDsv = nullptr;
+      }
+    }
+  }
+
   ID3D11RenderTargetView* msaaRtv = nullptr;
   ID3D11DepthStencilView* msaaDsv = nullptr;
   if (RTVCount == 1 && ppRTVs && ppRTVs[0] && pDSV &&
@@ -2686,6 +3034,7 @@ void STDMETHODCALLTYPE ID3D11DeviceContext_OMSetRenderTargets(
     pDSV = msaaDsv;
   }
   procs->OMSetRenderTargets(pContext, RTVCount, ppRTVs, pDSV);
+  if (shadowTwinDsv) shadowTwinDsv->Release();
   if (msaaRtv) msaaRtv->Release();
   if (msaaDsv) msaaDsv->Release();
 }
@@ -2761,6 +3110,15 @@ void STDMETHODCALLTYPE ID3D11DeviceContext_UpdateSubresource(
           if (gateHoldPatch(gateHoldCopy, 880))
             effectiveData = gateHoldCopy;
         }
+      }
+      // Shadow-map upscale: rescale the receiver's PCF tap size to the
+      // enlarged map's texel size. The 880 receiver material is written via
+      // UpdateSubresource (not Map), so this is its load-bearing patch point.
+      if (shadowMapResolution() > 1024 && desc.ByteWidth == 880) {
+        if (effectiveData != gateHoldCopy)
+          std::memcpy(gateHoldCopy, effectiveData, 880);
+        if (tapScalePatch(gateHoldCopy, 880))
+          effectiveData = gateHoldCopy;
       }
     }
   }
@@ -3395,6 +3753,36 @@ void STDMETHODCALLTYPE ID3D11DeviceContext_PSSetShaderResources(
           pContext, StartSlot + i, ppShaderResourceViews[i], resource);
         resource->Release();
       }
+    }
+  }
+  // Shadow-res twin: substitute the receiver's shadow-map SRV with the
+  // enlarged twin's SRV so the ground samples the high-res shadows. Views
+  // over textures without twins pass through untouched (fast negative cache).
+  if (shadowMapResolution() > 1024 && NumViews && ppShaderResourceViews &&
+      NumViews <= D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT) {
+    ID3D11ShaderResourceView*
+      substituted[D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT];
+    bool any = false;
+    for (UINT i = 0; i < NumViews; i++) {
+      substituted[i] = ppShaderResourceViews[i];
+      if (!substituted[i])
+        continue;
+      if (ID3D11ShaderResourceView* twin =
+            getShadowResTwinSrv(substituted[i])) {
+        substituted[i] = twin;   // AddRef'd; released below after the call
+        any = true;
+      }
+    }
+    if (any) {
+      procs->PSSetShaderResources(pContext, StartSlot, NumViews, substituted);
+      for (UINT i = 0; i < NumViews; i++)
+        if (substituted[i] && substituted[i] != ppShaderResourceViews[i])
+          substituted[i]->Release();
+      static std::atomic<uint32_t> srvLogs{0};
+      const uint32_t n = srvLogs.fetch_add(1, std::memory_order_relaxed);
+      if (n < 16 || n % 4096 == 0)
+        log("SHADOWRES receiver SRV redirected to twin");
+      return;
     }
   }
   procs->PSSetShaderResources(pContext, StartSlot, NumViews,
