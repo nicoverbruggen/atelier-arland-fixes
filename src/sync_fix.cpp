@@ -15,8 +15,33 @@
 
 #include "sync_fix.h"
 #include "util.h"
+#include "game.h"
+#include "config.h"
 
 namespace atfix {
+
+// ============================================================================
+// sync_fix.cpp — the D3D11 proxy layer. One translation unit because the pieces
+// below share per-frame state (the constant-buffer snapshot cache, the
+// shadow-SRV classifier, the immediate-context pointer and the DeviceProcs/
+// ContextProcs vtable dispatch), so they are not separable into their own files
+// without leaking those internals across headers. Sibling modules that ARE
+// self-contained live elsewhere: config.cpp (arland-fix.ini), game.cpp (per-game
+// capability matrix), framerate.cpp (cutscene present clamp). Sections, in order:
+//
+//   1. Vtable proc typedefs + DeviceProcs/ContextProcs dispatch tables.
+//   2. Shadow-map "twin" plumbing — separate mod-owned high-res shadow maps for
+//      ShadowMultiplier, redirected onto without touching the engine's own maps.
+//   3. Cut-in shadow fix — dim-hold / gate-hold patches (dimHoldPatch,
+//      gateHoldPatch), the tapScale rescale, and the draw-time gate-hold.
+//   4. Constant-buffer snapshot cache (CbSnap / captureCbMap / captureCbUnmap /
+//      readCb0Snap) feeding the cut-in patches and the contact-blob overlay.
+//   5. Contact-blob cut-in overlay (§35) — self-contained shaders/state.
+//   6. Shadow-SRV classifier (isShadowSrvLocked) shared by 2/3/5.
+//   7. Resolution override + MSAA resolve + viewport/scissor correction.
+//   8. The D3D11 device/context hook implementations that call into 1–7.
+//   9. hookDevice / hookContext installation.
+// ============================================================================
 
 /** Hooking-related stuff */
 using PFN_ID3D11Device_CreateBuffer = HRESULT (STDMETHODCALLTYPE *) (ID3D11Device*,
@@ -323,24 +348,23 @@ ID3D11ShaderResourceView* getShadowResTwinSrv(
   return twinSrv;   // creation ref belongs to the caller
 }
 
-// BattleCutInShadows (arland-fix.ini [Battle], default true): open the receiver's
-// shadow-reception gate during cut-ins. ARLAND_CUTIN_SHADOWS overrides the ini.
+// Reopen the receiver's shadow-reception gate during cut-ins. Per-game and
+// override handling (env ARLAND_CUTIN_SHADOWS, ini [Battle] BattleCutInShadows
+// default true) now live in the capability matrix (game.cpp); Totori is
+// Unsupported there until its cut-in detection is ported, so this stays off for
+// Totori. Cached because it is read in hot draw paths.
 bool cutinGateHoldEnabled() {
-  static const bool enabled = [] {
-    if (const char* v = std::getenv("ARLAND_CUTIN_SHADOWS")) return v[0] != '0';
-    return arlandConfigBool("Battle", "BattleCutInShadows", true);
-  }();
+  static const bool enabled = featureEnabled(Feature::CutInShadows);
   return enabled;
 }
 
-// BattleCutInDimming (arland-fix.ini [Battle], default false): whether the cut-in
-// may dim the scene. When dimming is OFF we hold the scene light up (dim-hold ON).
-// ARLAND_CUTIN_DIMMING overrides the ini ("0" = no dimming, i.e. dim-hold on).
+// Hold the scene light up during cut-ins so the scene keeps full brightness.
+// The user-facing key BattleCutInDimming (env ARLAND_CUTIN_DIMMING) is worded as
+// "may the cut-in dim the scene?", the inverse of this dim-hold action; the
+// matrix descriptor carries that inversion. Rorona/Meruru default to holding
+// (bright); Totori is Unsupported for now.
 bool cutinDimHoldEnabled() {
-  static const bool enabled = [] {
-    if (const char* v = std::getenv("ARLAND_CUTIN_DIMMING")) return v[0] == '0';
-    return !arlandConfigBool("Battle", "BattleCutInDimming", false);
-  }();
+  static const bool enabled = featureEnabled(Feature::CutInDimHold);
   return enabled;
 }
 
@@ -1318,104 +1342,9 @@ void traceResolutionCopy(const char* operation,
       " src_format=", haveSrc ? srcDesc.Format : DXGI_FORMAT_UNKNOWN);
 }
 
-const char* configPath() {
-  static const std::array<char, MAX_PATH + 1> path = [] {
-    std::array<char, MAX_PATH + 1> result = { };
-    const DWORD pathLength = GetModuleFileNameA(
-      nullptr, result.data(), MAX_PATH);
-    if (pathLength && pathLength < MAX_PATH) {
-      char* back = std::strrchr(result.data(), '\\');
-      char* forward = std::strrchr(result.data(), '/');
-      char* slash = !back || (forward && forward > back) ? forward : back;
-      if (slash)
-        std::memcpy(slash + 1, "arland-fix.ini", sizeof("arland-fix.ini"));
-    }
-
-    if (result[0] &&
-        GetFileAttributesA(result.data()) == INVALID_FILE_ATTRIBUTES) {
-      WritePrivateProfileStringA("Rendering", "MSAA", "1", result.data());
-      WritePrivateProfileStringA("Rendering", "Width", "", result.data());
-      WritePrivateProfileStringA("Rendering", "Height", "", result.data());
-      WritePrivateProfileStringA("Rendering", "ShadowMultiplier", "1", result.data());
-      WritePrivateProfileStringA("Battle", "BattleShadows", "true", result.data());
-      WritePrivateProfileStringA("Battle", "BattleCutInShadows", "true", result.data());
-      WritePrivateProfileStringA("Battle", "BattleCutInDimming", "false", result.data());
-    }
-    return result;
-  }();
-  return path[0] ? path.data() : nullptr;
-}
-
-// Read a boolean from arland-fix.ini. If the key is missing, write the default
-// into the file (so users discover the option) and return it. Accepts
-// true/false, 1/0, yes/no (first character, case-insensitive).
-bool arlandConfigBool(const char* section, const char* key, bool def) {
-  const char* path = configPath();
-  if (!path)
-    return def;
-  char value[16] = { };
-  GetPrivateProfileStringA(section, key, "\x01", value, sizeof(value), path);
-  if (value[0] == '\x01') {   // absent: persist the default so it appears in the ini
-    WritePrivateProfileStringA(section, key, def ? "true" : "false", path);
-    return def;
-  }
-  return value[0] == 't' || value[0] == 'T' || value[0] == '1' ||
-         value[0] == 'y' || value[0] == 'Y';
-}
-
-// Shadow-map edge length. Opt-in: only 2048/4096/8192 enlarge the maps; any
-// other value (or no config) keeps the vanilla 1024 behaviour byte-identical.
-// ARLAND_SHADOW_MULTIPLIER overrides arland-fix.ini [Rendering] ShadowMultiplier;
-// like arlandConfigBool, a missing ini key is written back for discovery. The
-// multiplier (1, 2, 4 or 8) scales the engine's 1024x1024 shadow map.
-UINT shadowMapResolution() {
-  static const UINT resolution = []() -> UINT {
-    unsigned long multiplier = 1;
-    char value[16] = { };
-    const DWORD length = GetEnvironmentVariableA(
-      "ARLAND_SHADOW_MULTIPLIER", value, sizeof(value));
-    if (length && length < sizeof(value)) {
-      multiplier = std::strtoul(value, nullptr, 10);
-    } else if (const char* path = configPath()) {
-      char iniValue[16] = { };
-      GetPrivateProfileStringA("Rendering", "ShadowMultiplier", "\x01",
-        iniValue, sizeof(iniValue), path);
-      if (iniValue[0] == '\x01')
-        WritePrivateProfileStringA("Rendering", "ShadowMultiplier", "1", path);
-      else
-        multiplier = std::strtoul(iniValue, nullptr, 10);
-    }
-    if (multiplier == 2 || multiplier == 4 || multiplier == 8) {
-      const UINT size = 1024u * static_cast<UINT>(multiplier);
-      log("Shadow-map resolution override: ", std::dec, size, "x", size,
-        " (", multiplier, "x)");
-      return size;
-    }
-    return 1024u;
-  }();
-  return resolution;
-}
-
-bool configuredResolution(UINT* width, UINT* height) {
-  const char* path = configPath();
-  if (!path)
-    return false;
-  char widthValue[16] = { };
-  char heightValue[16] = { };
-  GetPrivateProfileStringA("Rendering", "Width", "", widthValue,
-    sizeof(widthValue), path);
-  GetPrivateProfileStringA("Rendering", "Height", "", heightValue,
-    sizeof(heightValue), path);
-  const unsigned long parsedWidth = std::strtoul(widthValue, nullptr, 10);
-  const unsigned long parsedHeight = std::strtoul(heightValue, nullptr, 10);
-  if (parsedWidth < 640 || parsedWidth > 16384 ||
-      parsedHeight < 360 || parsedHeight > 16384)
-    return false;
-  *width = static_cast<UINT>(parsedWidth);
-  *height = static_cast<UINT>(parsedHeight);
-  return true;
-}
-
+// configPath / arlandConfigBool / shadowMapResolution / configuredResolution
+// moved to config.cpp (arland-fix.ini access). applyResolutionOverride stays
+// here because it mutates the resolution globals below.
 bool applyResolutionOverride(DXGI_SWAP_CHAIN_DESC* pDesc) {
   if (!pDesc)
     return false;
@@ -1433,29 +1362,7 @@ bool applyResolutionOverride(DXGI_SWAP_CHAIN_DESC* pDesc) {
   return true;
 }
 
-UINT msaaSamples() {
-  static const UINT samples = [] {
-    const char* path = configPath();
-
-    char value[16] = { };
-    const DWORD length = GetEnvironmentVariableA("ARLAND_MSAA", value, sizeof(value));
-    unsigned long requested = 1;
-    if (length) {
-      requested = std::strtoul(value, nullptr, 10);
-    } else if (path) {
-      requested = GetPrivateProfileIntA(
-        "Rendering", "MSAA", 1, path);
-    }
-    if (requested < 2)
-      return 1u;
-    if (requested >= 8)
-      return 8u;
-    if (requested >= 4)
-      return 4u;
-    return 2u;
-  }();
-  return samples;
-}
+// msaaSamples moved to config.cpp.
 
 const DeviceProcs* getDeviceProcs(ID3D11Device* pDevice) {
   return &g_deviceProcs;

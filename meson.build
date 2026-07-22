@@ -15,6 +15,9 @@ if host_machine.cpu_family() == 'x86'
 else
   sources = files(
     'src/main.cpp',
+    'src/game.cpp',
+    'src/config.cpp',
+    'src/framerate.cpp',
     'src/menu_fix.cpp',
     'src/sync_fix.cpp',
     'vendor/minhook/src/hde/hde64.c',

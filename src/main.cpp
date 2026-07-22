@@ -4,6 +4,7 @@
 #include "menu_fix.h"
 #include "sync_fix.h"
 #include "util.h"
+#include "framerate.h"
 
 #include <array>
 #include <atomic>
@@ -109,7 +110,8 @@ HRESULT STDMETHODCALLTYPE tracedPresent(
   const int64_t previous = previousPresentNanos.exchange(
     startedNanos, std::memory_order_relaxed);
   atfix::cutinDrawContactBlobs(swapChain);
-  const HRESULT result = originalPresent(swapChain, syncInterval, flags);
+  const HRESULT result = originalPresent(
+    swapChain, atfix::clampPresentInterval(syncInterval), flags);
   const auto finished = std::chrono::steady_clock::now();
   const uint64_t durationMicros = uint64_t(
     std::chrono::duration_cast<std::chrono::microseconds>(
@@ -122,7 +124,7 @@ HRESULT STDMETHODCALLTYPE tracedPresent(
 }
 
 void hookSwapChain(IDXGISwapChain* swapChain) {
-  if (!swapChain || !menuTransitionTraceEnabled())
+  if (!swapChain || (!menuTransitionTraceEnabled() && !cutscenePresentClampEnabled()))
     return;
   std::lock_guard lock(presentHookMutex);
   if (originalPresent)
@@ -156,7 +158,7 @@ HRESULT STDMETHODCALLTYPE tracedCreateSwapChain(
 }
 
 void hookFactoryForSwapChain(ID3D11Device* device) {
-  if (!device || !menuTransitionTraceEnabled())
+  if (!device || (!menuTransitionTraceEnabled() && !cutscenePresentClampEnabled()))
     return;
   IDXGIDevice* dxgiDevice = nullptr;
   IDXGIAdapter* adapter = nullptr;

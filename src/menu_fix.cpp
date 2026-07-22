@@ -26,6 +26,28 @@ bool arlandConfigBool(const char* section, const char* key, bool def);  // sync_
 
 const char* currentBattleState();
 
+// ============================================================================
+// menu_fix.cpp — the executable-specific hooks. Kept as one translation unit:
+// everything below shares the module base (gameBase), the per-executable Game
+// address table, and the MinHook install helpers via this anonymous namespace,
+// so the two subsystems it contains cannot be split into separate files without
+// hoisting all of that shared install infrastructure into a header. Sections:
+//
+//   1. Game address table (games[]) + build enums (English/multilingual).
+//   2. Feature/trace gates (menu stats, shadow traces, battleShadowRestore).
+//   3. MinHook install helpers (installDetour / installMinHookDetour / matches)
+//      and module helpers (baseName / textSectionSize).
+//   4. Menu-hitch fix: .PSSG validation cache, atlas read/frame cache, and the
+//      node/record/layout construction hooks that eliminate the text-menu stalls.
+//   5. Battle-shadow subsystem: per-game BattleBuildAddrs, the caster-restore
+//      hooks (Rorona), the cinematic battle-STATE detection (arlandInCinematicBattle,
+//      shared with the D3D11 layer's cut-in fix), and the per-frame ticks.
+//      NOTE: extracting this into battle_shadow_restore.cpp is deferred to the
+//      Totori battle-shadow work, when this code is rewritten and re-validated.
+//   6. detectAndInstallGameHooks — matches the running exe and installs 1–5.
+//   7. namespace arland — the public API main.cpp calls.
+// ============================================================================
+
 namespace {
 
 using PathCheckProc = bool (*)(void*, void*);
@@ -466,6 +488,12 @@ bool shadowMappingTraceEnabled() {
   return enabled;
 }
 
+// Master switch for the whole battle-shadow subsystem (env ARLAND_BATTLE_SHADOWS,
+// ini [Battle] BattleShadows, default on). This is deliberately NOT the per-game
+// gate: it also enables Meruru's cinematic battle-state detection
+// (installMeruruBattleStateHook depends on it), which the cut-in shadow fix needs.
+// Per-game ordinary-combat caster restoration is gated separately by
+// g_battleAddrs->casterRestore (Rorona only today; Totori is planned, see TODO).
 bool battleShadowRestoreEnabled() {
   static const bool enabled = [] {
     if (const char* value = std::getenv("ARLAND_BATTLE_SHADOWS"))
