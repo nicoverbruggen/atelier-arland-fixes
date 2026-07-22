@@ -114,10 +114,6 @@ ninja -C build32
 
 The outputs are `build64/d3d11.dll` and `build32/msimg32.dll`. GitHub Actions produces both DLLs as workflow artifacts and tagged release assets.
 
-## Known limitations
-
-Blurred 3D backgrounds used during dialogue scenes cover the full output at higher resolutions. Rorona's additional fixed-size snapshot and composite assumptions are corrected without affecting portraits or other cutscene layers. Totori and Meruru use different blur paths that already follow the resized targets. Optional MSAA has been validated at 2560×1440 in all three games; leave it disabled if you encounter rendering problems on other hardware or drivers.
-
 ## Credits
 
 Philip Rebohle created the original [`atelier-sync-fix`](https://github.com/doitsujin/atelier-sync-fix) CPU shadow-copy implementation. TellowKrinkle's [`atelier-sync-fix` fork](https://github.com/TellowKrinkle/atelier-sync-fix) later added Map/Unmap shadow coherence for Ayesha and the old-Arland render-target and viewport/scissor correction ported here; this project replaces the fork's single-map/immediate-upload implementation with per-resource tracking and deferred uploads suitable for the Arland workload. Yuri Hime's [Atelier Graphics Tweak](https://steamcommunity.com/app/1152300/discussions/0/3345546664208090238/) and the earlier [Rorona community investigation](https://steamcommunity.com/app/936160/discussions/0/1742227264210806751/?ctp=2) identified the broader font-atlas transfer problem; AGT used an experimental upload-suppression approach that is not included here. The `.PSSG` validation cache and bounded atlas-read snapshot caches come from the Arland menu-hitch investigation led by Nico, the author of this repository. [MinHook](https://github.com/TsudaKageyu/minhook) is by Tsuda Kageyu and contributors.
