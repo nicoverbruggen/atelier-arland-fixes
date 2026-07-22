@@ -94,9 +94,9 @@ std::atomic<int64_t> previousPresentNanos = 0;
 
 bool menuTransitionTraceEnabled() {
   const char* trace = std::getenv("ARLAND_MENU_TRANSITION_TRACE");
-  const char* shadowTrace = std::getenv("ARLAND_SHADOW_TRACE");
+  const char* blob = std::getenv("ARLAND_CUTIN_BLOB");
   return (trace && trace[0] != '0') ||
-    (shadowTrace && shadowTrace[0] != '0') ||
+    (blob && blob[0] != '0') ||
     arland::frameAtlasCacheEnabled() ||
     arland::battleShadowRestoreActive();
 }
@@ -117,8 +117,6 @@ HRESULT STDMETHODCALLTYPE tracedPresent(
   const uint64_t intervalMicros = previous > 0 && startedNanos >= previous
     ? uint64_t(startedNanos - previous) / 1000 : 0;
   atfix::traceTransitionD3DFrame(intervalMicros);
-  atfix::traceShadowD3DFrame();
-  atfix::cutinShadowPresent();
   arland::traceMenuPresent(durationMicros, intervalMicros);
   return result;
 }

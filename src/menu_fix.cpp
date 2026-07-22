@@ -21,6 +21,7 @@
 namespace atfix {
 extern Log log;
 bool arlandInCinematicBattle();   // defined later in this TU
+bool arlandConfigBool(const char* section, const char* key, bool def);  // sync_fix.cpp
 }
 
 const char* currentBattleState();
@@ -467,8 +468,9 @@ bool shadowMappingTraceEnabled() {
 
 bool battleShadowRestoreEnabled() {
   static const bool enabled = [] {
-    const char* value = std::getenv("ARLAND_BATTLE_SHADOWS");
-    return !value || value[0] != '0';   // on by default; "0" disables
+    if (const char* value = std::getenv("ARLAND_BATTLE_SHADOWS"))
+      return value[0] != '0';   // env overrides the ini
+    return atfix::arlandConfigBool("Battle", "BattleShadows", true);  // default on
   }();
   return enabled;
 }
@@ -525,20 +527,6 @@ bool cutinFlagTraceEnabled() {
   static const bool enabled = [] {
     const char* value = std::getenv("ARLAND_CUTIN_FLAG_TRACE");
     return value && value[0] != '0';
-  }();
-  return enabled;
-}
-
-// §19: trace the engine's by-name shader-uniform setter (0xc61e0) to catch which
-// global (gamma/color/exposure/desat) a fullscreen post-effect drives during the
-// cut-in — the 54% dim isn't in the ground material's cbuffer (all flat), so it
-// must be a post pass. Enabled by ARLAND_UNIFORM_TRACE or, for convenience, the
-// same ARLAND_CUTIN_LIGHT_RESTORE the light probes already use.
-bool uniformTraceEnabled() {
-  static const bool enabled = [] {
-    const char* a = std::getenv("ARLAND_UNIFORM_TRACE");
-    const char* b = std::getenv("ARLAND_CUTIN_LIGHT_RESTORE");
-    return (a && a[0] != '0') || (b && b[0] != '0');
   }();
   return enabled;
 }
@@ -2859,61 +2847,6 @@ uintptr_t tracedSnodeInit(uintptr_t a1, uintptr_t a2, uintptr_t a3,
   return originalSnodeInit(a1, a2, a3, a4);
 }
 
-// The engine's universal "set shader float uniform by name": prologue at 0xc61e0
-// is  push rbx/rsi/rdi; sub rsp,0xc0; movaps [rsp+0xb0],xmm6  and it consumes
-// rcx=object, rdx=name, xmm2=value, r9=arg3 (verified by disasm). Match that
-// signature exactly so the pass-through can't corrupt the call.
-using SetUniformProc = void* (*)(void*, const char*, float, void*);
-SetUniformProc originalSetUniform = nullptr;
-
-void* tracedSetUniform(void* obj, const char* name, float value, void* arg3) {
-  if (uniformTraceEnabled() && name) {
-    const char* state = currentBattleState();
-    if (state) {
-      // Log first sight of each name and thereafter only when its value has
-      // CHANGED (>1e-4) and at most ~4/sec/name — so a step at the cut-in shows
-      // without a smoothly-animating uniform flooding the log.
-      static std::mutex m;
-      static std::unordered_map<const char*, std::pair<float, uint64_t>> seen;
-      const uint64_t tick = GetTickCount64();
-      bool doLog = false;
-      {
-        std::lock_guard<std::mutex> lock(m);
-        auto it = seen.find(name);
-        const float d = it == seen.end() ? 1.0f : value - it->second.first;
-        const float ad = d < 0 ? -d : d;
-        if (it == seen.end()) {
-          seen[name] = {value, tick};
-          doLog = true;
-        } else if (ad > 1e-4f && tick - it->second.second > 250) {
-          it->second = {value, tick};
-          doLog = true;
-        }
-      }
-      if (doLog)
-        atfix::log("UNIFORM_SET name=", name, " val=", value,
-          " cine=", atfix::arlandInCinematicBattle(), " state=", state);
-    }
-  }
-  return originalSetUniform(obj, name, value, arg3);
-}
-
-bool installUniformTrace(BYTE* base, const Game& game) {
-  if (!uniformTraceEnabled() || game.atlasVariant != AtlasRorona ||
-      game.exeBuild != BuildEnglish)
-    return false;
-  auto* target = base + 0xc61e0;
-  const std::array<BYTE, 16> expected = {
-    0x40, 0x53, 0x56, 0x57, 0x48, 0x81, 0xec, 0xc0,
-    0x00, 0x00, 0x00, 0x0f, 0x29, 0xb4, 0x24, 0xb0,
-  };
-  if (!matches(target, expected))
-    return false;
-  return installMinHookDetour(target,
-    reinterpret_cast<void*>(&tracedSetUniform),
-    reinterpret_cast<void**>(&originalSetUniform));
-}
-
 bool installCutinFlagTrace(BYTE* base, const Game& game) {
   if (!cutinFlagTraceEnabled() || game.atlasVariant != AtlasRorona ||
       game.exeBuild != BuildEnglish)
@@ -3094,10 +3027,6 @@ void detectAndInstallGameHooks() {
       installCutinFlagTrace(gameBase, game);
     if (cutinFlagTraceEnabled())
       atfix::log("Cutin flag trace installed=", cutinFlagTraceInstalled);
-    const bool uniformTraceInstalled =
-      installUniformTrace(gameBase, game);
-    if (uniformTraceEnabled())
-      atfix::log("Uniform trace installed=", uniformTraceInstalled);
     atfix::log("Menu hooks pssg=", pathInstalled,
       " atlas=", atlasInstalled,
       " frame_atlas_cache=", frameAtlasCacheEnabled(),

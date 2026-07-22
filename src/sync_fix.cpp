@@ -174,345 +174,62 @@ std::map<ReadMapKey, ReadMapStats> g_transitionWriteMaps;
 TransitionCounter g_transitionShadowFlush;
 std::atomic<uint64_t> g_transitionShadowFlushBytes = 0;
 
-struct ShadowDrawKey {
-  uintptr_t depthResource = 0;
-  uintptr_t vertexShader = 0;
-  uintptr_t pixelShader = 0;
-  uintptr_t inputLayout = 0;
-  uintptr_t vertexBuffer = 0;
-  uint32_t targetWidth = 0;
-  uint32_t targetHeight = 0;
-  uint32_t targetFormat = 0;
-  uint32_t contextType = 0;
-  uint32_t indexed = 0;
-
-  bool operator<(const ShadowDrawKey& other) const {
-    return std::tie(depthResource, vertexShader, pixelShader, inputLayout,
-      vertexBuffer, targetWidth, targetHeight, targetFormat, contextType,
-      indexed) <
-      std::tie(other.depthResource, other.vertexShader, other.pixelShader,
-        other.inputLayout, other.vertexBuffer, other.targetWidth,
-        other.targetHeight, other.targetFormat, other.contextType,
-        other.indexed);
-  }
-};
-
-struct ShadowDrawStats {
-  uint64_t calls = 0;
-  uint64_t elements = 0;
-};
-
 mutex g_shadowTraceMutex;
-std::map<ShadowDrawKey, ShadowDrawStats> g_shadowDraws;
-uint64_t g_shadowDepthOnlyBinds = 0;
-uint64_t g_shadowTraceFrames = 0;
-uint64_t g_shadowTraceSequence = 0;
-uint64_t g_shadowReceiveDraws = 0;
 std::set<uintptr_t> g_shadowSrvs;      // PS SRVs backed by the 1024x1024 fmt-44 map
 std::set<uintptr_t> g_nonShadowSrvs;   // classified as not the shadow map
 
-// §20 experiment: a 1x1 comparison-sampleable depth SRV filled to a constant, so
-// the receiver's sample_c returns the same value at every texel (no shadow).
-ID3D11ShaderResourceView* g_litShadowSrv = nullptr;
-std::atomic<bool> g_litShadowTried{false};
-std::mutex g_litShadowMutex;
+// ---- Restored cut-in shadows (ARLAND_CUTIN_SHADOWS=1) ----------------------
+// Opt-in fix for the battle cut-in/cinematic states, which ship with the
+// ground's shadow reception gated shut and the scene light faded. Two
+// mechanisms, both active under this single flag:
+//   dim-hold : the cut-in darkening is a 16-byte $Params (s,s,s,1) whose
+//              scene-light intensity s fades 1.0 (overview) -> 0.7 (cut-in).
+//              Hold it at 1.0 during cinematic states so the ground keeps its
+//              overview brightness. Identified by shape (uniform RGB, w=1,
+//              s dropped below 1) rather than the per-launch pointer.
+//   gate-hold: the 880-byte receiver material gates shadow RECEPTION on the
+//              VS's `diffuse` at byte 832 (a name collision — the PS RDEF
+//              calls byte 832 `shadowLPos`, but the VS reads cb0[52] as
+//              diffuse). The receiver VS computes gate = 2.5 -
+//              2*min(diffuse.w, diffuse.x); the PS samples the shadow map
+//              ONLY if gate < 1, i.e. min-diffuse > 0.75. During the cut-in
+//              diffuse.xyz is pinned to ~0.7 -> gate closed -> the ground
+//              never samples the shadow map at all. Holding diffuse at 1.0
+//              during cinematic states reopens the gate. Patched on every cb
+//              write path AND (load-bearing) via a 16-byte boxed
+//              UpdateSubresource right before each cinematic shadow-receiving
+//              880 draw (gateHoldAtDraw).
+// Shared arland-fix.ini boolean reader; writes the default back when the key is
+// absent so it appears in the file for the user. Defined below with configPath.
+bool arlandConfigBool(const char* section, const char* key, bool def);
 
-float cutinShadowFill();  // defined below with the other env gates
-
-ID3D11ShaderResourceView* getLitShadowSrv(ID3D11DeviceContext* ctx) {
-  std::lock_guard<std::mutex> lock(g_litShadowMutex);
-  if (g_litShadowTried.load(std::memory_order_relaxed))
-    return g_litShadowSrv;
-  g_litShadowTried.store(true, std::memory_order_relaxed);
-  ID3D11Device* dev = nullptr;
-  ctx->GetDevice(&dev);
-  if (!dev)
-    return nullptr;
-  float f = cutinShadowFill();
-  if (f < 0.0f) f = 0.0f;
-  if (f > 1.0f) f = 1.0f;
-  const uint32_t depth24 = uint32_t(f * float(0xFFFFFF)) & 0xFFFFFFu;  // R24, stencil 0
-  D3D11_TEXTURE2D_DESC td = {};
-  td.Width = 1; td.Height = 1; td.MipLevels = 1; td.ArraySize = 1;
-  td.Format = DXGI_FORMAT_R24G8_TYPELESS;
-  td.SampleDesc.Count = 1;
-  td.Usage = D3D11_USAGE_IMMUTABLE;
-  td.BindFlags = D3D11_BIND_SHADER_RESOURCE;
-  D3D11_SUBRESOURCE_DATA init = {};
-  init.pSysMem = &depth24; init.SysMemPitch = 4;
-  ID3D11Texture2D* tex = nullptr;
-  if (SUCCEEDED(dev->CreateTexture2D(&td, &init, &tex)) && tex) {
-    D3D11_SHADER_RESOURCE_VIEW_DESC sd = {};
-    sd.Format = DXGI_FORMAT_R24_UNORM_X8_TYPELESS;
-    sd.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
-    sd.Texture2D.MipLevels = 1;
-    dev->CreateShaderResourceView(tex, &sd, &g_litShadowSrv);
-    tex->Release();
-  }
-  dev->Release();
-  log("CUTIN_SHADOW_OFF lit-srv created=", g_litShadowSrv != nullptr,
-      " fill=", f);
-  return g_litShadowSrv;
-}
-
-// Distinct depth-only shadow targets bound per window, keyed by depth resource.
-struct ShadowTargetStats {
-  uint64_t binds = 0;
-  uint32_t width = 0;
-  uint32_t height = 0;
-  uint32_t format = 0;
-};
-std::map<uintptr_t, ShadowTargetStats> g_shadowTargets;
-
-// Per-color-render-target draw buckets. Isolates the cut-in pass: it composes to
-// its own target, so a distinct bucket appears whose shadow-sampling count tells
-// us whether the cut-in ground samples the shadow map at all.
-struct ReceiverBucketKey {
-  uintptr_t colorResource = 0;
-  uintptr_t pixelShader = 0;
-  uint32_t width = 0;
-  uint32_t height = 0;
-  uint32_t format = 0;
-  bool operator<(const ReceiverBucketKey& o) const {
-    return std::tie(colorResource, pixelShader, width, height, format) <
-      std::tie(o.colorResource, o.pixelShader, o.width, o.height, o.format);
-  }
-};
-struct ReceiverBucketStats {
-  uint64_t draws = 0;
-  uint64_t shadowSampling = 0;
-};
-std::map<ReceiverBucketKey, ReceiverBucketStats> g_receiverBuckets;
-
-bool receiverRtTraceEnabled() {
+// BattleCutInShadows (arland-fix.ini [Battle], default true): open the receiver's
+// shadow-reception gate during cut-ins. ARLAND_CUTIN_SHADOWS overrides the ini.
+bool cutinGateHoldEnabled() {
   static const bool enabled = [] {
-    const char* value = std::getenv("ARLAND_SHADOW_RECEIVE_RT");
-    return value && value[0] != '0';
+    if (const char* v = std::getenv("ARLAND_CUTIN_SHADOWS")) return v[0] != '0';
+    return arlandConfigBool("Battle", "BattleCutInShadows", true);
   }();
   return enabled;
 }
 
-// Per-vertex-buffer coverage: did a given mesh draw to the shadow depth map
-// (casting), the color target (visible), or both? A character-sized mesh that
-// is color-only during the cut-in is visible-but-not-casting.
-struct VbCoverage {
-  bool shadow = false;
-  bool color = false;
-  uint32_t maxElements = 0;
-};
-std::map<uintptr_t, VbCoverage> g_vbCoverage;
-// Meshes (by vertex buffer) that have EVER cast a shadow, with their size — used
-// to spot a mesh that casts in the overview but goes visible-not-casting in the
-// cut-in (the decoupled geometry).
-std::map<uintptr_t, uint32_t> g_vbEverCast;
-std::set<uintptr_t> g_decoupledReported;
-
-bool casterCoverageEnabled() {
-  static const bool enabled = [] {
-    const char* value = std::getenv("ARLAND_CASTER_COVERAGE");
-    return value && value[0] != '0';
-  }();
-  return enabled;
-}
-
-void traceCasterCoverage(ID3D11DeviceContext* context, UINT elementCount) {
-  if (!casterCoverageEnabled())
-    return;
-  ID3D11RenderTargetView* rtv = nullptr;
-  ID3D11DepthStencilView* dsv = nullptr;
-  context->OMGetRenderTargets(1, &rtv, &dsv);
-  const bool shadowPass = dsv && !rtv;   // depth-only = shadow caster pass
-  bool colorPass = false;
-  if (rtv) {
-    ID3D11Resource* res = nullptr;
-    rtv->GetResource(&res);
-    if (res) {
-      ID3D11Texture2D* tex = nullptr;
-      if (SUCCEEDED(res->QueryInterface(IID_PPV_ARGS(&tex)))) {
-        D3D11_TEXTURE2D_DESC d = {};
-        tex->GetDesc(&d);
-        colorPass = d.Width == 1920 && d.Height == 1080;  // main scene target
-        tex->Release();
-      }
-      res->Release();
-    }
-  }
-  if (shadowPass || colorPass) {
-    ID3D11Buffer* vb = nullptr;
-    UINT stride = 0, offset = 0;
-    context->IAGetVertexBuffers(0, 1, &vb, &stride, &offset);
-    if (vb) {
-      const uintptr_t key = reinterpret_cast<uintptr_t>(vb);
-      std::lock_guard lock(g_shadowTraceMutex);
-      auto& c = g_vbCoverage[key];
-      if (shadowPass) c.shadow = true;
-      if (colorPass) c.color = true;
-      if (elementCount > c.maxElements) c.maxElements = elementCount;
-      if (shadowPass && elementCount >= 300) {
-        auto& mx = g_vbEverCast[key];
-        if (elementCount > mx) mx = elementCount;
-      }
-      vb->Release();
-    }
-  }
-  if (rtv) rtv->Release();
-  if (dsv) dsv->Release();
-}
-
-bool shadowTraceEnabled() {
-  static const bool enabled = [] {
-    const char* value = std::getenv("ARLAND_SHADOW_TRACE");
-    return value && value[0] != '0';
-  }();
-  return enabled;
-}
-
-bool shadowMatrixEnabled() {
-  static const bool enabled = [] {
-    const char* value = std::getenv("ARLAND_SHADOW_MATRIX");
-    return value && value[0] != '0';
-  }();
-  return enabled;
-}
-
-// Read a byte window of a VS constant buffer via a staging copy. Immediate
-// context only. Returns false if unavailable. The staging buffer is sized for
-// the whole 880-byte receiver material so both the legacy 64-byte matrix read
-// and the V2 Model@0 + PSSGLightModelViewProjTex@752 window fit.
-ID3D11Buffer* g_cbStaging = nullptr;
-constexpr UINT kCbStagingBytes = 880;
-bool readVsCbufferBytes(ID3D11DeviceContext* context, UINT slot, UINT offset,
-                        UINT bytes, void* out) {
-  if (bytes == 0 || offset + bytes > kCbStagingBytes)
-    return false;
-  if (context->GetType() != D3D11_DEVICE_CONTEXT_IMMEDIATE)
-    return false;
-  ID3D11Buffer* cb = nullptr;
-  context->VSGetConstantBuffers(slot, 1, &cb);
-  if (!cb)
-    return false;
-  bool ok = false;
-  if (!g_cbStaging) {
-    ID3D11Device* dev = nullptr;
-    context->GetDevice(&dev);
-    if (dev) {
-      D3D11_BUFFER_DESC d = {};
-      d.ByteWidth = kCbStagingBytes;
-      d.Usage = D3D11_USAGE_STAGING;
-      d.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
-      dev->CreateBuffer(&d, nullptr, &g_cbStaging);
-      dev->Release();
-    }
-  }
-  if (g_cbStaging) {
-    D3D11_BUFFER_DESC sd = {};
-    cb->GetDesc(&sd);
-    if (sd.ByteWidth >= offset + bytes) {
-      D3D11_BOX box = {offset, 0, 0, offset + bytes, 1, 1};
-      context->CopySubresourceRegion(g_cbStaging, 0, 0, 0, 0, cb, 0, &box);
-      D3D11_MAPPED_SUBRESOURCE m = {};
-      if (SUCCEEDED(context->Map(g_cbStaging, 0, D3D11_MAP_READ, 0, &m))) {
-        memcpy(out, m.pData, bytes);
-        context->Unmap(g_cbStaging, 0);
-        ok = true;
-      }
-    }
-  }
-  cb->Release();
-  return ok;
-}
-
-// Read the first 16 floats (one 4x4 matrix) of a VS constant buffer.
-bool readVsCbufferMatrix(ID3D11DeviceContext* context, UINT slot,
-                         float out[16]) {
-  return readVsCbufferBytes(context, slot, 0, 64, out);
-}
-
-void traceShadowMatrix(ID3D11DeviceContext*, UINT) {}  // superseded by cb capture
-
-// ---- Cut-in recon (ARLAND_CUTIN_RECON=1) ----
-// §30b concluded "no reusable light-VP cbuffer" from buffer POINTER churn
-// across shadow draws (overridden_slots=0x0). But the engine allocates fresh
-// buffers per draw, so a per-pass light-VP rewritten with IDENTICAL CONTENTS
-// each draw would look exactly the same in that diagnostic. This recon captures
-// (a) the CONTENTS of every constant-buffer write (Map/Unmap, UpdateSubresource,
-// CreateBuffer initial data) and logs them per draw slot, and (b) the DXBC
-// bytecode of the shadow-pass and character color vertex shaders, whose cbuffer
-// declarations state the true constant layout. One run answers: is any shadow
-// slot content-stable (light-VP), and does the shadow VS consume one baked
-// world-x-lightVP matrix or separate world / light-VP constants?
-bool cutinReconEnabled() {
-  static const bool enabled = [] {
-    const char* v = std::getenv("ARLAND_CUTIN_RECON");
-    return v && v[0] != '0';
-  }();
-  return enabled;
-}
-
-bool cutinShadowFixEnabled();
-void healShadowCbWrite(ID3D11DeviceContext* ctx, ID3D11Resource* resource,
-                       const void* data, uint32_t size);
-
-// Battle lighting trace (§32): log the per-material light rig values at
-// battle-state transitions, to catch the cut-in dimming the environment and
-// (per the user report) failing to restore it afterwards.
-bool cutinLightTraceEnabled() {
-  static const bool enabled = [] {
-    const char* v = std::getenv("ARLAND_CUTIN_LIGHT_TRACE");
-    return v && v[0] != '0';
-  }();
-  return enabled;
-}
-
-// Receiver-side probe (§32c): dump the shadow-sampling pixel shader and log
-// its constant-buffer values per battle state, to find the phase-level switch
-// that stops the ground from resolving shadows during actions.
-bool cutinRecvTraceEnabled() {
-  static const bool enabled = [] {
-    const char* v = std::getenv("ARLAND_CUTIN_RECV_TRACE");
-    return v && v[0] != '0';
-  }();
-  return enabled;
-}
-
-// §36 diagnostic free-look: a clip-space zoom applied to the 3D scene's
-// projection (ModelViewProj) at cbuffer write time, widening the effective
-// field of view so the whole battlefield is visible. <1 zooms OUT (see more).
-float cutinCamZoom() {
-  static const float z = [] {
-    const char* v = std::getenv("ARLAND_CUTIN_CAM_ZOOM");
-    return v ? float(std::atof(v)) : 1.0f;
-  }();
-  return z;
-}
-bool cutinCamZoomEnabled() { return cutinCamZoom() != 1.0f; }
-
-// §39 fix: the cut-in fades the ground's lit color COLOR0 (the receiver renders
-// shadow as COLOR0 × (1+shadowFactor), so a faded COLOR0 = no visible shadow
-// even though the shadow map is populated — §14/§38 of RORONA_COMBAT.md). The
-// receiver VS builds COLOR0 ONLY from cb0 of the 768/880 field material, from
-// the light constants at bytes 324..620 (point lights + dark + one-shot). We
-// cache that block during a non-cinematic battle frame and restore it during
-// cinematic states, so COLOR0 (and its shadow contrast) cannot fade.
-bool cutinLightRestoreEnabled() {
-  static const bool enabled = [] {
-    const char* v = std::getenv("ARLAND_CUTIN_LIGHT_RESTORE");
-    return v && v[0] != '0';
-  }();
-  return enabled;
-}
-
-// §22 FIX: the cut-in darkening is a 16-byte $Params (s,s,s,1) whose scene-light
-// intensity s fades 1.0 (overview) -> 0.7 (cut-in). Hold it at 1.0 during
-// cinematic states so the ground keeps its overview brightness. Identified by
-// shape (uniform RGB, w=1, s dropped below 1) rather than the per-launch pointer.
+// BattleCutInDimming (arland-fix.ini [Battle], default false): whether the cut-in
+// may dim the scene. When dimming is OFF we hold the scene light up (dim-hold ON).
+// ARLAND_CUTIN_DIMMING overrides the ini ("0" = no dimming, i.e. dim-hold on).
 bool cutinDimHoldEnabled() {
   static const bool enabled = [] {
-    const char* v = std::getenv("ARLAND_CUTIN_DIM_HOLD");
-    return v && v[0] != '0';
+    if (const char* v = std::getenv("ARLAND_CUTIN_DIMMING")) return v[0] == '0';
+    return !arlandConfigBool("Battle", "BattleCutInDimming", false);
   }();
   return enabled;
 }
+
+// Either cut-in mechanism active — arms the shared constant-buffer capture path.
+bool cutinShadowsEnabled() {
+  return cutinGateHoldEnabled() || cutinDimHoldEnabled();
+}
+
+bool cutinBlobEnabled();   // defined with the contact-blob overlay below
 
 // Rewrite a matching 16-byte light-intensity $Params to full brightness in place.
 // Returns true if it patched. Only touches (s,s,s,~1) with s in (0.5,0.98) — the
@@ -533,22 +250,6 @@ bool dimHoldPatch(void* data, uint32_t size) {
   return false;
 }
 
-// §32 FIX (adversarial-review finding): the 880 receiver material gates shadow
-// RECEPTION on the VS's `diffuse` at byte 832 (a name collision — the PS RDEF
-// calls byte 832 `shadowLPos`, but the VS reads cb0[52]=byte832 as diffuse). The
-// receiver VS computes gate = 2.5 - 2*min(diffuse.w, diffuse.x); the PS samples
-// the shadow map ONLY if gate < 1, i.e. min-diffuse > 0.75. During the cut-in
-// diffuse.xyz is pinned to ~0.7 (< 0.75) -> gate closed -> the ground never
-// samples the shadow map at all. Holding diffuse.x (and .yzw) at 1.0 during
-// cinematic states OPENS the gate so the receiver samples shadows again.
-bool cutinGateHoldEnabled() {
-  static const bool enabled = [] {
-    const char* v = std::getenv("ARLAND_CUTIN_GATE_HOLD");
-    return v && v[0] != '0';
-  }();
-  return enabled;
-}
-
 // Open the shadow-reception gate in an 880 receiver material: force the faded
 // diffuse at byte 832 (float4 (s,s,s,~1), s in (0.5,0.98)) back to 1.0 so
 // min(diffuse.w,diffuse.x) > 0.75. Returns true if patched.
@@ -567,298 +268,10 @@ bool gateHoldPatch(void* data, uint32_t size) {
   return false;
 }
 
-// §32b DIAGNOSIS: the UpdateSubresource-gated gate-hold never fired (zero
-// GATE_DIFFUSE lines in a run where DIM_HOLD fired), so byte 832 does NOT get
-// its cut-in 0.7 through a full-buffer 880 UpdateSubresource during cinematic
-// frames — at least not in that run. Trace EVERY large-cb write on EVERY write
-// path (map/update/update_box/create), with the @832 float4 + state + cine,
-// UNGATED by cinematic state, so one run shows which path (if any) carries the
-// receiver material and when. Gated on ARLAND_CUTIN_GATE_HOLD, throttled per
-// (path,size) so it cannot flood.
-void gateTraceCbWrite(const char* path, const void* data, uint32_t size,
-                      const void* res) {
-  if (!cutinGateHoldEnabled() || !data)
-    return;
-  if (size < 768 || size > 1024)
-    return;
-  static std::mutex traceMutex;
-  static std::map<std::pair<std::string, uint32_t>, uint64_t> traceTicks;
-  const uint64_t tick = GetTickCount64();
-  {
-    std::lock_guard<std::mutex> lock(traceMutex);
-    auto& t = traceTicks[{path, size}];
-    if (t && tick - t < 300)
-      return;
-    t = tick;
-  }
-  const char* st = arlandBattleStateName();
-  float d[4] = {};
-  if (size >= 848)
-    std::memcpy(d, static_cast<const uint8_t*>(data) + 832, 16);
-  log("GATE_TRACE path=", path, " res=", res, " size=", size,
-      " state=", st ? st : "-", " cine=", arlandInCinematicBattle(),
-      " @832=", d[0], ",", d[1], ",", d[2], ",", d[3]);
-}
-
-// §32b SAFETY NET: patch the gate at DRAW time, independent of the (unknown)
-// write path. At every draw during a cinematic battle state whose VS cb0 is an
-// 880-byte receiver material with the shadow SRV bound, record a 16-byte BOX
-// UpdateSubresource over bytes [832,848) forcing diffuse=(1,1,1,1) right before
-// the draw. This works even if the buffer was written pre-cinematic and
-// re-bound stale, or written through a path none of our hooks cover. Partial
-// constant-buffer updates are legal on the 11.1 runtime semantics DXVK
-// implements (this deployment runs under DXVK), and we only touch the 16 gate
-// bytes, so stale-snapshot matrix corruption is impossible. Kill switch:
-// ARLAND_CUTIN_GATE_DRAW=0.
-bool cutinGateDrawEnabled() {
-  static const bool enabled = [] {
-    const char* v = std::getenv("ARLAND_CUTIN_GATE_DRAW");
-    return !(v && v[0] == '0' && v[1] == '\0');
-  }();
-  return enabled;
-}
-
-// §20 EXPERIMENT: during cinematic states, swap the shadow map the RECEIVER
-// samples for a uniform-depth 1x1 map, so sample_c returns a constant everywhere
-// (no per-pixel shadow). If the ground snaps to full brightness during the
-// cut-in, the shadow term IS the darkener (§19). Fill value is env-tunable to be
-// robust to the comparison direction: 1.0 (far, default) vs 0.0 (near).
-bool cutinShadowOffEnabled() {
-  static const bool enabled = [] {
-    const char* v = std::getenv("ARLAND_CUTIN_SHADOW_OFF");
-    return v && v[0] != '0';
-  }();
-  return enabled;
-}
-float cutinShadowFill() {
-  static const float f = [] {
-    const char* v = std::getenv("ARLAND_CUTIN_SHADOW_FILL");
-    return v ? float(std::atof(v)) : 1.0f;
-  }();
-  return f;
-}
-
-// §41 V2 injection (ARLAND_CUTIN_INJECT_V2). Fixes the two established root
-// causes of the dead injection path:
-//   A) the injected caster was drawn through the piggybacked shadow-proxy
-//      IL/VS, whose vertex format mismatches the recorded color VB -> garbage
-//      positions, zero fragments. V2 records the character's OWN skin IL/VS
-//      at the color draw and re-draws with them, feeding a cloned skin
-//      cbuffer whose MVP slot (byte 160) holds our light-space matrix.
-//   B) placement used @752 of "the last 880 write of the frame" fed a WORLD
-//      position — but PSSGLightModelViewProjTex maps that mesh's LOCAL space.
-//      V2 captures @752 AND Model@0 from the actual ground receive draw and
-//      stores TexWorld = Tex x Model^-1 (object-independent world->UV).
-bool cutinInjectV2Enabled() {
-  static const bool enabled = [] {
-    const char* v = std::getenv("ARLAND_CUTIN_INJECT_V2");
-    return v && v[0] != '0';
-  }();
-  return enabled;
-}
-
-// §42: the receiver's ground VS/PS samples the shadow map at v = 1 - (row.vtx)
-// — a code-side v-flip the @752 matrix itself does not contain. Fold that flip
-// into g_texWorld row 1 (row1' = e3 - row1) so both the recvUV diagnostic and
-// the injected placement (Binv2 x g_texWorld x W) land at the true sampled
-// texel 1 - v. Default ON; disable with ARLAND_CUTIN_INJECT_MIRRORY=0 for A/B.
-bool cutinInjectMirrorYEnabled() {
-  static const bool enabled = [] {
-    const char* v = std::getenv("ARLAND_CUTIN_INJECT_MIRRORY");
-    return !(v && v[0] == '0' && v[1] == '\0');
-  }();
-  return enabled;
-}
-
-// The cut-in fix consumes the same content snapshots the recon collects.
-bool cbSnapEnabled() {
-  return cutinReconEnabled() || cutinShadowFixEnabled() ||
-    cutinLightTraceEnabled() || cutinRecvTraceEnabled() ||
-    cutinCamZoomEnabled() || cutinLightRestoreEnabled() ||
-    cutinDimHoldEnabled() || cutinInjectV2Enabled() ||
-    cutinGateHoldEnabled();
-}
-
-// §24 diagnostic: the RECEIVER samples the shadow map with its own
-// PSSGLightModelViewProjTex (880 material @752). Stash the latest one so the
-// injector can compare where the receiver looks (recvUV) against where the
-// caster lands (injUV) — if they diverge during the cut-in, that is the bug.
-float g_recvTex[16] = {};
-std::atomic<bool> g_recvTexValid{false};
-std::mutex g_recvTexMutex;
-void captureRecvTex(const void* data, uint32_t size) {
-  if (size != 880 || !cutinShadowFixEnabled() || !data)
-    return;
-  std::lock_guard<std::mutex> lock(g_recvTexMutex);
-  std::memcpy(g_recvTex, static_cast<const uint8_t*>(data) + 752, 64);
-  g_recvTexValid.store(true, std::memory_order_relaxed);
-}
-
-// Scale clip x/y toward screen center (rows 0-1 of ModelViewProj) for the 3D
-// scene materials. Character skin: MVP at byte 160; field ground: byte 128.
-void cameraZoomCbWrite(void* data, uint32_t size) {
-  if (!cutinCamZoomEnabled())
-    return;
-  size_t mvpOff;
-  if (size == 26048) mvpOff = 160;
-  else if (size == 768 || size == 880) mvpOff = 128;
-  else return;
-  float* m = reinterpret_cast<float*>(static_cast<uint8_t*>(data) + mvpOff);
-  const float z = cutinCamZoom();
-  for (int i = 0; i < 8; ++i)   // rows 0 and 1 (clip x, clip y)
-    m[i] *= z;
-}
-
-// §39 light-fade fix. The 768/880 field/receiver material lays out per-frame
-// transforms in bytes 0..319 (Model, ModelView, MVP@128, ViewProjection, ViewI),
-// then the scene light constants in [320,624): g_af3PtLit{Pos,Col,Atten}0..3,
-// g_f3DarkColor, g_nLightCount and the one-shot light — exactly the inputs the
-// receiver VS combines into COLOR0. Because the receiver PS emits
-// o0 = COLOR0 × (1+shadowFactor) with no color texture, a fading COLOR0 makes
-// the (still-populated) shadow vanish. The shadow projection lives past 624
-// (PSSGLightModelViewProjTex@752, tapScale@816) and MUST stay live, so the block
-// stops short of it. We snapshot the block on a non-cinematic battle frame and
-// stamp it back over cinematic frames so the light — and thus the shadow
-// contrast — cannot fade during the cut-in.
-constexpr size_t kLightBlockOff = 320;
-constexpr size_t kLightBlockEnd = 624;   // exclusive; before PSSGLightMVPTex@752
-std::mutex g_lightBaselineMutex;
-std::array<uint8_t, kLightBlockEnd - kLightBlockOff> g_lightBaseline{};
-std::atomic<bool> g_lightBaselineValid{false};
-
-// Read-only diagnostic: dump a field/receiver material's light AND shadow
-// constants so overview vs cut-in can be compared directly. Called from BOTH
-// the Map path (768, DYNAMIC) and the UpdateSubresource path (880 receiver,
-// DEFAULT) — the 880 is the material that actually samples the shadow map
-// (tapScale/shadowLPos live only in it), and we were previously blind to it.
-// Throttled per size so the 768 and 880 streams don't clobber each other.
-void lightDiagLog(const void* data, uint32_t size) {
-  if (!cutinLightRestoreEnabled() || !data || (size != 768 && size != 880))
-    return;
-  // Capture the state pointer ONCE — re-calling in the log() would race to null
-  // on the render thread and stream a null const char* (crash).
-  const char* st = arlandBattleStateName();
-  if (!st)
-    return;
-  auto rf = [](const uint8_t* b, size_t off) {
-    float v; std::memcpy(&v, b + off, 4); return v;
-  };
-  const uint8_t* d8 = static_cast<const uint8_t*>(data);
-  int lightCount; std::memcpy(&lightCount, d8 + 524, 4);
-  static std::atomic<uint64_t> g_lightLogTick768{0};
-  static std::atomic<uint64_t> g_lightLogTick880{0};
-  auto& gate = (size == 880) ? g_lightLogTick880 : g_lightLogTick768;
-  const uint64_t tick = GetTickCount64() / 500;
-  if (gate.exchange(tick) == tick)
-    return;
-  // 880-only shadow constants: tapScale@816 (PCF strength), the shadow
-  // projection matrix PSSGLightModelViewProjTex@752 (16 floats; log its
-  // diagonal + translation so a per-phase change is visible) and shadowLPos@832.
-  // On the 768 material those bytes are overlay params, so skip them there.
-  const float tap = (size == 880) ? rf(d8, 816) : 0.0f;
-  log("LIGHT_DIAG ms=", GetTickCount64(), " size=", size,
-      " state=", st, " cine=", arlandInCinematicBattle(),
-      " nLight=", lightCount,
-      " ptCol0=", rf(d8,384), ",", rf(d8,388), ",", rf(d8,392),
-      " dark=", rf(d8,512), ",", rf(d8,516), ",", rf(d8,520),
-      " oneCol=", rf(d8,592), ",", rf(d8,596), ",", rf(d8,600),
-      " oneAtt=", rf(d8,608), ",", rf(d8,612), ",", rf(d8,616),
-      " tapScale=", tap);
-  if (size == 880) {
-    // PSSGLightModelViewProjTex@752: flat row-major. Diagonal at +0,+20,+40,+60;
-    // translation at +48,+52,+56. shadowLPos float3 @832.
-    log("SHADOW_PROJ ms=", GetTickCount64(),
-        " state=", st, " cine=", arlandInCinematicBattle(),
-        " diag=", rf(d8,752), ",", rf(d8,772), ",", rf(d8,792), ",", rf(d8,812),
-        " trans=", rf(d8,800), ",", rf(d8,804), ",", rf(d8,808),
-        " shadowLPos=", rf(d8,832), ",", rf(d8,836), ",", rf(d8,840));
-    // The receiver PS folds these output multipliers AFTER shadow: HdrRangeInv
-    // (row 53 @848) and the overlay tail (852-864). HdrRangeInv measured flat
-    // (0.5) so far; kept for confirmation.
-    log("RECV_TAIL ms=", GetTickCount64(),
-        " state=", st, " cine=", arlandInCinematicBattle(),
-        " HdrRangeInv=", rf(d8,848),
-        " overlayH=", rf(d8,852), " overlayMod=", rf(d8,856),
-        " overlayFalloff=", rf(d8,860), ",", rf(d8,864));
-    // FOG block (624-719). gHeightFogFarColor@688 feeds the lit term COLOR1 in
-    // the receiver VS ([1320] mad o3, cb0[43], ...), so a fog darken here dims
-    // the ground AND scales the shadow with it — top suspect for the 54% dim.
-    log("RECV_FOG ms=", GetTickCount64(),
-        " state=", st, " cine=", arlandInCinematicBattle(),
-        " depthFogCol=", rf(d8,640), ",", rf(d8,644), ",", rf(d8,648),
-        " heightMidCol=", rf(d8,672), ",", rf(d8,676), ",", rf(d8,680),
-        " heightFarCol=", rf(d8,688), ",", rf(d8,692), ",", rf(d8,696),
-        " fogDensity=", rf(d8,704), ",", rf(d8,708), ",", rf(d8,712), ",", rf(d8,716));
-  }
-}
-
-// §21 broad net: log every SMALL constant-buffer write (<=256B, i.e. post/effect
-// $Params, not the big material/skin buffers) during battle, change-detected and
-// cine-tagged. Whatever value STEPS at the cut-in boundary is the darkener,
-// regardless of which post-effect/setter drives it — catches the blind spots the
-// float-uniform hook and material-cbuffer logging miss.
-void logSmallCbChange(const void* data, uint32_t size, const void* resource) {
-  if (!cutinLightRestoreEnabled() || !data)
-    return;
-  if (size < 16 || size > 256)
-    return;
-  const char* st = arlandBattleStateName();
-  if (!st)
-    return;
-  float v[4] = {0, 0, 0, 0};
-  std::memcpy(v, data, size < 16 ? size : 16);
-  const uint64_t key =
-    reinterpret_cast<uintptr_t>(resource) ^ (uint64_t(size) << 48);
-  static std::mutex m;
-  static std::unordered_map<uint64_t, std::pair<std::array<float, 4>, uint64_t>>
-    last;
-  const uint64_t tick = GetTickCount64();
-  bool changed = false;
-  {
-    std::lock_guard<std::mutex> lock(m);
-    auto it = last.find(key);
-    if (it == last.end()) {
-      last[key] = {{v[0], v[1], v[2], v[3]}, tick};
-      changed = true;
-    } else {
-      float d = 0;
-      for (int i = 0; i < 4; ++i) {
-        float e = v[i] - it->second.first[i];
-        d += e < 0 ? -e : e;
-      }
-      if (d > 1e-4f && tick - it->second.second > 200) {
-        it->second = {{v[0], v[1], v[2], v[3]}, tick};
-        changed = true;
-      }
-    }
-  }
-  if (changed)
-    log("SMALLCB res=", resource, " size=", size,
-        " cine=", arlandInCinematicBattle(), " state=", st,
-        " v=", v[0], ",", v[1], ",", v[2], ",", v[3]);
-}
-
-void lightRestoreCbWrite(void* data, uint32_t size) {
-  if (!cutinLightRestoreEnabled())
-    return;
-  lightDiagLog(data, size);
-  if (size != 768 && size != 880)
-    return;
-  // Only act inside a battle; the field overworld uses the same material width
-  // and must keep its own (correct) lighting.
-  if (!arlandBattleStateName())
-    return;
-  uint8_t* p = static_cast<uint8_t*>(data) + kLightBlockOff;
-  const size_t n = kLightBlockEnd - kLightBlockOff;
-  const bool cine = arlandInCinematicBattle();
-  std::lock_guard lock(g_lightBaselineMutex);
-  if (cine) {
-    if (g_lightBaselineValid)
-      std::memcpy(p, g_lightBaseline.data(), n);   // hold the pre-cut-in light
-  } else {
-    std::memcpy(g_lightBaseline.data(), p, n);      // refresh baseline each frame
-    g_lightBaselineValid = true;
-  }
+// The write-path patches and the blob's cb0 reads consume CPU-side captures of
+// constant-buffer writes (a Map payload is only visible between Map and Unmap).
+bool cbCaptureEnabled() {
+  return cutinShadowsEnabled() || cutinBlobEnabled();
 }
 
 // Snapshot payload width. Covers the full 880-byte field/receiver material,
@@ -869,19 +282,16 @@ constexpr uint32_t kCbSnapBytes = 896;
 
 struct CbSnap {
   uint32_t size = 0;      // full buffer byte width
-  uint64_t seq = 0;       // global write sequence, for staleness checks
   uint8_t data[kCbSnapBytes] = {}; // first bytes of the latest write
 };
 mutex g_cbSnapMutex;
 std::map<ID3D11Resource*, CbSnap> g_cbSnaps;
 std::map<std::pair<ID3D11Resource*, UINT>, std::pair<const void*, uint32_t>>
     g_cbSnapPending;
-std::atomic<uint64_t> g_cbSnapSeq{1};
 
 void snapCbWrite(ID3D11Resource* resource, const void* data, uint32_t size) {
   CbSnap snap;
   snap.size = size;
-  snap.seq = g_cbSnapSeq.fetch_add(1, std::memory_order_relaxed);
   std::memcpy(snap.data, data, std::min<uint32_t>(size, sizeof(snap.data)));
   std::lock_guard lock(g_cbSnapMutex);
   g_cbSnaps[resource] = snap;
@@ -896,698 +306,48 @@ bool isConstantBuffer(ID3D11Resource* resource, D3D11_BUFFER_DESC* desc) {
   return (desc->BindFlags & D3D11_BIND_CONSTANT_BUFFER) && desc->ByteWidth >= 16;
 }
 
-// DXBC bytecode of every vertex shader created while recon is on, keyed by the
-// live shader object, so a draw's VS can be dumped to disk for offline layout
-// analysis (RDEF / dcl_constantbuffer).
-std::map<void*, std::vector<uint8_t>> g_vsBytecode;
-std::set<void*> g_vsDumped;
-
-void recordVsBytecode(ID3D11VertexShader* vs, const void* code, SIZE_T length) {
-  std::lock_guard lock(g_cbSnapMutex);
-  auto& bytes = g_vsBytecode[vs];
-  bytes.assign(static_cast<const uint8_t*>(code),
-               static_cast<const uint8_t*>(code) + length);
-}
-
-std::map<void*, std::vector<uint8_t>> g_psBytecode;
-std::set<void*> g_psDumped;
-
-void recordPsBytecode(ID3D11PixelShader* ps, const void* code, SIZE_T length) {
-  std::lock_guard lock(g_cbSnapMutex);
-  auto& bytes = g_psBytecode[ps];
-  bytes.assign(static_cast<const uint8_t*>(code),
-               static_cast<const uint8_t*>(code) + length);
-}
-
-void dumpPsOnce(void* ps, const char* role) {
-  std::vector<uint8_t> bytes;
-  {
-    std::lock_guard lock(g_cbSnapMutex);
-    if (!g_psDumped.insert(ps).second)
-      return;
-    auto it = g_psBytecode.find(ps);
-    if (it == g_psBytecode.end()) {
-      log("CUTIN_RECV_PSDUMP role=", role, " ps=", ps, " bytecode=missing");
-      return;
-    }
-    bytes = it->second;
-  }
-  char name[96];
-  std::snprintf(name, sizeof(name), "arland-ps-%s-%p.dxbc", role, ps);
-  std::ofstream file(name, std::ios::out | std::ios::binary | std::ios::trunc);
-  file.write(reinterpret_cast<const char*>(bytes.data()),
-             static_cast<std::streamsize>(bytes.size()));
-  log("CUTIN_RECV_PSDUMP role=", role, " ps=", ps,
-      " bytes=", bytes.size(), " file=", name);
-}
-
-void dumpVsOnce(void* vs, const char* role) {
-  std::vector<uint8_t> bytes;
-  {
-    std::lock_guard lock(g_cbSnapMutex);
-    if (!g_vsDumped.insert(vs).second)
-      return;
-    auto it = g_vsBytecode.find(vs);
-    if (it == g_vsBytecode.end()) {
-      log("CUTIN_RECON_VSDUMP role=", role, " vs=", vs, " bytecode=missing");
-      return;
-    }
-    bytes = it->second;
-  }
-  char name[96];
-  std::snprintf(name, sizeof(name), "arland-vs-%s-%p.dxbc", role, vs);
-  std::ofstream file(name, std::ios::out | std::ios::binary | std::ios::trunc);
-  file.write(reinterpret_cast<const char*>(bytes.data()),
-             static_cast<std::streamsize>(bytes.size()));
-  log("CUTIN_RECON_VSDUMP role=", role, " vs=", vs,
-      " bytes=", bytes.size(), " file=", name);
-}
-
-// Deferred contexts block reading a cbuffer at draw time, but the game still
-// WRITES cbuffers via Map(WRITE_DISCARD)/Unmap, which we hook — the CPU data is
-// valid at Unmap. We capture constant-buffer writes that happen while the shadow
-// depth target is bound: those matrices are the shadow light-view-projection and
-// the caster world matrices. Correlate ms against BATTLE_STATE to compare states.
-std::atomic<bool> g_inShadowPass{false};
-struct CbMtxCap { const void* data; UINT size; };
-std::map<std::pair<ID3D11Resource*, UINT>, CbMtxCap> g_cbMtxMaps;
-std::atomic<uint64_t> g_cbMtxLogged{0};
-
-void updateShadowPassFlag(UINT rtvCount,
-                          ID3D11RenderTargetView* const* rtvs,
-                          ID3D11DepthStencilView* dsv) {
-  if (!shadowMatrixEnabled())
-    return;
-  bool haveColor = false;
-  for (UINT i = 0; i < rtvCount && i < D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT; ++i)
-    haveColor |= rtvs && rtvs[i];
-  bool shadow = false;
-  if (!haveColor && dsv) {
-    ID3D11Resource* res = nullptr;
-    dsv->GetResource(&res);
-    if (res) {
-      ID3D11Texture2D* tex = nullptr;
-      if (SUCCEEDED(res->QueryInterface(IID_PPV_ARGS(&tex)))) {
-        D3D11_TEXTURE2D_DESC d = {};
-        tex->GetDesc(&d);
-        shadow = d.Width == 1024 && d.Height == 1024;
-        tex->Release();
-      }
-      res->Release();
-    }
-  }
-  g_inShadowPass.store(shadow, std::memory_order_release);
-}
-
+// The game writes cbuffers via Map(WRITE_DISCARD)/Unmap; the CPU payload is
+// only valid between Map and Unmap. Track the mapped pointer per subresource
+// so captureCbUnmap can patch/snapshot it right before the real Unmap.
 void captureCbMap(ID3D11Resource* resource, UINT sub,
                   const D3D11_MAPPED_SUBRESOURCE* mapped) {
-  if (cbSnapEnabled() && resource && mapped && mapped->pData) {
-    D3D11_BUFFER_DESC desc = {};
-    if (isConstantBuffer(resource, &desc)) {
-      std::lock_guard lock(g_cbSnapMutex);
-      g_cbSnapPending[{resource, sub}] = {mapped->pData, desc.ByteWidth};
-    }
-  }
-  if (!shadowMatrixEnabled() || !resource || !mapped || !mapped->pData ||
-      !g_inShadowPass.load(std::memory_order_acquire))
+  if (!cbCaptureEnabled() || !resource || !mapped || !mapped->pData)
     return;
-  ID3D11Buffer* b = nullptr;
-  if (FAILED(resource->QueryInterface(IID_PPV_ARGS(&b))))
+  D3D11_BUFFER_DESC desc = {};
+  if (!isConstantBuffer(resource, &desc))
     return;
-  D3D11_BUFFER_DESC d = {};
-  b->GetDesc(&d);
-  b->Release();
-  if (!(d.BindFlags & D3D11_BIND_CONSTANT_BUFFER) || d.ByteWidth < 64 ||
-      d.ByteWidth > 1024)
-    return;
-  std::lock_guard lock(g_shadowTraceMutex);
-  g_cbMtxMaps[{resource, sub}] = {mapped->pData, d.ByteWidth};
+  std::lock_guard lock(g_cbSnapMutex);
+  g_cbSnapPending[{resource, sub}] = {mapped->pData, desc.ByteWidth};
 }
 
-// §32 lighting trace. Character skin (26048-byte $Globals): g_f3LitColor0 at
-// +0, g_fLitAtten0 +12, g_f3DarkColor +16. Field/arena (768/880): four point
-// lights g_af3PtLitCol0..3 at +384/400/416/432, g_f3DarkColor +512,
-// g_nLightCount +524 (RDEF-recovered layouts). Logs a few writes per material
-// class per battle-state change.
-// §38c light-diff: cache each receiver/character material's full float block
-// during a NON-cinematic (overview) frame, then when the SAME buffer is written
-// during a cinematic state, log exactly which floats changed (byte offset,
-// overview value -> cut-in value). Pinpoints the direct-light drop and proves
-// whether it lives in this cbuffer (restorable) or not.
-void traceLightDiff(ID3D11Resource* resource, const void* data, uint32_t size) {
-  if (!cutinLightTraceEnabled())
-    return;
-  if (size != 880 && size != 768 && size != 26048)
-    return;
-  const char* state = arlandBattleStateName();
-  if (!state)
-    return;
-  const bool cine = arlandInCinematicBattle();
-  const float* f = reinterpret_cast<const float*>(data);
-  // Diff SCALAR constants (skip per-frame matrices, which always differ). For
-  // the 880 field material the scalar light/shadow params live at 320..751 and
-  // 816..880; the tex matrix at 752..815 is reported by MAGNITUDE (a zeroed
-  // matrix == shadow lookup disabled). 26048 skin: 0..32.
-  auto isScalar = [&](size_t off) -> bool {
-    if (size == 26048) return off < 32;
-    return (off >= 320 && off < 752) || (off >= 816 && off < size);
-  };
-  static mutex m;
-  struct Base { std::vector<float> vals; bool set = false; };
-  static std::map<ID3D11Resource*, Base> baselines;
-  std::lock_guard lock(m);
-  Base& b = baselines[resource];
-  const size_t n = size / 4;
-  if (!cine) {
-    b.vals.assign(f, f + n);
-    b.set = true;
-    return;
-  }
-  if (!b.set)
-    return;
-  static std::atomic<uint32_t> logs{0};
-  if (logs.load(std::memory_order_relaxed) > 40)
-    return;
-  int changed = 0;
-  char buf[512];
-  int p = 0;
-  for (size_t i = 0; i < n && i < b.vals.size(); ++i) {
-    const size_t off = i * 4;
-    if (!isScalar(off))
-      continue;
-    const float ov = b.vals[i], cv = f[i];
-    if (std::fabs(ov - cv) > 1e-4f * (1.0f + std::fabs(ov))) {
-      ++changed;
-      if (p < int(sizeof(buf)) - 48)
-        p += std::snprintf(buf + p, sizeof(buf) - p, "+%zu:%.3f->%.3f ",
-                           off, ov, cv);
-    }
-  }
-  // Tex-matrix magnitude (bytes 752..815) — overview vs cut-in.
-  float texMagOv = 0, texMagCv = 0;
-  if (size >= 816) {
-    for (size_t i = 752 / 4; i < 816 / 4 && i < b.vals.size(); ++i) {
-      texMagOv += std::fabs(b.vals[i]);
-      texMagCv += std::fabs(f[i]);
-    }
-  }
-  if ((changed || size >= 816) &&
-      logs.fetch_add(1, std::memory_order_relaxed) <= 40)
-    log("CUTIN_LIGHTDIFF size=", size, " state=", state,
-        " changed=", changed, " texMag_ov=", texMagOv,
-        " texMag_cut=", texMagCv, " ", buf);
-}
-
-void traceLightCbWrite(ID3D11Resource* resource, const void* data,
-                       uint32_t size) {
-  if (!cutinLightTraceEnabled())
-    return;
-  traceLightDiff(resource, data, size);
-  if (size != 26048 && size != 768 && size != 880)
-    return;
-  const char* state = arlandBattleStateName();
-  if (!state)
-    return;
-  // Log DISTINCT value tuples per material class per state (the first writes
-  // each frame are always the same neutral placeholder materials — sampling
-  // only those hides the live rigs).
-  static mutex traceMutex;
-  struct SizeTrace { const char* state = nullptr; std::set<std::string> seen; };
-  static std::map<uint32_t, SizeTrace> perSize;
-  const float* f = reinterpret_cast<const float*>(data);
-  const uint8_t* base = static_cast<const uint8_t*>(data);
-  char key[256];
-  if (size == 26048) {
-    std::snprintf(key, sizeof(key), "%.3f,%.3f,%.3f|%.3f|%.3f,%.3f,%.3f",
-      f[0], f[1], f[2], f[3], f[4], f[5], f[6]);
-  } else {
-    const float* col = reinterpret_cast<const float*>(base + 384);
-    const float* dark = reinterpret_cast<const float*>(base + 512);
-    const int32_t count = *reinterpret_cast<const int32_t*>(base + 524);
-    std::snprintf(key, sizeof(key),
-      "%d|%.3f,%.3f,%.3f|%.3f,%.3f,%.3f|%.3f,%.3f,%.3f|%.3f,%.3f,%.3f|%.3f,%.3f,%.3f",
-      count, col[0], col[1], col[2], col[4], col[5], col[6],
-      col[8], col[9], col[10], col[12], col[13], col[14],
-      dark[0], dark[1], dark[2]);
-  }
-  std::lock_guard lock(traceMutex);
-  auto& entry = perSize[size];
-  if (entry.state != state) {
-    entry.state = state;
-    entry.seen.clear();
-  }
-  if (entry.seen.size() >= 10 || !entry.seen.insert(key).second)
-    return;
-  if (size == 26048) {
-    log("CUTIN_LIGHT state=", state, " cb=", reinterpret_cast<void*>(resource),
-      " size=", size,
-      " lit0=", f[0], ",", f[1], ",", f[2], " atten=", f[3],
-      " dark=", f[4], ",", f[5], ",", f[6]);
-  } else {
-    const float* col = reinterpret_cast<const float*>(base + 384);
-    const float* dark = reinterpret_cast<const float*>(base + 512);
-    const int32_t count = *reinterpret_cast<const int32_t*>(base + 524);
-    log("CUTIN_LIGHT state=", state, " cb=", reinterpret_cast<void*>(resource),
-      " size=", size, " nlights=", count,
-      " col0=", col[0], ",", col[1], ",", col[2],
-      " col1=", col[4], ",", col[5], ",", col[6],
-      " col2=", col[8], ",", col[9], ",", col[10],
-      " col3=", col[12], ",", col[13], ",", col[14],
-      " dark=", dark[0], ",", dark[1], ",", dark[2]);
-  }
-}
-
-void captureCbUnmap(ID3D11DeviceContext* ctx, ID3D11Resource* resource,
+void captureCbUnmap(ID3D11DeviceContext*, ID3D11Resource* resource,
                     UINT sub) {
-  if (cbSnapEnabled()) {
-    std::pair<const void*, uint32_t> pending{nullptr, 0};
-    {
-      std::lock_guard lock(g_cbSnapMutex);
-      auto it = g_cbSnapPending.find({resource, sub});
-      if (it != g_cbSnapPending.end()) {
-        pending = it->second;
-        g_cbSnapPending.erase(it);
-      }
-    }
-    // Heal a hidden caster's matrix in place, then copy the CPU-visible
-    // contents BEFORE the real Unmap invalidates them.
-    if (pending.first) {
-      healShadowCbWrite(ctx, resource, pending.first, pending.second);
-      cameraZoomCbWrite(const_cast<void*>(pending.first), pending.second);
-      lightRestoreCbWrite(const_cast<void*>(pending.first), pending.second);
-      captureRecvTex(pending.first, pending.second);
-      logSmallCbChange(pending.first, pending.second, resource);
-      if (cutinDimHoldEnabled() && arlandInCinematicBattle() &&
-          dimHoldPatch(const_cast<void*>(pending.first), pending.second)) {
-        static std::atomic<uint64_t> t{0};
-        const uint64_t k = GetTickCount64() / 500;
-        if (t.exchange(k) != k)
-          log("DIM_HOLD map res=", resource, " -> 1.0");
-      }
-      // §32b: trace large-cb writes on the Map path and hold the shadow gate
-      // open here too — §16 concluded the 880 receiver is "never Map/Unmapped"
-      // but that claim was made under a different build; if it IS mapped, this
-      // is where the 0.7 lands, and Map'd memory can be patched in place.
-      gateTraceCbWrite("map", pending.first, pending.second, resource);
-      if (cutinGateHoldEnabled() && arlandInCinematicBattle() &&
-          gateHoldPatch(const_cast<void*>(pending.first), pending.second)) {
-        static std::atomic<uint64_t> gt{0};
-        const uint64_t gk = GetTickCount64() / 500;
-        if (gt.exchange(gk) != gk)
-          log("GATE_HOLD map res=", resource, " diffuse@832 -> 1.0 (gate opened)");
-      }
-      snapCbWrite(resource, pending.first, pending.second);
-      traceLightCbWrite(resource, pending.first, pending.second);
-    }
-  }
-  if (!shadowMatrixEnabled())
+  if (!cbCaptureEnabled())
     return;
-  CbMtxCap cap = {};
+  std::pair<const void*, uint32_t> pending{nullptr, 0};
   {
-    std::lock_guard lock(g_shadowTraceMutex);
-    auto it = g_cbMtxMaps.find({resource, sub});
-    if (it == g_cbMtxMaps.end())
-      return;
-    cap = it->second;
-    g_cbMtxMaps.erase(it);
-  }
-  // Per-window cap so sampling spreads across the whole battle (incl. the
-  // cut-in) instead of exhausting on the first frame.
-  if (!cap.data || g_cbMtxLogged.fetch_add(1, std::memory_order_relaxed) > 24)
-    return;
-  const float* f = reinterpret_cast<const float*>(cap.data);
-  // Log first matrix rows; a projection matrix has structured last column,
-  // a world matrix has translation in row 3.
-  log("SHADOW_MTX ms=", GetTickCount64(), " size=", cap.size,
-      " cb=", reinterpret_cast<void*>(resource),
-      " r0=", f[0], ",", f[1], ",", f[2], ",", f[3],
-      " r1=", f[4], ",", f[5], ",", f[6], ",", f[7],
-      " r2=", f[8], ",", f[9], ",", f[10], ",", f[11],
-      " r3=", f[12], ",", f[13], ",", f[14], ",", f[15]);
-}
-
-// ---- Cut-in shadow fix: re-issue decoupled meshes into the shadow map ----
-// The close-up/cut-in shadow was never implemented in Rorona: during action
-// selection the engine hides the tactical model (scales it to ~0, so its caster
-// draws a degenerate nothing) and draws the close-up mesh to color only. We
-// re-issue that mesh into the shadow map at its CURRENT transform. The shadow
-// VS (RDEF-confirmed) consumes ONE cbuffer at slot 0, 80 bytes: float4 diffuse
-// + float4x4 PSSGLightModelViewProj — a per-caster baked model x light-VP. So
-// the fix derives the light-VP each frame from a reference caster A drawn in
-// both passes (L = S_A x W_A^-1; matrices flat row-major, S = L x W validated
-// numerically against the recon log), then computes S_char = L x W_char from
-// the close-up mesh's own Model matrix (captured from its color cbuffer write)
-// and injects it via our own 80-byte constant buffer.
-// Retarget draws (redraw recorded caster geometry at decoupled-mesh
-// transforms) — §30m showed in-battle decoupled meshes are SCENERY, so this
-// stays off unless explicitly probing the SelectCommand mini-stage.
-bool cutinRetargetEnabled() {
-  static const bool enabled = [] {
-    const char* v = std::getenv("ARLAND_CUTIN_RETARGET");
-    return v && v[0] != '0';
-  }();
-  return enabled;
-}
-
-// §33 map-identity trace: assign short ids to every 1024x1024 shadow-map
-// texture and record an ORDERED per-frame event stream — clears (C), caster
-// draws (D), our injections (I), receiver samples (R), command-list
-// executions (X) — flushed as one CUTIN_MAPFLOW line per frame. Answers which
-// physical map each side touches and in what order.
-bool cutinMapTraceEnabled() {
-  static const bool enabled = [] {
-    const char* v = std::getenv("ARLAND_CUTIN_MAP_TRACE");
-    return v && v[0] != '0';
-  }();
-  return enabled;
-}
-
-mutex g_mapTraceMutex;
-std::map<void*, int> g_mapTexIds;      // texture/list/ctx ptr -> short id
-std::set<void*> g_shadowMapTexSet;     // known 1024x1024 fmt44 textures
-struct MapEvent { char kind; int id; int ctx; int id2; uint32_t count; };
-std::vector<MapEvent> g_mapEvents;     // guarded by g_mapTraceMutex
-
-int mapTraceId(void* p, const char* what) {
-  auto it = g_mapTexIds.find(p);
-  if (it != g_mapTexIds.end())
-    return it->second;
-  const int id = int(g_mapTexIds.size()) + 1;
-  g_mapTexIds[p] = id;
-  log("CUTIN_MAP id=", id, " ptr=", p, " kind=", what);
-  return id;
-}
-
-void recordMapEvent(char kind, void* obj, const char* what,
-                    ID3D11DeviceContext* ctx, void* obj2 = nullptr) {
-  if (!cutinMapTraceEnabled())
-    return;
-  std::lock_guard lock(g_mapTraceMutex);
-  const int id = mapTraceId(obj, what);
-  if (kind == 'C' || kind == 'D' || kind == 'R' || kind == 'E')
-    g_shadowMapTexSet.insert(obj);
-  const int cid = ctx ? mapTraceId(ctx, "ctx") : 0;
-  const int id2 = obj2 ? mapTraceId(obj2, what) : 0;
-  if (!g_mapEvents.empty()) {
-    MapEvent& last = g_mapEvents.back();
-    if (last.kind == kind && last.id == id && last.ctx == cid &&
-        last.id2 == id2) {
-      ++last.count;
-      return;
+    std::lock_guard lock(g_cbSnapMutex);
+    auto it = g_cbSnapPending.find({resource, sub});
+    if (it != g_cbSnapPending.end()) {
+      pending = it->second;
+      g_cbSnapPending.erase(it);
     }
   }
-  if (g_mapEvents.size() < 192)
-    g_mapEvents.push_back({kind, id, cid, id2, 1});
-}
-
-// Is this resource a known shadow-map texture? (registered at creation or
-// first seen at a clear/draw/sample event)
-bool isTracedShadowMapTex(void* p) {
-  std::lock_guard lock(g_mapTraceMutex);
-  return g_shadowMapTexSet.count(p) != 0;
-}
-
-// §33c depth readback: right after the engine's caster→receiver map copy,
-// snapshot the RECEIVER map into a staging texture; two frames later read it
-// on the immediate context and log a depth histogram. Ends all speculation
-// about what actually reaches the sampled map (blocker present? casters
-// present during cut-in? depth conventions?).
-extern std::atomic<uint64_t> g_reconFrame;
-
-bool cutinMapReadbackEnabled() {
-  static const bool enabled = [] {
-    const char* v = std::getenv("ARLAND_CUTIN_MAP_READBACK");
-    return v && v[0] != '0';
-  }();
-  return enabled;
+  if (!pending.first)
+    return;
+  // Patch the CPU-visible contents in place BEFORE the real Unmap invalidates
+  // them: dim-hold on the 16-byte $Params, gate-hold on the 880 receiver.
+  if (arlandInCinematicBattle()) {
+    if (cutinDimHoldEnabled())
+      dimHoldPatch(const_cast<void*>(pending.first), pending.second);
+    if (cutinGateHoldEnabled())
+      gateHoldPatch(const_cast<void*>(pending.first), pending.second);
+  }
+  if (cutinBlobEnabled())
+    snapCbWrite(resource, pending.first, pending.second);
 }
 
 std::atomic<ID3D11DeviceContext*> g_immCtx{nullptr};
-ID3D11Texture2D* g_readbackTex = nullptr;          // guarded by g_mapTraceMutex
-ID3D11Resource* g_recvMapTex = nullptr;            // guarded by g_mapTraceMutex
-// §43 routing diagnostic: lock-free identity mirror of g_recvMapTex, so draw
-// hooks and injectPendingShadows (which holds g_pipeMutex) can log the pointer
-// without touching g_mapTraceMutex. NEVER dereferenced — identity only.
-std::atomic<void*> g_recvMapTexPtr{nullptr};
-std::atomic<uint64_t> g_readbackIssued{0};
-std::atomic<uint64_t> g_readbackFrame{0};
-std::atomic<uint32_t> g_readbackTries{0};
-
-// Remember the receiver map (Q-copy destination); AddRef'd, replaced on change.
-void rememberRecvMap(ID3D11Resource* dst) {
-  g_recvMapTexPtr.store(dst, std::memory_order_relaxed);
-  std::lock_guard lock(g_mapTraceMutex);
-  if (g_recvMapTex == dst)
-    return;
-  if (g_recvMapTex)
-    g_recvMapTex->Release();
-  g_recvMapTex = dst;
-  g_recvMapTex->AddRef();
-}
-
-// Present-side: snapshot the receiver map on the IMMEDIATE context (all
-// command lists for this frame have executed by now), non-blocking read two
-// frames later. No deferred-context staging traffic, no blocking Map.
-void issueMapReadback() {
-  const uint64_t frame = g_reconFrame.load(std::memory_order_relaxed);
-  if (g_readbackIssued.load(std::memory_order_relaxed) || frame % 30 != 0)
-    return;
-  ID3D11DeviceContext* imm = g_immCtx.load(std::memory_order_relaxed);
-  if (!imm)
-    return;
-  ID3D11Resource* src = nullptr;
-  ID3D11Texture2D* staging = nullptr;
-  bool needStaging = false;
-  {
-    std::lock_guard lock(g_mapTraceMutex);
-    if (!g_recvMapTex)
-      return;
-    needStaging = g_readbackTex == nullptr;
-  }
-  if (needStaging) {
-    // Created OUTSIDE g_mapTraceMutex: the CreateTexture2D hook takes the
-    // same mutex for shadow-map registration (the §33c/§33d freezes were this
-    // exact same-thread re-lock).
-    ID3D11Device* dev = nullptr;
-    imm->GetDevice(&dev);
-    ID3D11Texture2D* nt = nullptr;
-    if (dev) {
-      D3D11_TEXTURE2D_DESC td = {};
-      td.Width = 1024;
-      td.Height = 1024;
-      td.MipLevels = 1;
-      td.ArraySize = 1;
-      td.Format = DXGI_FORMAT_R24G8_TYPELESS;
-      td.SampleDesc.Count = 1;
-      td.Usage = D3D11_USAGE_STAGING;
-      td.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
-      dev->CreateTexture2D(&td, nullptr, &nt);
-      dev->Release();
-    }
-    if (!nt)
-      return;
-    std::lock_guard lock(g_mapTraceMutex);
-    if (!g_readbackTex)
-      g_readbackTex = nt;
-    else
-      nt->Release();
-  }
-  {
-    std::lock_guard lock(g_mapTraceMutex);
-    if (!g_recvMapTex || !g_readbackTex)
-      return;
-    src = g_recvMapTex;
-    src->AddRef();
-    staging = g_readbackTex;
-  }
-  getContextProcs(imm)->CopyResource(imm, staging, src);
-  src->Release();
-  g_readbackFrame.store(frame, std::memory_order_relaxed);
-  g_readbackTries.store(0, std::memory_order_relaxed);
-  g_readbackIssued.store(1, std::memory_order_relaxed);
-}
-
-void consumeMapReadback() {
-  if (!cutinMapReadbackEnabled())
-    return;
-  issueMapReadback();
-  if (!g_readbackIssued.load(std::memory_order_relaxed))
-    return;
-  const uint64_t frame = g_reconFrame.load(std::memory_order_relaxed);
-  if (frame - g_readbackFrame.load(std::memory_order_relaxed) < 2)
-    return;
-  ID3D11DeviceContext* imm = g_immCtx.load(std::memory_order_relaxed);
-  ID3D11Texture2D* tex;
-  {
-    std::lock_guard lock(g_mapTraceMutex);
-    tex = g_readbackTex;
-  }
-  if (!imm || !tex) {
-    g_readbackIssued.store(0, std::memory_order_relaxed);
-    return;
-  }
-  D3D11_MAPPED_SUBRESOURCE m = {};
-  const HRESULT hr = getContextProcs(imm)->Map(
-    imm, tex, 0, D3D11_MAP_READ, D3D11_MAP_FLAG_DO_NOT_WAIT, &m);
-  if (hr == DXGI_ERROR_WAS_STILL_DRAWING) {
-    if (g_readbackTries.fetch_add(1, std::memory_order_relaxed) > 20)
-      g_readbackIssued.store(0, std::memory_order_relaxed);
-    return;
-  }
-  if (FAILED(hr)) {
-    g_readbackIssued.store(0, std::memory_order_relaxed);
-    return;
-  }
-  uint32_t clear1 = 0, clear0 = 0, low = 0, mid = 0, high = 0;
-  float dmin = 2.0f, dmax = -1.0f;
-  float center = -1.0f;
-  // Spatial extent of caster (non-clear) texels, so we can SEE where the shadow
-  // content sits in the map (UV 0..1) and compare to the injected St and to the
-  // receiver's expected footprint. Accumulate in texel coords, report in UV.
-  uint64_t sumX = 0, sumY = 0, casterN = 0;
-  int minX = 1024, minY = 1024, maxX = -1, maxY = -1;
-  for (int y = 0; y < 1024; y += 8) {
-    const uint32_t* row = reinterpret_cast<const uint32_t*>(
-      static_cast<const uint8_t*>(m.pData) + size_t(y) * m.RowPitch);
-    for (int x = 0; x < 1024; x += 8) {
-      const float d = float(row[x] & 0x00FFFFFF) / 16777215.0f;
-      if (x == 512 && y == 512)
-        center = d;
-      if (d >= 0.99999f) { ++clear1; continue; }
-      if (d <= 0.00001f) { ++clear0; continue; }
-      // Caster viewport remaps NDC z via [0.5,1.0]: blob NDC 0.3 -> 0.65.
-      if (d < 0.70f) ++low;
-      else if (d < 0.90f) ++mid;
-      else ++high;
-      dmin = std::min(dmin, d);
-      dmax = std::max(dmax, d);
-      sumX += uint32_t(x); sumY += uint32_t(y); ++casterN;
-      minX = std::min(minX, x); maxX = std::max(maxX, x);
-      minY = std::min(minY, y); maxY = std::max(maxY, y);
-    }
-  }
-  getContextProcs(imm)->Unmap(imm, tex, 0);
-  g_readbackIssued.store(0, std::memory_order_relaxed);
-  const float cx = casterN ? float(sumX) / float(casterN) / 1024.0f : -1.0f;
-  const float cy = casterN ? float(sumY) / float(casterN) / 1024.0f : -1.0f;
-  log("CUTIN_MAP_DEPTH st=",
-      arlandBattleStateName() ? arlandBattleStateName() : "-",
-      " ones=", clear1, " zeros=", clear0,
-      " low(<0.70)=", low, " mid=", mid, " high=", high,
-      " min=", dmin, " max=", dmax, " center=", center,
-      " samples=16384");
-  log("CUTIN_MAP_SPAN st=",
-      arlandBattleStateName() ? arlandBattleStateName() : "-",
-      " casterTexels=", casterN, " centroidUV=", cx, ",", cy,
-      " bboxUV=", (minX < 0 ? -1.0f : float(minX) / 1024.0f), ",",
-      (minY < 0 ? -1.0f : float(minY) / 1024.0f), " -> ",
-      (maxX < 0 ? -1.0f : float(maxX) / 1024.0f), ",",
-      (maxY < 0 ? -1.0f : float(maxY) / 1024.0f));
-}
-
-void flushMapEvents() {
-  if (!cutinMapTraceEnabled())
-    return;
-  std::vector<MapEvent> ev;
-  {
-    std::lock_guard lock(g_mapTraceMutex);
-    ev.swap(g_mapEvents);
-  }
-  if (ev.empty())
-    return;
-  char line[1400];
-  int n = 0;
-  for (const MapEvent& e : ev) {
-    if (n > int(sizeof(line)) - 32)
-      break;
-    n += std::snprintf(line + n, sizeof(line) - n, "%c%d", e.kind, e.id);
-    if (e.id2)
-      n += std::snprintf(line + n, sizeof(line) - n, "<%d", e.id2);
-    if (e.ctx)
-      n += std::snprintf(line + n, sizeof(line) - n, "@%d", e.ctx);
-    if (e.count > 1)
-      n += std::snprintf(line + n, sizeof(line) - n, "x%u", e.count);
-    n += std::snprintf(line + n, sizeof(line) - n, " ");
-  }
-  const char* st = arlandBattleStateName();
-  log("CUTIN_MAPFLOW st=", st ? st : "-", " ", line);
-}
-
-// §32h receiver-saturation test: every frame, draw the largest recorded
-// caster into the shadow map as a HUGE blocker (map-centered, near depth) in
-// EVERY battle state. Overview darkening validates the tool; if the cut-in
-// then shows no change, the receiver's shadow contribution is disabled or
-// saturated during actions and no caster-side work can ever be visible.
-// Mode 1: draw the blocker through our own injection path (drawGeometry).
-// Mode 2: hijack ONE healthy caster cb write per frame and turn the ENGINE's
-// own draw into the blocker — bisects "injection path broken" (mode 2 lands
-// depth, mode 1 does not) from "matrix convention wrong" (neither lands).
-// Healed-shadow 3x3 amplification for visibility testing (default 1.0).
-float cutinHealAmp() {
-  static const float amp = [] {
-    const char* v = std::getenv("ARLAND_CUTIN_HEAL_AMP");
-    return v ? float(std::atof(v)) : 1.0f;
-  }();
-  return amp;
-}
-
-// §33n injection bisect INSIDE a live caster draw: 1 = double-draw the
-// engine's own draw verbatim (baseline; must be harmless), 2 = double-draw
-// with OUR cb0 bound (blob matrix; tests the cb write+bind in isolation),
-// 3 = double-draw with RECORDED geometry+IL+VS under the engine's cb (tests
-// geometry binding in isolation).
-int cutinInjTestMode() {
-  static const int mode = [] {
-    const char* v = std::getenv("ARLAND_CUTIN_INJTEST");
-    return v ? std::atoi(v) : 0;
-  }();
-  return mode;
-}
-std::atomic<uint32_t> g_injTestThisFrame{0};
-std::atomic<uint32_t> g_injTestLogs{0};
-
-int cutinBlockerMode() {
-  static const int mode = [] {
-    const char* v = std::getenv("ARLAND_CUTIN_BLOCKER");
-    return v ? std::atoi(v) : 0;
-  }();
-  return mode;
-}
-
-bool cutinBlockerEnabled() {
-  return cutinBlockerMode() == 1;
-}
-
-std::atomic<uint32_t> g_blockerHijacks{0};   // per-frame budget, reset at Present
-
-inline int kRot9(int k) {
-  static const int idx[9] = {0, 1, 2, 4, 5, 6, 8, 9, 10};
-  return idx[k];
-}
-
-// Character-scale healthy 3x3, cached at CHARACTER caster draws (count>=300
-// guarantees character geometry — the ring cb's write-side cache could hold a
-// tiny prop/effect scale, §33h: healed shadows were real but microscopic).
-struct CharRot { float rot[9] = {}; uint64_t frame = 0; bool valid = false; };
-CharRot g_charRot;                            // guarded by g_pipeMutex
-
-// §33k: live color-pass Model matrix per vertex buffer, captured at character
-// color draws whose VB also cast this frame — INCLUDING the cut-in attacker
-// (its color mesh shares the caster VB, which is why the old decoupled-mesh
-// filter always excluded it). Healing pairs a degenerate caster write with
-// the geometry bound at that moment and rebuilds S = L x W_color: live
-// attacker transform, correct scale and position, no caches.
-struct ColorW { float W[16]; uint64_t frame; };
-std::map<uintptr_t, ColorW> g_colorW;         // guarded by g_pipeMutex
-std::atomic<uint32_t> g_blocker2Logs{0};
-
-bool cutinShadowFixEnabled() {
-  static const bool enabled = [] {
-    const char* v = std::getenv("ARLAND_BATTLE_CUTIN_SHADOW");
-    return v && v[0] != '0';
-  }();
-  return enabled;
-}
 
 // 4x4 helpers on flat row-major float[16] (flat[r*4+c]).
 void mtxMul(const float* a, const float* b, float* out) {
@@ -1639,13 +399,6 @@ float mtxDet3(const float* m) {
          m[2] * (m[4] * m[9] - m[5] * m[8]);
 }
 
-float mtxMaxDiff(const float* a, const float* b) {
-  float err = 0.0f;
-  for (int i = 0; i < 16; ++i)
-    err = std::max(err, std::fabs(a[i] - b[i]));
-  return err;
-}
-
 // Latest captured contents of the draw's VS cb0 (via the Map/Unmap snapshots).
 bool readCb0Snap(ID3D11DeviceContext* ctx, uint32_t* size, uint8_t out[kCbSnapBytes]) {
   ID3D11Buffer* cb = nullptr;
@@ -1666,880 +419,9 @@ bool readCb0Snap(ID3D11DeviceContext* ctx, uint32_t* size, uint8_t out[kCbSnapBy
   return ok;
 }
 
-// Model matrix location inside the known color materials (RDEF-confirmed):
-// the character skin material's 26048-byte $Globals holds Model at byte 32;
-// the edge/outline material's 256-byte $Globals at byte 64; the two field
-// materials (768- and 880-byte $Globals) at byte 0.
-bool extractModel(uint32_t cbSize, const uint8_t* data, float outW[16]) {
-  size_t offset;
-  if (cbSize == 26048)
-    offset = 32;
-  else if (cbSize == 256)
-    offset = 64;
-  else if (cbSize == 768 || cbSize == 880)
-    offset = 0;
-  else
-    return false;
-  std::memcpy(outW, data + offset, 64);
-  return true;
-}
-
-struct ShadowPipe {
-  ID3D11DepthStencilView* dsv = nullptr;
-  ID3D11VertexShader* vs = nullptr;
-  ID3D11PixelShader* ps = nullptr;
-  ID3D11InputLayout* il = nullptr;
-  ID3D11RasterizerState* rs = nullptr;
-  ID3D11DepthStencilState* dss = nullptr;
-  UINT stencilRef = 0;
-  D3D11_VIEWPORT vp = {};
-  bool valid = false;
-};
-mutex g_pipeMutex;
-ShadowPipe g_shadowPipe;
-std::set<uintptr_t> g_frameShadowVBs;   // VBs already cast this frame
-std::atomic<uint64_t> g_reissueTotal{0};
-std::atomic<uint64_t> g_reconFrame{0};  // frame id (incremented at Present)
-
-// Per-VB shadow matrix captured this frame, and the light-VP derived from a
-// reference caster drawn in both passes. The light-VP drifts over time (the
-// shadow bounds appear to re-center), so it is re-derived every frame a valid
-// pair exists and its age is logged at re-issue.
-struct CasterShadow {
-  float S[16];
-  float diffuse[4];
-  uint64_t frame = 0;
-};
-std::map<uintptr_t, CasterShadow> g_casterShadow;  // guarded by g_shadowTraceMutex
-struct LightState {
-  float L[16];
-  float diffuse[4] = {1.0f, 1.0f, 1.0f, 1.0f};
-  uint64_t frame = 0;
-  bool valid = false;
-};
-LightState g_light;                                // guarded by g_pipeMutex
-ID3D11Buffer* g_injectCb = nullptr;                // guarded by g_pipeMutex
-ID3D11Buffer* g_injectCbV2 = nullptr;              // §41: 26048-byte skin cb clone
-std::atomic<uint64_t> g_lvpDerives{0};
-std::atomic<uint64_t> g_lvpChecks{0};
-std::atomic<uint64_t> g_injectLogs{0};
-std::atomic<uint64_t> g_queueLogs{0};
-std::atomic<uint64_t> g_rearmLogs{0};
-
-// A decoupled mesh recorded at its color draw, to be drawn into the NEXT
-// frame's shadow pass. Injecting during the color pass is useless: the ground
-// receiver draws that sample the shadow map have already executed by the time
-// the character is drawn, so a same-frame late depth write is never read.
-// One frame of shadow latency instead. Holds refs on vb/ib.
-struct PendingInject {
-  ID3D11Buffer* vb[4] = {};            // all leading streams, not just 0 —
-  UINT stride[4] = {}, offset[4] = {}; // positions/UVs may be split
-  ID3D11Buffer* ib = nullptr;
-  DXGI_FORMAT ibFormat = DXGI_FORMAT_UNKNOWN;
-  UINT ibOffset = 0;
-  D3D11_PRIMITIVE_TOPOLOGY topology = D3D11_PRIMITIVE_TOPOLOGY_UNDEFINED;
-  bool indexed = false;
-  UINT count = 0, startIndex = 0;
-  INT baseVertex = 0;
-  uintptr_t vbKey = 0;
-  uint32_t cb0Size = 0;   // which color material the geometry came from
-  float W[16];
-  // §41 V2: the color draw's own input layout + vertex shader (AddRef'd) —
-  // the only pipeline that interprets this VB's vertex format correctly.
-  ID3D11InputLayout* il = nullptr;
-  ID3D11VertexShader* vs = nullptr;
-};
-std::vector<PendingInject> g_injectReady;  // consumed in this frame's shadow pass
-std::vector<PendingInject> g_injectNext;   // recorded during this frame's color pass
-// §43: the frame renders MULTIPLE distinct 1024x1024 shadow maps (SelectCommand
-// readback showed two live depth populations), and the cut-in ground samples
-// one that a single-shot per-frame injection never reached (FLATZ proved the
-// caster present in the readback map while the ground stayed shadowless). So
-// instead of a single "injected this frame" bool, track WHICH shadow-map DSV
-// textures have already received this frame's injection and piggyback every
-// distinct shadow-map pass. Pointers are identity keys only (never
-// dereferenced); cleared at Present, entry erased when that map is cleared
-// mid-frame (re-arm into the new generation).
-std::set<void*> g_injectedDsvTextures;     // all three guarded by g_pipeMutex
-
-void releasePendingRefs(PendingInject& e) {
-  for (auto* b : e.vb) if (b) b->Release();
-  if (e.ib) e.ib->Release();
-  if (e.il) e.il->Release();
-  if (e.vs) e.vs->Release();
-  e.il = nullptr;
-  e.vs = nullptr;
-}
-
-void releasePendingList(std::vector<PendingInject>& list) {
-  for (auto& e : list)
-    releasePendingRefs(e);
-  list.clear();
-}
-
-// Verbatim-replay probe (ARLAND_CUTIN_REPLAY=1): remember real character-caster
-// shadow draws (geometry, input layout, exact 80-byte params) while their
-// matrices are non-degenerate, and re-draw them every frame. While the engine
-// draws them too this is a harmless identical overdraw; when the engine hides
-// the model (close-up scales it to ~0) the replay keeps the last good caster
-// alive. A byte-identical replay of draws that previously produced shadows —
-// if even this shows nothing during the close-up, the receiver side is the
-// problem, not our casters.
-bool cutinReplayEnabled() {
-  static const bool enabled = [] {
-    const char* v = std::getenv("ARLAND_CUTIN_REPLAY");
-    return v && v[0] != '0';
-  }();
-  return enabled;
-}
-
-// §25 fix: render the injected caster with the RECEIVER's own projection
-// (PSSGLightModelViewProjTex @752, unbiased to clip via M_b^-1) instead of the
-// caster-derived light-VP, so the silhouette lands where the receiver samples.
-// injUV != recvUV proved the two diverge during the cut-in.
-bool cutinInjectRecvEnabled() {
-  static const bool enabled = [] {
-    const char* v = std::getenv("ARLAND_CUTIN_INJECT_RECV");
-    return v && v[0] != '0';
-  }();
-  return enabled;
-}
-
-// World->shadow-UV matrix from the real ground receiver, this/last frame.
-// Best (= largest element count) qualifying draw wins each frame so a small
-// prop's receiver matrix cannot displace the arena ground's.
-float g_texWorld[16] = {};
-std::atomic<bool> g_texWorldValid{false};
-std::mutex g_texWorldMutex;
-uint64_t g_texWorldFrame = 0;    // frame of current best capture (mutex)
-UINT g_texWorldBestCount = 0;    // element count of that capture (mutex)
-
-struct ReplayDraw {
-  PendingInject geo;
-  ID3D11InputLayout* il = nullptr;
-  ID3D11VertexShader* vs = nullptr;   // §33m: IL must be bound WITH its VS
-  uint8_t params[80] = {};
-  uint64_t frame = 0;
-};
-std::map<std::tuple<uintptr_t, UINT, INT>, ReplayDraw> g_replayDraws;  // g_pipeMutex
-// §33s: color-mesh VB -> shadow-proxy recording key. Characters cast with
-// SEPARATE low-poly proxy meshes (different VB + input layout), so vbKey
-// matching never links the cut-in color mesh to its proxy. Pair them by
-// world position while both are healthy in the overview, then reuse the
-// pairing during the action when the color mesh moves to the mini-stage.
-std::map<uintptr_t, std::tuple<uintptr_t, UINT, INT>> g_colorToProxy;  // g_pipeMutex
-
-void releaseReplayDraw(ReplayDraw& r) {
-  releasePendingRefs(r.geo);
-  if (r.il) r.il->Release();
-  r.il = nullptr;
-  if (r.vs) r.vs->Release();
-  r.vs = nullptr;
-}
-
-// Geometry-injection draws (the §30e–§30i approach) are opt-in now that
-// matrix healing exists; they only ever carried outline geometry anyway.
-bool cutinInjectDrawsEnabled() {
-  static const bool enabled = [] {
-    const char* v = std::getenv("ARLAND_CUTIN_INJECT_DRAWS");
-    return v && v[0] != '0';
-  }();
-  return enabled;
-}
-
-// Matrix healing: the engine hides the close-up character's tactical model by
-// ZERO-SCALING it (§30d), so its caster still draws each frame and writes an
-// 80-byte shadow params buffer whose matrix is S = L x W0 — collapsed 3x3,
-// INTACT translation. Rewrite such writes in place, before the real Unmap,
-// with S' = L x W_closeup (the close-up character's Model recorded at its
-// color draws last frame), pairing hidden caster to close-up character by
-// nearest light-space translation. The engine then renders its own caster
-// geometry/pose/pipeline with a healthy matrix — nothing is injected at all.
-std::atomic<uint64_t> g_healLogs{0};
-std::atomic<uint64_t> g_healTotal{0};
-
-// Rotation/scale block of the most recent HEALTHY write PER CONSTANT BUFFER.
-// Each caster's params live in its own cb object, so healing a degenerate
-// write with the SAME resource's last healthy 3x3 pairs the hidden caster with
-// itself — correct scale and facing by construction, no distance heuristics
-// (§30k's nearest-pairing grabbed scenery transforms and smeared the map).
-struct HealthyRot { float rot[9]; uint64_t frame; };
-std::map<ID3D11Resource*, HealthyRot> g_healthyByCb;  // guarded by g_pipeMutex
-// §32e heal-flow accounting: which cbs were healed this frame, and whether a
-// character-caster shadow DRAW consumed a healed cb (if draws never consume
-// them, the engine skips draw emission for hidden casters and constant healing
-// can never work — injection with the healed matrix would be required).
-std::map<ID3D11Resource*, uint64_t> g_healedCbs;      // guarded by g_pipeMutex
-std::atomic<uint32_t> g_healsThisFrame{0};
-std::atomic<uint32_t> g_healedDrawsThisFrame{0};
-
-// §32f freeze-clone: the engine hides a caster by zero-scaling its PRE-POSED
-// vertex stream as well as its matrix, so a healed matrix still rasterizes
-// nothing. We keep our own copy of each character-caster's stream-0 vertex
-// buffer, refreshed while the caster is healthy, and at a healed (hidden)
-// caster draw we emit ONE extra draw with the frozen clone bound — the last
-// healthy pose, translated by the healed (animating) matrix.
-struct VbClone { ID3D11Buffer* clone[4] = {}; uint64_t refreshed = 0; };
-std::map<uintptr_t, VbClone> g_vbClones;              // guarded by g_pipeMutex
-struct HealedSlice { std::array<uint8_t, 80> bytes; uintptr_t vbKey; };
-std::vector<HealedSlice> g_healedSlices;      // guarded by g_pipeMutex
-std::atomic<uint32_t> g_pairOk{0}, g_pairMismatch{0};
-std::atomic<uint32_t> g_cloneDraws{0};
-std::atomic<uint32_t> g_cloneDrawLogs{0};
-
-void healShadowCbWrite(ID3D11DeviceContext* ctx, ID3D11Resource* resource,
-                       const void* data, uint32_t size) {
-  if (size != 80 || !cutinShadowFixEnabled())
-    return;
-  float* f = reinterpret_cast<float*>(const_cast<void*>(data));
-  float* m = f + 4;
-  // Shadow params hold an affine matrix (bottom flat row 0,0,0,1).
-  if (std::fabs(m[12]) > 1e-6f || std::fabs(m[13]) > 1e-6f ||
-      std::fabs(m[14]) > 1e-6f || std::fabs(m[15] - 1.0f) > 1e-4f)
-    return;
-  static const int kRot[9] = {0, 1, 2, 4, 5, 6, 8, 9, 10};
-  float scale = 0.0f;
-  for (int i : kRot)
-    scale = std::max(scale, std::fabs(m[i]));
-  const uint64_t frame = g_reconFrame.load(std::memory_order_relaxed);
-  if (scale > 1e-5f) {            // healthy caster: remember its 3x3, leave it
-    // §33f/§33g blocker mode 2: rewrite the first 8 healthy writes per frame
-    // into huge map-centered near-depth blobs — the ENGINE's own draws become
-    // the blocker (validated: the §33g "rectangle"; viewport remaps NDC z 0.3
-    // to map depth 0.65).
-    if (cutinBlockerMode() == 2 &&
-        g_blockerHijacks.fetch_add(1, std::memory_order_relaxed) < 8) {
-      for (int c = 0; c < 3; ++c) {
-        m[0 + c] *= 60.0f;         // row 0 (x), amplified
-        m[4 + c] *= 60.0f;         // row 1 (y), amplified
-      }
-      m[3] = 0.0f;                 // centered in the map
-      m[7] = 0.0f;
-      m[8] = 0; m[9] = 0; m[10] = 0; m[11] = 0.3f;   // constant NDC near depth
-      if (g_blocker2Logs.fetch_add(1, std::memory_order_relaxed) % 60 == 0)
-        log("CUTIN_BLOCKER2 hijacked healthy caster write");
-      return;
-    }
-    std::lock_guard lock(g_pipeMutex);
-    HealthyRot& h = g_healthyByCb[resource];
-    for (int k = 0; k < 9; ++k)
-      h.rot[k] = m[kRot[k]];
-    h.frame = frame;
-    return;
-  }
-  // Degenerate = hidden model. The engine keeps ANIMATING the hidden caster
-  // (its translation tracks the attack cinematic), so KEEP the written
-  // translation and rebuild only the collapsed 3x3. Only during cinematic
-  // battle states — a despawned object elsewhere must not grow a ghost shadow.
-  if (!arlandInCinematicBattle())
-    return;
-  const float t[3] = {m[3], m[7], m[11]};
-  (void)t;
-  if (cutinBlockerMode() == 3 &&
-      g_blockerHijacks.fetch_add(1, std::memory_order_relaxed) < 8) {
-    // §33g mode 3: give the engine's own HIDDEN-caster draw a huge valid
-    // matrix. A rectangle during WaitAction proves the hidden caster's
-    // vertices are alive and its draw emits — i.e. plain healing suffices
-    // and only the healed shadow's size/placement was below notice.
-    std::lock_guard lock(g_pipeMutex);
-    auto hb = g_healthyByCb.find(resource);
-    if (hb != g_healthyByCb.end()) {
-      static const int kR[9] = {0, 1, 2, 4, 5, 6, 8, 9, 10};
-      for (int k = 0; k < 6; ++k)
-        m[kR[k]] = hb->second.rot[k] * 60.0f;
-      m[3] = 0.0f;
-      m[7] = 0.0f;
-      m[8] = 0; m[9] = 0; m[10] = 0; m[11] = 0.3f;
-      if (g_blocker2Logs.fetch_add(1, std::memory_order_relaxed) % 60 == 0)
-        log("CUTIN_BLOCKER3 hijacked DEGENERATE caster write");
-      return;
-    }
-  }
-  // §37 corrected heal. The degenerate write ALREADY carries a current-frame,
-  // receiver-aligned translation: the engine keeps recomputing S = L_cur x W
-  // and only zeroes the 3x3, so m[3],m[7],m[11] animate with the lunge and sit
-  // exactly where the receiver samples this frame. Rebuild ONLY the 3x3 from
-  // THIS frame's light matrix at the uniform Arland character scale (0.01),
-  // keeping the engine's translation. Position + scale + light-matrix are then
-  // all current-frame -> aligned with the receiver by construction. (Earlier
-  // heals used a CACHED 3x3 = a STALE light matrix, which misaligned; §37.)
-  // Optional exact rotation from a same-frame color Model of the same vb (only
-  // when the proxy shares the color VB); otherwise 0.01 x L_3x3 is a correct-
-  // SIZED ground blob — rotation is invisible at 0.01 scale.
-  ID3D11Buffer* vb0 = nullptr;
-  UINT st0 = 0, so0 = 0;
-  ctx->IAGetVertexBuffers(0, 1, &vb0, &st0, &so0);
-  const uintptr_t vbKey = reinterpret_cast<uintptr_t>(vb0);
-  if (vb0)
-    vb0->Release();
-
-  static const int kR[9] = {0, 1, 2, 4, 5, 6, 8, 9, 10};
-  const float amp = cutinHealAmp();       // 1 = real size; >1 for visibility A/B
-  float rot3[9];
-  bool haveExact = false;
-  {
-    std::lock_guard lock(g_pipeMutex);
-    if (!g_light.valid || frame - g_light.frame > 2) {
-      static std::atomic<uint32_t> nolight{0};
-      if (nolight.fetch_add(1, std::memory_order_relaxed) % 600 == 0)
-        log("CUTIN_HEALSKIP reason=no_current_light frame=", frame,
-            " light_frame=", g_light.frame);
-      return;                              // no aligned light this frame
-    }
-    // Exact: if a same-frame color Model exists for this vb, S = L x W_color.
-    auto it = vbKey ? g_colorW.find(vbKey) : g_colorW.end();
-    if (it != g_colorW.end() && frame - it->second.frame <= 2) {
-      float S[16];
-      mtxMul(g_light.L, it->second.W, S);
-      for (int k = 0; k < 9; ++k) rot3[k] = S[kR[k]];
-      haveExact = true;
-    } else {
-      // Reliable: 3x3 = 0.01 x L_3x3 (character-scale blob, current-frame L).
-      for (int k = 0; k < 9; ++k) rot3[k] = g_light.L[kR[k]] * 0.01f;
-    }
-  }
-  for (int k = 0; k < 9; ++k)
-    m[kR[k]] = rot3[k] * amp;
-  m[11] -= 0.003f;                         // §33i tiny depth bias toward light
-  {
-    std::lock_guard lock(g_pipeMutex);
-    g_healedCbs[resource] = frame;
-  }
-  g_healsThisFrame.fetch_add(1, std::memory_order_relaxed);
-  g_healTotal.fetch_add(1, std::memory_order_relaxed);
-  if (g_healLogs.fetch_add(1, std::memory_order_relaxed) % 120 == 0)
-    log("CUTIN_HEAL total=", g_healTotal.load(std::memory_order_relaxed),
-        " mode=", haveExact ? "exact" : "scale",
-        " t=", m[3], ",", m[7], ",", m[11]);
-}
-
-void releaseShadowPipe(ShadowPipe& p) {
-  if (p.dsv) p.dsv->Release();
-  if (p.vs) p.vs->Release();
-  if (p.ps) p.ps->Release();
-  if (p.il) p.il->Release();
-  if (p.rs) p.rs->Release();
-  if (p.dss) p.dss->Release();
-  p = ShadowPipe{};
-}
-
-// Capture the shadow pipeline from a depth-only draw (called before color pass).
-void captureShadowPipe(ID3D11DeviceContext* ctx) {
-  ShadowPipe p;
-  ID3D11RenderTargetView* rtv = nullptr;
-  ctx->OMGetRenderTargets(1, &rtv, &p.dsv);
-  if (rtv) { rtv->Release(); if (p.dsv) p.dsv->Release(); return; }  // not shadow
-  if (!p.dsv)
-    return;
-  ctx->VSGetShader(&p.vs, nullptr, nullptr);
-  ctx->PSGetShader(&p.ps, nullptr, nullptr);
-  ctx->IAGetInputLayout(&p.il);
-  ctx->RSGetState(&p.rs);
-  ctx->OMGetDepthStencilState(&p.dss, &p.stencilRef);
-  UINT n = 1;
-  ctx->RSGetViewports(&n, &p.vp);
-  p.valid = p.vs != nullptr;
-  std::lock_guard lock(g_pipeMutex);
-  releaseShadowPipe(g_shadowPipe);
-  g_shadowPipe = p;
-}
-
-// Draw last frame's decoupled meshes into the CURRENT shadow pass. Called from
-// the draw hook of a REAL character-caster shadow draw, before that draw is
-// forwarded — so the depth target, viewport, VS, IL, PS, rasterizer and
-// depth-stencil state are all a live character caster's own (§30f showed that
-// inheriting the pass's FIRST draw instead risks piggybacking a prologue draw
-// whose state silently no-ops our depth writes). Only the mesh geometry and
-// our params cbuffer are swapped in and restored. Runs once per frame (or once
-// per shadow-map clear generation).
-void injectPendingShadows(ID3D11DeviceContext* ctx) {
-  // Holds g_pipeMutex throughout: the pending list stays owned by
-  // g_injectReady (released at Present, so a mid-frame shadow-map clear can
-  // re-arm and the batch is re-drawn into the last cleared generation).
-  std::lock_guard lock(g_pipeMutex);
-  const bool doInject = cutinInjectDrawsEnabled() && !g_injectReady.empty() &&
-                        g_light.valid;
-  const bool doReplay = cutinReplayEnabled() && !g_replayDraws.empty();
-  // Retarget: for each visible-not-casting mesh, redraw ITS OWN recorded
-  // caster geometry (matched exactly by vertex-buffer key — the decoup VB is
-  // that character's caster VB, that is how it passed the everCast filter) at
-  // the close-up/cinematic transform. Covers the SelectCommand mini-stage,
-  // where the real caster keeps casting at the arena spot the camera no
-  // longer looks at.
-  const bool doRetarget = cutinRetargetEnabled() &&
-      !g_injectReady.empty() && g_light.valid &&
-                          !g_replayDraws.empty();
-  const bool doBlocker = cutinBlockerEnabled() && !g_replayDraws.empty();
-  // §41 V2: re-draw the queued color meshes with their OWN skin pipeline and
-  // the receiver-derived world->clip projection. Independent of g_light.
-  const bool v2Active = cutinInjectV2Enabled() && !g_injectReady.empty();
-  const bool doInjectV2 =
-      v2Active && g_texWorldValid.load(std::memory_order_relaxed);
-  if (!doInject && !doReplay && !doRetarget && !doBlocker && !v2Active)
-    return;
-  // §43: one injection per DISTINCT shadow-map DSV texture per frame. The
-  // caller guarantees the bound DSV is a 1024x1024 shadow map; resolve its
-  // texture and skip only if THIS map already got the batch, so every live
-  // shadow map — including whichever one the cut-in ground actually samples —
-  // receives the injected caster.
-  void* dsvTexKey = nullptr;
-  {
-    ID3D11RenderTargetView* rtv0 = nullptr;
-    ID3D11DepthStencilView* dsv0 = nullptr;
-    ctx->OMGetRenderTargets(1, &rtv0, &dsv0);
-    if (rtv0)
-      rtv0->Release();
-    if (dsv0) {
-      ID3D11Resource* res0 = nullptr;
-      dsv0->GetResource(&res0);
-      if (res0) {
-        dsvTexKey = res0;          // identity only, never dereferenced
-        res0->Release();
-      }
-      dsv0->Release();
-    }
-  }
-  if (!g_injectedDsvTextures.insert(dsvTexKey).second)
-    return;                        // this map already injected this frame
-  // §43 routing diagnostic: which map are we injecting INTO, vs the map the
-  // readback watches (recvMapTex) — compare against GROUND_MAP groundSrvTex.
-  if (v2Active) {
-    static std::mutex injMapMutex;
-    static std::map<void*, uint64_t> injMapTick;
-    const uint64_t tick = GetTickCount64();
-    bool doLog = false;
-    {
-      std::lock_guard<std::mutex> l(injMapMutex);
-      auto& t = injMapTick[dsvTexKey];
-      if (tick - t > 500 || t == 0) { t = tick; doLog = true; }
-    }
-    if (doLog)
-      log("INJECT_MAP dsvTex=", dsvTexKey,
-          " recvMapTex=", g_recvMapTexPtr.load(std::memory_order_relaxed));
-  }
-  const LightState& light = g_light;
-  // §25: choose the projection the caster is rendered with. Default is the
-  // caster-derived light-VP (light.L). With ARLAND_CUTIN_INJECT_RECV, use the
-  // RECEIVER's own matrix instead (M_b^-1 x PSSGLightModelViewProjTex) so the
-  // silhouette lands exactly where the receiver samples (injUV==recvUV).
-  float Lrecv[16];
-  const bool useRecv =
-    cutinInjectRecvEnabled() && g_recvTexValid.load(std::memory_order_relaxed);
-  if (useRecv) {
-    // Unbias UV->NDC on xy (rows 0,1) AND pre-compensate the shadow viewport's
-    // [0.5,1.0] depth remap on z (row2 = [0,0,2,-1]): Tex.z is already in
-    // [0.5,1.0], so ndc_z = 2*Tex.z-1 makes viewport(ndc_z)=Tex.z, matching the
-    // receiver's compare space exactly. Without this the depth is remapped twice.
-    static const float Binv[16] = {2, 0, 0, -1,  0, -2, 0, 1,
-                                   0, 0, 2, -1,  0,  0, 0, 1};
-    float T[16];
-    { std::lock_guard<std::mutex> lock(g_recvTexMutex); std::memcpy(T, g_recvTex, 64); }
-    mtxMul(Binv, T, Lrecv);
-  }
-  const float* const Linj = useRecv ? Lrecv : light.L;
-  const uint64_t frame = g_reconFrame.load(std::memory_order_relaxed);
-  if (!g_injectCb) {
-    ID3D11Device* dev = nullptr;
-    ctx->GetDevice(&dev);
-    if (dev) {
-      D3D11_BUFFER_DESC desc = {};
-      // 96 (not 80) bytes: the extra 16 keep healShadowCbWrite from matching
-      // our own buffer, which lets the write go through the HOOKED Map/Unmap
-      // like every engine write (§33l: the unhooked deferred-context Map is
-      // the prime suspect for the zero-fragment injection bug).
-      desc.ByteWidth = 96;
-      desc.Usage = D3D11_USAGE_DYNAMIC;
-      desc.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
-      desc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
-      dev->CreateBuffer(&desc, nullptr, &g_injectCb);
-      dev->Release();
-    }
-  }
-  ID3D11Buffer* inject = g_injectCb;
-  if (!inject)
-    return;
-
-  // Save only what we swap: geometry bindings and cb0. Shaders and all
-  // output/raster state stay the piggybacked character draw's.
-  ID3D11Buffer* savedVb[4] = {};
-  UINT savedStride[4] = {}, savedOffset[4] = {};
-  ctx->IAGetVertexBuffers(0, 4, savedVb, savedStride, savedOffset);
-  ID3D11Buffer* savedIb = nullptr;
-  DXGI_FORMAT savedIbFmt = DXGI_FORMAT_UNKNOWN;
-  UINT savedIbOff = 0;
-  ctx->IAGetIndexBuffer(&savedIb, &savedIbFmt, &savedIbOff);
-  D3D11_PRIMITIVE_TOPOLOGY savedTopo = D3D11_PRIMITIVE_TOPOLOGY_UNDEFINED;
-  ctx->IAGetPrimitiveTopology(&savedTopo);
-  ID3D11Buffer* savedCb0 = nullptr;
-  ctx->VSGetConstantBuffers(0, 1, &savedCb0);
-  if (cutinMapTraceEnabled()) {
-    ID3D11RenderTargetView* mrtv = nullptr;
-    ID3D11DepthStencilView* mdsv = nullptr;
-    ctx->OMGetRenderTargets(1, &mrtv, &mdsv);
-    if (mdsv) {
-      ID3D11Resource* mres = nullptr;
-      mdsv->GetResource(&mres);
-      if (mres) {
-        recordMapEvent('I', mres, "shadow_map", ctx);
-        mres->Release();
-      }
-      mdsv->Release();
-    }
-    if (mrtv)
-      mrtv->Release();
-  }
-
-  const auto drawGeometry = [&](const PendingInject& geo,
-                                const float params[20]) -> bool {
-    // §33l: write through the HOOKED Map/Unmap so our buffer takes exactly
-    // the same path as engine writes (safe now: 96-byte buffer never matches
-    // the healer's 80-byte filter, so no §30k re-lock).
-    D3D11_MAPPED_SUBRESOURCE mapped = {};
-    if (FAILED(ctx->Map(inject, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped)))
-      return false;
-    std::memcpy(mapped.pData, params, 80);
-    std::memset(static_cast<uint8_t*>(mapped.pData) + 80, 0, 16);
-    ctx->Unmap(inject, 0);
-    ctx->IASetVertexBuffers(0, 4, const_cast<ID3D11Buffer* const*>(geo.vb),
-                            geo.stride, geo.offset);
-    if (geo.indexed)
-      ctx->IASetIndexBuffer(geo.ib, geo.ibFormat, geo.ibOffset);
-    ctx->IASetPrimitiveTopology(geo.topology);
-    ctx->VSSetConstantBuffers(0, 1, &inject);
-    if (geo.indexed)
-      getContextProcs(ctx)->DrawIndexed(ctx, geo.count, geo.startIndex,
-                                        geo.baseVertex);
-    else
-      getContextProcs(ctx)->Draw(ctx, geo.count, geo.startIndex);
-    return true;
-  };
-
-  int drawn = 0;
-  float firstS[4] = {};
-  float firstWt[3] = {};
-  uint32_t firstCb0 = 0;
-  // §27 debug: force the injected caster to the NEAREST shadow depth (clip.z=0 ->
-  // stored 0.5, below any ground depth 0.5-1.0) so it MUST occlude if the ground
-  // reads our injection. A character-shaped dark patch => pipeline works, only
-  // depth/placement precision was off. Nothing => the ground isn't reading our
-  // injected content (clear/generation issue). Gate: ARLAND_CUTIN_INJECT_FLATZ.
-  static const bool flatZ = [] {
-    const char* v = std::getenv("ARLAND_CUTIN_INJECT_FLATZ");
-    return v && v[0] != '0';
-  }();
-  if (doInject) {
-    for (auto& e : g_injectReady) {
-      float params[20];
-      std::memcpy(params, light.diffuse, 16);
-      mtxMul(Linj, e.W, params + 4);      // S = Linj x W (recv or caster proj)
-      if (flatZ) {                         // zero the z-row -> clip.z = 0 everywhere
-        params[4 + 8] = params[4 + 9] = params[4 + 10] = params[4 + 11] = 0.0f;
-      }
-      if (!drawn) {
-        firstS[0] = params[4 + 3];       // injected origin clip x,y,z,w = column 3
-        firstS[1] = params[4 + 7];
-        firstS[2] = params[4 + 11];
-        firstS[3] = params[4 + 15];
-        firstWt[0] = e.W[3]; firstWt[1] = e.W[7]; firstWt[2] = e.W[11];
-        firstCb0 = e.cb0Size;
-      }
-      if (!drawGeometry(e, params))
-        break;
-      ++drawn;
-    }
-  }
-
-  int replayed = 0;
-  int retargeted = 0;
-  int blocked = 0;
-  ID3D11InputLayout* savedIl = nullptr;
-  ID3D11VertexShader* savedVs = nullptr;
-  if (doReplay || doRetarget || doBlocker || doInjectV2) {
-    ctx->IAGetInputLayout(&savedIl);
-    ctx->VSGetShader(&savedVs, nullptr, nullptr);
-  }
-
-  // §41 V2 injection: for each queued skin mesh, draw its recorded geometry
-  // through its OWN recorded IL/VS (correct vertex format -> real fragments)
-  // with a cloned 26048-byte skin cbuffer whose MVP slot (bytes 160..223,
-  // cb0[10..13] = the skin VS's SV_Position matrix) holds
-  // S = Binv2 x TexWorld x W: world->shadow-clip through the matrix the
-  // ground receiver actually samples with. OM/rasterizer/PS stay the
-  // piggybacked live caster draw's (depth-only shadow pass).
-  int drawnV2 = 0;
-  float v2Wt[3] = {};
-  float v2ClipZ = 0.0f, v2ClipW = 0.0f;
-  float v2TW[16] = {};
-  const bool v2TexValid = g_texWorldValid.load(std::memory_order_relaxed);
-  if (v2TexValid) {
-    std::lock_guard<std::mutex> l(g_texWorldMutex);
-    std::memcpy(v2TW, g_texWorld, 64);
-  }
-  if (doInjectV2) {
-    if (!g_injectCbV2) {
-      ID3D11Device* dev = nullptr;
-      ctx->GetDevice(&dev);
-      if (dev) {
-        D3D11_BUFFER_DESC desc = {};
-        desc.ByteWidth = 26048;   // full skin-material $Globals
-        desc.Usage = D3D11_USAGE_DYNAMIC;
-        desc.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
-        desc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
-        dev->CreateBuffer(&desc, nullptr, &g_injectCbV2);
-        dev->Release();
-      }
-    }
-    if (g_injectCbV2) {
-      // Same unbias constant as the INJECT_RECV path: UV->NDC on xy plus the
-      // [0.5,1] shadow-viewport depth pre-compensation on z.
-      static const float kBinv2[16] = {2, 0, 0, -1,  0, -2, 0, 1,
-                                       0, 0, 2, -1,  0,  0, 0, 1};
-      float Lworld[16];
-      mtxMul(kBinv2, v2TW, Lworld);
-      for (auto& e : g_injectReady) {
-        if (!e.il || !e.vs)
-          continue;               // recorded before V2 armed, or capture failed
-        if (e.cb0Size != 26048)
-          continue;               // skin material only: MVP@160 is its layout
-        float S[16];
-        mtxMul(Lworld, e.W, S);
-        if (flatZ) {   // zero clip-z row -> stored depth 0.5 (low readback bin)
-          S[8] = S[9] = S[10] = S[11] = 0.0f;
-        }
-        D3D11_MAPPED_SUBRESOURCE mp = {};
-        if (FAILED(ctx->Map(g_injectCbV2, 0, D3D11_MAP_WRITE_DISCARD, 0, &mp)))
-          break;
-        std::memset(mp.pData, 0, 26048);
-        std::memcpy(static_cast<uint8_t*>(mp.pData) + 160, S, 64);
-        ctx->Unmap(g_injectCbV2, 0);
-        ctx->IASetInputLayout(e.il);
-        ctx->VSSetShader(e.vs, nullptr, 0);
-        ctx->VSSetConstantBuffers(0, 1, &g_injectCbV2);
-        ctx->IASetVertexBuffers(0, 4, const_cast<ID3D11Buffer* const*>(e.vb),
-                                e.stride, e.offset);
-        if (e.indexed)
-          ctx->IASetIndexBuffer(e.ib, e.ibFormat, e.ibOffset);
-        ctx->IASetPrimitiveTopology(e.topology);
-        if (e.indexed)
-          getContextProcs(ctx)->DrawIndexed(ctx, e.count, e.startIndex,
-                                            e.baseVertex);
-        else
-          getContextProcs(ctx)->Draw(ctx, e.count, e.startIndex);
-        if (!drawnV2) {
-          v2Wt[0] = e.W[3]; v2Wt[1] = e.W[7]; v2Wt[2] = e.W[11];
-          v2ClipZ = S[11]; v2ClipW = S[15];
-        }
-        ++drawnV2;
-      }
-    }
-  }
-  if (v2Active) {
-    // Throttled ~2/s validation: is the character's world spot inside the
-    // receiver's sampled UV window (in-map ~0.3..0.8), and at what depth?
-    static std::atomic<uint64_t> v2LogTick{0};
-    const uint64_t nowTick = GetTickCount64();
-    uint64_t prevTick = v2LogTick.load(std::memory_order_relaxed);
-    if (nowTick - prevTick >= 500 &&
-        v2LogTick.compare_exchange_strong(prevTick, nowTick)) {
-      if (!drawnV2 && !g_injectReady.empty()) {
-        const PendingInject& e = g_injectReady.front();
-        v2Wt[0] = e.W[3]; v2Wt[1] = e.W[7]; v2Wt[2] = e.W[11];
-      }
-      float ru = -1.0f, rv = -1.0f;
-      if (v2TexValid) {
-        const float p[4] = {v2Wt[0], v2Wt[1], v2Wt[2], 1.0f};
-        float c[4];
-        for (int i = 0; i < 4; ++i)
-          c[i] = v2TW[i * 4 + 0] * p[0] + v2TW[i * 4 + 1] * p[1] +
-                 v2TW[i * 4 + 2] * p[2] + v2TW[i * 4 + 3] * p[3];
-        if (c[3] != 0.0f) { ru = c[0] / c[3]; rv = c[1] / c[3]; }
-      }
-      log("CUTIN_V2 texValid=", v2TexValid ? 1 : 0,
-          " Wt=", v2Wt[0], ",", v2Wt[1], ",", v2Wt[2],
-          " recvUV=", ru, ",", rv,
-          " injClipZ=", v2ClipW != 0.0f ? v2ClipZ / v2ClipW : 0.0f,
-          " drew=", drawnV2);
-    }
-  }
-  // Verbatim replays: byte-identical re-draws of recorded caster draws. While
-  // the engine still draws them this is invisible overdraw; when it hides the
-  // model, the replay keeps the last good shadow alive.
-  if (doReplay) {
-    for (auto& [key, r] : g_replayDraws) {
-      float params[20];
-      std::memcpy(params, r.params, 80);
-      if (r.il) ctx->IASetInputLayout(r.il);
-      if (r.vs) ctx->VSSetShader(r.vs, nullptr, 0);
-      if (!drawGeometry(r.geo, params))
-        break;
-      ++replayed;
-    }
-  }
-  if (doRetarget) {
-    for (auto& e : g_injectReady) {
-      // Light-space position of this color entry (arena spot in overview,
-      // mini-stage during the action).
-      float Se[16];
-      mtxMul(Linj, e.W, Se);
-      const float TLe[3] = {Se[3], Se[7], Se[11]};
-
-      const ReplayDraw* proxy = nullptr;
-      // 1. exact vbKey (color and proxy share a buffer for some meshes).
-      for (auto& [key, r] : g_replayDraws)
-        if (r.geo.vbKey == e.vbKey) { proxy = &r; break; }
-      // 2. pairing established earlier this battle.
-      if (!proxy) {
-        auto pit = g_colorToProxy.find(e.vbKey);
-        if (pit != g_colorToProxy.end()) {
-          auto rit = g_replayDraws.find(pit->second);
-          if (rit != g_replayDraws.end())
-            proxy = &rit->second;
-        }
-      }
-      // 3. live position pairing: a proxy recording sitting at this entry's
-      //    world spot IS this character's proxy (matches only in the overview
-      //    where color and proxy coincide; cached for the action frames).
-      if (!proxy) {
-        float best = 0.15f;
-        for (auto& [key, r] : g_replayDraws) {
-          const float* Sp = reinterpret_cast<const float*>(r.params) + 4;
-          const float d = std::max(std::max(std::fabs(Sp[3] - TLe[0]),
-                                            std::fabs(Sp[7] - TLe[1])),
-                                   std::fabs(Sp[11] - TLe[2]));
-          if (d < best) {
-            best = d;
-            proxy = &r;
-            g_colorToProxy[e.vbKey] = key;
-          }
-        }
-      }
-      if (!proxy)
-        continue;
-      float params[20];
-      std::memcpy(params, proxy->params, 16);  // recorded diffuse
-      mtxMul(Linj, e.W, params + 4);            // draw proxy at live color W
-      // §33t: optional amplification (ARLAND_CUTIN_HEAL_AMP) grows the shadow
-      // about its own world position so we can SEE where the retarget lands
-      // without changing placement — a big blob under the attacker confirms
-      // position; elsewhere means the pairing/transform is off.
-      const float ramp = cutinHealAmp();
-      if (ramp != 1.0f) {
-        const float tx = params[4 + 3], ty = params[4 + 7];
-        for (int r2 = 0; r2 < 2; ++r2)   // rows 0-1 only: grow the XY footprint
-          for (int c = 0; c < 3; ++c)
-            params[4 + r2 * 4 + c] *= ramp;
-        params[4 + 3] = tx; params[4 + 7] = ty;
-      }
-      params[4 + 11] -= 0.003f;                // §33i depth bias
-      // §33v: log where each cut-in retarget actually lands.
-      if (arlandInCinematicBattle()) {
-        static std::atomic<uint32_t> rtLogs{0};
-        if (rtLogs.fetch_add(1, std::memory_order_relaxed) % 30 == 0)
-          log("CUTIN_RETARGET_POS state=",
-              arlandBattleStateName() ? arlandBattleStateName() : "-",
-              " Wt=", e.W[3], ",", e.W[7], ",", e.W[11],
-              " St=", params[4 + 3], ",", params[4 + 7], ",", params[4 + 11],
-              " cb0=", e.cb0Size);
-      }
-      if (proxy->il) ctx->IASetInputLayout(proxy->il);
-      if (proxy->vs) ctx->VSSetShader(proxy->vs, nullptr, 0);
-      if (drawGeometry(proxy->geo, params))
-        ++retargeted;
-    }
-  }
-  if (doBlocker) {
-    const ReplayDraw* best = nullptr;
-    for (auto& [key, r] : g_replayDraws)
-      if (!best || r.geo.count > best->geo.count)
-        best = &r;
-    if (best) {
-      // Amplify the recording's own healthy S: rows 0/1 scaled, centered in
-      // the map (translation zeroed); row 2 forced to constant near depth so
-      // the blocker occludes every arena texel behind it. Three sizes so at
-      // least one covers the map regardless of the mesh's model-space extent.
-      for (float f : {20.0f, 60.0f, 180.0f}) {
-        float params[20];
-        std::memcpy(params, best->params, 16);
-        float S2[16];
-        std::memcpy(S2, reinterpret_cast<const float*>(best->params) + 4, 64);
-        for (int row = 0; row < 2; ++row) {
-          for (int c = 0; c < 3; ++c)
-            S2[row * 4 + c] *= f;
-          S2[row * 4 + 3] = 0.0f;
-        }
-        S2[8] = 0; S2[9] = 0; S2[10] = 0; S2[11] = 0.3f;
-        S2[12] = 0; S2[13] = 0; S2[14] = 0; S2[15] = 1;
-        std::memcpy(params + 4, S2, 64);
-        if (best->il)
-          ctx->IASetInputLayout(best->il);
-        if (best->vs)
-          ctx->VSSetShader(best->vs, nullptr, 0);
-        if (!drawGeometry(best->geo, params))
-          break;
-        ++blocked;
-      }
-    }
-    static std::atomic<uint32_t> blockLogs{0};
-    if (blocked && blockLogs.fetch_add(1, std::memory_order_relaxed) % 120 == 0)
-      log("CUTIN_BLOCKER drawn=", blocked,
-          " count=", best ? best->geo.count : 0);
-  }
-  if (savedIl) {
-    ctx->IASetInputLayout(savedIl);
-    savedIl->Release();
-  }
-  if (savedVs) {
-    ctx->VSSetShader(savedVs, nullptr, 0);
-    savedVs->Release();
-  }
-  g_reissueTotal.fetch_add(drawn + replayed + retargeted + blocked + drawnV2,
-                           std::memory_order_relaxed);
-
-  // Restore.
-  ctx->IASetVertexBuffers(0, 4, savedVb, savedStride, savedOffset);
-  ctx->IASetIndexBuffer(savedIb, savedIbFmt, savedIbOff);
-  ctx->IASetPrimitiveTopology(savedTopo);
-  ctx->VSSetConstantBuffers(0, 1, &savedCb0);
-  for (auto* b : savedVb) if (b) b->Release();
-  if (savedIb) savedIb->Release();
-  if (savedCb0) savedCb0->Release();
-  if (g_injectLogs.fetch_add(1, std::memory_order_relaxed) % 120 == 0) {
-    // Injected caster origin -> shadow-map UV (perspective divide + [0,1] remap),
-    // to compare directly against CUTIN_MAP_SPAN centroidUV: where we aimed vs
-    // where map content actually is.
-    const float w = firstS[3] != 0.0f ? firstS[3] : 1.0f;
-    const float uvx = 0.5f + 0.5f * firstS[0] / w;
-    const float uvy = 0.5f - 0.5f * firstS[1] / w;
-    // Where the RECEIVER samples for the same world point: recvUV = project(
-    // Tex x Wtrans). If recvUV != injUV, caster L and receiver Tex diverge — the
-    // caster is in the map but the receiver looks elsewhere (root cause).
-    float rx = -1.0f, ry = -1.0f, rvalid = 0.0f;
-    if (g_recvTexValid.load(std::memory_order_relaxed)) {
-      float T[16];
-      { std::lock_guard<std::mutex> lock(g_recvTexMutex); std::memcpy(T, g_recvTex, 64); }
-      const float p[4] = {firstWt[0], firstWt[1], firstWt[2], 1.0f};
-      float c[4];
-      for (int i = 0; i < 4; ++i)
-        c[i] = T[i*4+0]*p[0] + T[i*4+1]*p[1] + T[i*4+2]*p[2] + T[i*4+3]*p[3];
-      // PSSGLightModelViewProjTex already maps to [0,1] UV (the "Tex" bias), so
-      // recvUV = c.xy / c.w directly (no 0.5 remap).
-      if (c[3] != 0.0f) { rx = c[0]/c[3]; ry = c[1]/c[3]; rvalid = 1.0f; }
-    }
-    log("CUTIN_INJECT n=", drawn, " replay=", replayed,
-        " retarget=", retargeted, " total=",
-        g_reissueTotal.load(std::memory_order_relaxed),
-        " light_age=", frame - light.frame, " cb0=", firstCb0,
-        " St=", firstS[0], ",", firstS[1], ",", firstS[2], ",", firstS[3],
-        " injUV=", uvx, ",", uvy,
-        " Wt=", firstWt[0], ",", firstWt[1], ",", firstWt[2],
-        " recvUV=", rx, ",", ry, " recvValid=", rvalid);
-  }
-}
-
-// A shadow-map clear after injection wipes the injected depth. Re-arm so the
-// batch is re-drawn into the newly cleared generation — the receivers sample
-// whichever generation is last.
-void cutinShadowMapCleared(ID3D11DeviceContext* ctx,
+// A shadow-map clear wipes the engine-side cut-in caster flags; the game-side
+// restore walk lives in menu_fix (env-gated there).
+void cutinShadowMapCleared(ID3D11DeviceContext*,
                            ID3D11DepthStencilView* dsv) {
   if (!dsv)
     return;
@@ -2555,23 +437,9 @@ void cutinShadowMapCleared(ID3D11DeviceContext* ctx,
     shadowMap = d.Width == 1024 && d.Height == 1024;
     tex->Release();
   }
-  if (shadowMap)
-    recordMapEvent('C', res, "shadow_map", ctx);
   res->Release();
-  if (!shadowMap)
-    return;
-  // §30m: restore engine-cleared caster flags before this frame's caster
-  // draws (game-side walk lives in menu_fix; env-gated there).
-  arlandCutinShadowMapCleared();
-  if (!cutinShadowFixEnabled())
-    return;
-  std::lock_guard lock(g_pipeMutex);
-  // §43: re-arm only the CLEARED map (identity key), so the re-injection goes
-  // into its new generation while other maps' injections stand.
-  if (g_injectedDsvTextures.erase(static_cast<void*>(res)) &&
-      g_rearmLogs.fetch_add(1, std::memory_order_relaxed) % 240 == 0)
-    log("CUTIN_REARM shadow map cleared after injection; re-arming dsvTex=",
-        static_cast<void*>(res));
+  if (shadowMap)
+    arlandCutinShadowMapCleared();
 }
 
 // ---- §35 contact-blob cut-in shadow ----------------------------------------
@@ -2872,915 +740,45 @@ void cutinDrawContactBlobs(IDXGISwapChain* swapChain) {
         " kept=", nCand);
 }
 
-// At a draw: shadow-pass draws capture the pipe + per-caster shadow matrix;
-// color draws of a caster that also cast THIS frame derive/verify the frame's
-// light-VP; color draws of a decoupled mesh (visible, ever-cast, not cast this
-// frame) get re-issued into the shadow map with an injected matrix.
-void cutinShadowDraw(ID3D11DeviceContext* ctx, bool indexed, UINT count,
-                     UINT startIndex, INT baseVertex) {
-  if (!cutinShadowFixEnabled())
+// Feed the contact-blob overlay: during a cinematic battle state, capture each
+// character skin draw's ModelViewProj (26048-byte $Globals @160) and Model so
+// the blob pass can project the character's feet to screen space.
+void cutinBlobCaptureDraw(ID3D11DeviceContext* ctx, UINT count) {
+  if (!cutinBlobEnabled() || count < 300 || !arlandInCinematicBattle())
     return;
   ID3D11RenderTargetView* rtv = nullptr;
-  ID3D11DepthStencilView* dsv = nullptr;
-  ctx->OMGetRenderTargets(1, &rtv, &dsv);
-  bool shadowPass = false;
-  if (dsv && rtv && cutinMapTraceEnabled()) {
-    // A pass writing a 1024x1024 shadow map WITH a color target bound would
-    // be invisible to the depth-only classifier — log it as 'E'.
-    ID3D11Resource* res = nullptr;
-    dsv->GetResource(&res);
-    if (res) {
-      if (isTracedShadowMapTex(res))
-        recordMapEvent('E', res, "shadow_map", ctx);
-      res->Release();
-    }
-  }
-  if (dsv && !rtv) {
-    // Depth-only is not enough: require the 1024x1024 shadow map itself, so
-    // injection can never land in some other depth-only pass.
-    ID3D11Resource* res = nullptr;
-    dsv->GetResource(&res);
-    if (res) {
-      ID3D11Texture2D* tex = nullptr;
-      if (SUCCEEDED(res->QueryInterface(IID_PPV_ARGS(&tex)))) {
-        D3D11_TEXTURE2D_DESC d = {};
-        tex->GetDesc(&d);
-        shadowPass = d.Width == 1024 && d.Height == 1024;
-        if (shadowPass)
-          recordMapEvent('D', res, "shadow_map", ctx);
-        tex->Release();
-      }
-      res->Release();
-    }
-  }
+  ctx->OMGetRenderTargets(1, &rtv, nullptr);
+  if (!rtv)
+    return;
   bool colorMain = false;
-  if (rtv) {
-    ID3D11Resource* res = nullptr;
-    rtv->GetResource(&res);
-    if (res) {
-      ID3D11Texture2D* tex = nullptr;
-      if (SUCCEEDED(res->QueryInterface(IID_PPV_ARGS(&tex)))) {
-        D3D11_TEXTURE2D_DESC d = {};
-        tex->GetDesc(&d);
-        colorMain = d.Width == 1920 && d.Height == 1080;
-        tex->Release();
-      }
-      res->Release();
+  ID3D11Resource* res = nullptr;
+  rtv->GetResource(&res);
+  if (res) {
+    ID3D11Texture2D* tex = nullptr;
+    if (SUCCEEDED(res->QueryInterface(IID_PPV_ARGS(&tex)))) {
+      D3D11_TEXTURE2D_DESC d = {};
+      tex->GetDesc(&d);
+      colorMain = d.Width == 1920 && d.Height == 1080;
+      tex->Release();
     }
+    res->Release();
   }
-  if (rtv) rtv->Release();
-  if (dsv) dsv->Release();
-
-  ID3D11Buffer* vb = nullptr;
-  UINT stride = 0, offset = 0;
-  ctx->IAGetVertexBuffers(0, 1, &vb, &stride, &offset);
-  const uintptr_t vbKey = reinterpret_cast<uintptr_t>(vb);
-  if (vb) vb->Release();
-  if (!vbKey)
+  rtv->Release();
+  if (!colorMain)
     return;
-
-  const uint64_t frame = g_reconFrame.load(std::memory_order_relaxed);
-
-  if (shadowPass) {
-    if (count < 300)
-      return;
-    uint32_t snapSize = 0;
-    uint8_t snap[kCbSnapBytes];
-    const bool haveParams =
-      readCb0Snap(ctx, &snapSize, snap) && snapSize == 80;
-    if (haveParams && cutinShadowFixEnabled()) {
-      // Was this draw's cb0 healed this frame? (§32e heal-flow accounting.)
-      ID3D11Buffer* cb0 = nullptr;
-      ctx->VSGetConstantBuffers(0, 1, &cb0);
-      if (cb0) {
-        std::lock_guard lock(g_pipeMutex);
-        auto it = g_healedCbs.find(cb0);
-        if (it != g_healedCbs.end() && frame - it->second <= 1)
-          g_healedDrawsThisFrame.fetch_add(1, std::memory_order_relaxed);
-        cb0->Release();
-      }
-    }
-    if (haveParams) {
-      captureShadowPipe(ctx);
-      // Piggyback this REAL character-caster shadow draw: its full pipeline
-      // state (PS, raster, depth-stencil, viewport, VS, IL) is live and
-      // correct, so the injected meshes render exactly like a real caster.
-      injectPendingShadows(ctx);
-      // Caster recording: remember this draw verbatim while its matrix is
-      // non-degenerate (a hidden model casts with ~0 scale — don't let that
-      // overwrite the last good recording). Used by the vbKey-matched
-      // retarget draws and the opt-in verbatim replay.
-      // §32f: at a HEALED caster draw (this draw's cb0 slice matches one we
-      // healed), emit an extra draw with the frozen stream-0 clone — the
-      // engine's own draw rasterizes collapsed vertices and shows nothing.
-      {
-        bool healedDraw = false;
-        {
-          std::lock_guard lock(g_pipeMutex);
-          for (auto it = g_healedSlices.begin();
-               it != g_healedSlices.end(); ++it)
-            if (!std::memcmp(it->bytes.data(), snap, 80)) {
-              // §33k pairing check: did the write's bound VB match the VB
-              // this draw actually uses?
-              (it->vbKey == vbKey ? g_pairOk : g_pairMismatch)
-                .fetch_add(1, std::memory_order_relaxed);
-              static std::atomic<uint32_t> pairLogs{0};
-              if (pairLogs.fetch_add(1, std::memory_order_relaxed) % 120 == 0)
-                log("CUTIN_PAIR ok=",
-                    g_pairOk.load(std::memory_order_relaxed),
-                    " mismatch=",
-                    g_pairMismatch.load(std::memory_order_relaxed));
-              g_healedSlices.erase(it);
-              healedDraw = true;
-              break;
-            }
-        }
-        if (healedDraw) {
-          ID3D11Buffer* clones[4] = {};
-          bool haveClone = false;
-          {
-            std::lock_guard lock(g_pipeMutex);
-            auto it = g_vbClones.find(vbKey);
-            if (it != g_vbClones.end() && frame - it->second.refreshed < 300) {
-              for (int i = 0; i < 4; ++i)
-                if (it->second.clone[i]) {
-                  clones[i] = it->second.clone[i];
-                  clones[i]->AddRef();
-                  haveClone = true;
-                }
-            }
-          }
-          if (haveClone) {
-            ID3D11Buffer* orig[4] = {};
-            UINT os[4] = {}, oo[4] = {};
-            ctx->IAGetVertexBuffers(0, 4, orig, os, oo);
-            ID3D11Buffer* bind[4];
-            for (int i = 0; i < 4; ++i)
-              bind[i] = clones[i] ? clones[i] : orig[i];
-            ctx->IASetVertexBuffers(0, 4, bind, os, oo);
-            auto procs = getContextProcs(ctx);
-            if (indexed)
-              procs->DrawIndexed(ctx, count, startIndex, baseVertex);
-            else
-              procs->Draw(ctx, count, startIndex);
-            ctx->IASetVertexBuffers(0, 4, orig, os, oo);
-            for (int i = 0; i < 4; ++i) {
-              if (orig[i])
-                orig[i]->Release();
-              if (clones[i])
-                clones[i]->Release();
-            }
-            g_cloneDraws.fetch_add(1, std::memory_order_relaxed);
-            if (g_cloneDrawLogs.fetch_add(1, std::memory_order_relaxed)
-                % 60 == 0) {
-              const float* hm = reinterpret_cast<const float*>(snap + 16);
-              log("CUTIN_CLONE_DRAW total=",
-                  g_cloneDraws.load(std::memory_order_relaxed),
-                  " vb=", reinterpret_cast<void*>(vbKey),
-                  " count=", count,
-                  " t=", hm[3], ",", hm[7], ",", hm[11]);
-            }
-          } else if (g_cloneDrawLogs.fetch_add(1, std::memory_order_relaxed)
-                     % 240 == 0) {
-            log("CUTIN_CLONE_DRAW no_clone vb=",
-                reinterpret_cast<void*>(vbKey));
-          }
-        }
-      }
-      {
-        const float* m = reinterpret_cast<const float*>(snap + 16);
-        float scale = 0.0f;
-        for (int i : {0, 1, 2, 4, 5, 6, 8, 9, 10})
-          scale = std::max(scale, std::fabs(m[i]));
-        if (scale > 1e-5f) {
-          {
-            // §33h: draw-side character-scale rot cache for the healer.
-            std::lock_guard lock(g_pipeMutex);
-            for (int k = 0; k < 9; ++k)
-              g_charRot.rot[k] = m[kRot9(k)];
-            g_charRot.frame = frame;
-            g_charRot.valid = true;
-          }
-          // §32f: refresh (or create) this caster's frozen clones for ALL
-          // bound streams (positions may live in any of streams 0-3) while it
-          // is healthy — copied through the UNHOOKED CopyResource.
-          ID3D11Buffer* srcs[4] = {};
-          UINT ss[4] = {}, so[4] = {};
-          ctx->IAGetVertexBuffers(0, 4, srcs, ss, so);
-          {
-            ID3D11Buffer* copies[4] = {};
-            bool refresh = false;
-            {
-              std::lock_guard lock(g_pipeMutex);
-              auto it = g_vbClones.find(vbKey);
-              if (it != g_vbClones.end() && it->second.refreshed >= frame) {
-                // already refreshed this frame
-              } else {
-                refresh = true;
-                if (it != g_vbClones.end()) {
-                  it->second.refreshed = frame;
-                  for (int i = 0; i < 4; ++i)
-                    if (it->second.clone[i]) {
-                      copies[i] = it->second.clone[i];
-                      copies[i]->AddRef();
-                    }
-                }
-              }
-            }
-            if (refresh) {
-              // create any missing clones outside the lock
-              ID3D11Buffer* created[4] = {};
-              ID3D11Device* dev = nullptr;
-              for (int i = 0; i < 4; ++i) {
-                if (!srcs[i] || copies[i])
-                  continue;
-                D3D11_BUFFER_DESC bd = {};
-                srcs[i]->GetDesc(&bd);
-                if (bd.ByteWidth > (8u << 20))
-                  continue;
-                bd.Usage = D3D11_USAGE_DEFAULT;
-                bd.CPUAccessFlags = 0;
-                bd.MiscFlags = 0;
-                if (!dev)
-                  ctx->GetDevice(&dev);
-                if (dev)
-                  dev->CreateBuffer(&bd, nullptr, &created[i]);
-              }
-              if (dev)
-                dev->Release();
-              {
-                std::lock_guard lock(g_pipeMutex);
-                auto& e = g_vbClones[vbKey];
-                e.refreshed = frame;
-                for (int i = 0; i < 4; ++i)
-                  if (created[i]) {
-                    if (!e.clone[i]) {
-                      e.clone[i] = created[i];
-                      copies[i] = created[i];
-                      copies[i]->AddRef();
-                    } else {
-                      created[i]->Release();
-                    }
-                  }
-              }
-              for (int i = 0; i < 4; ++i)
-                if (copies[i] && srcs[i])
-                  getContextProcs(ctx)->CopyResource(ctx, copies[i], srcs[i]);
-            }
-            for (int i = 0; i < 4; ++i)
-              if (copies[i])
-                copies[i]->Release();
-          }
-          for (int i = 0; i < 4; ++i)
-            if (srcs[i])
-              srcs[i]->Release();
-          ReplayDraw r;
-          ctx->VSGetShader(&r.vs, nullptr, nullptr);
-          ctx->IAGetVertexBuffers(0, 4, r.geo.vb, r.geo.stride, r.geo.offset);
-          ctx->IAGetIndexBuffer(&r.geo.ib, &r.geo.ibFormat, &r.geo.ibOffset);
-          ctx->IAGetPrimitiveTopology(&r.geo.topology);
-          ctx->IAGetInputLayout(&r.il);
-          r.geo.indexed = indexed;
-          r.geo.count = count;
-          r.geo.startIndex = startIndex;
-          r.geo.baseVertex = baseVertex;
-          r.geo.vbKey = vbKey;
-          std::memcpy(r.params, snap, 80);
-          r.frame = frame;
-          std::lock_guard lock(g_pipeMutex);
-          auto key = std::make_tuple(vbKey, startIndex, baseVertex);
-          auto it = g_replayDraws.find(key);
-          if (it != g_replayDraws.end())
-            releaseReplayDraw(it->second);
-          if (g_replayDraws.size() < 32 || it != g_replayDraws.end())
-            g_replayDraws[key] = r;
-          else
-            releaseReplayDraw(r);
-        }
-      }
-    }
-    if (cutinInjTestMode() && haveParams &&
-        g_injTestThisFrame.fetch_add(1, std::memory_order_relaxed) < 4) {
-      auto procs = getContextProcs(ctx);
-      const int mode = cutinInjTestMode();
-      bool did = false;
-      if (mode == 1) {
-        if (indexed)
-          procs->DrawIndexed(ctx, count, startIndex, baseVertex);
-        else
-          procs->Draw(ctx, count, startIndex);
-        did = true;
-      }
-      if (mode >= 2 && !g_injectCb) {
-        ID3D11Device* dev = nullptr;
-        ctx->GetDevice(&dev);
-        if (dev) {
-          D3D11_BUFFER_DESC desc = {};
-          desc.ByteWidth = 96;
-          desc.Usage = D3D11_USAGE_DYNAMIC;
-          desc.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
-          desc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
-          std::lock_guard lock(g_pipeMutex);
-          if (!g_injectCb)
-            dev->CreateBuffer(&desc, nullptr, &g_injectCb);
-          dev->Release();
-        }
-      }
-      if (mode == 2 && g_injectCb) {
-        float params[24] = {};
-        std::memcpy(params, snap, 16);
-        float S2[16];
-        std::memcpy(S2, reinterpret_cast<const float*>(snap) + 4, 64);
-        for (int r = 0; r < 2; ++r) {
-          for (int c = 0; c < 3; ++c)
-            S2[r * 4 + c] *= 60.0f;
-          S2[r * 4 + 3] = 0.0f;
-        }
-        S2[8] = 0; S2[9] = 0; S2[10] = 0; S2[11] = 0.3f;
-        S2[12] = 0; S2[13] = 0; S2[14] = 0; S2[15] = 1;
-        std::memcpy(params + 4, S2, 64);
-        D3D11_MAPPED_SUBRESOURCE mapped = {};
-        if (SUCCEEDED(ctx->Map(g_injectCb, 0, D3D11_MAP_WRITE_DISCARD, 0,
-                               &mapped))) {
-          std::memcpy(mapped.pData, params, 96);
-          ctx->Unmap(g_injectCb, 0);
-          ID3D11Buffer* savedCb = nullptr;
-          ctx->VSGetConstantBuffers(0, 1, &savedCb);
-          ctx->VSSetConstantBuffers(0, 1, &g_injectCb);
-          if (indexed)
-            procs->DrawIndexed(ctx, count, startIndex, baseVertex);
-          else
-            procs->Draw(ctx, count, startIndex);
-          ctx->VSSetConstantBuffers(0, 1, &savedCb);
-          if (savedCb)
-            savedCb->Release();
-          did = true;
-        }
-      } else if (mode == 3 && g_injectCb) {
-        std::lock_guard lock(g_pipeMutex);
-        if (!g_replayDraws.empty()) {
-          const ReplayDraw* best = nullptr;
-          for (auto& [key, r] : g_replayDraws)
-            if (!best || r.geo.count > best->geo.count)
-              best = &r;
-          // §33o: blob matrix from the RECORDING's own healthy S — success
-          // renders the giant shadow through recorded geometry, completing
-          // the bisect (mode 2 proved the cb path with live geometry).
-          float params[24] = {};
-          std::memcpy(params, best->params, 16);
-          float S2[16];
-          std::memcpy(S2, reinterpret_cast<const float*>(best->params) + 4,
-                      64);
-          for (int r2 = 0; r2 < 2; ++r2) {
-            for (int c = 0; c < 3; ++c)
-              S2[r2 * 4 + c] *= 60.0f;
-            S2[r2 * 4 + 3] = 0.0f;
-          }
-          S2[8] = 0; S2[9] = 0; S2[10] = 0; S2[11] = 0.3f;
-          S2[12] = 0; S2[13] = 0; S2[14] = 0; S2[15] = 1;
-          std::memcpy(params + 4, S2, 64);
-          bool cbOk = false;
-          D3D11_MAPPED_SUBRESOURCE mapped = {};
-          if (SUCCEEDED(ctx->Map(g_injectCb, 0, D3D11_MAP_WRITE_DISCARD, 0,
-                                 &mapped))) {
-            std::memcpy(mapped.pData, params, 96);
-            ctx->Unmap(g_injectCb, 0);
-            cbOk = true;
-          }
-          ID3D11Buffer* savedCb = nullptr;
-          if (cbOk) {
-            ctx->VSGetConstantBuffers(0, 1, &savedCb);
-            ctx->VSSetConstantBuffers(0, 1, &g_injectCb);
-          }
-          ID3D11Buffer* savedVb[4] = {};
-          UINT ss[4] = {}, so[4] = {};
-          ctx->IAGetVertexBuffers(0, 4, savedVb, ss, so);
-          ID3D11Buffer* savedIb = nullptr;
-          DXGI_FORMAT sf = DXGI_FORMAT_UNKNOWN;
-          UINT sio = 0;
-          ctx->IAGetIndexBuffer(&savedIb, &sf, &sio);
-          ID3D11InputLayout* sil = nullptr;
-          ctx->IAGetInputLayout(&sil);
-          ID3D11VertexShader* svs = nullptr;
-          ctx->VSGetShader(&svs, nullptr, nullptr);
-          ctx->IASetVertexBuffers(0, 4,
-            const_cast<ID3D11Buffer* const*>(best->geo.vb),
-            best->geo.stride, best->geo.offset);
-          if (best->geo.indexed)
-            ctx->IASetIndexBuffer(best->geo.ib, best->geo.ibFormat,
-                                  best->geo.ibOffset);
-          if (best->il) ctx->IASetInputLayout(best->il);
-          if (best->vs) ctx->VSSetShader(best->vs, nullptr, 0);
-          if (best->geo.indexed)
-            procs->DrawIndexed(ctx, best->geo.count, best->geo.startIndex,
-                               best->geo.baseVertex);
-          else
-            procs->Draw(ctx, best->geo.count, best->geo.startIndex);
-          ctx->IASetVertexBuffers(0, 4, savedVb, ss, so);
-          ctx->IASetIndexBuffer(savedIb, sf, sio);
-          if (sil) { ctx->IASetInputLayout(sil); sil->Release(); }
-          if (svs) { ctx->VSSetShader(svs, nullptr, 0); svs->Release(); }
-          for (auto* b : savedVb) if (b) b->Release();
-          if (savedIb) savedIb->Release();
-          if (savedCb) {
-            ctx->VSSetConstantBuffers(0, 1, &savedCb);
-            savedCb->Release();
-          }
-          did = true;
-        }
-      }
-      if (did &&
-          g_injTestLogs.fetch_add(1, std::memory_order_relaxed) % 120 == 0)
-        log("CUTIN_INJTEST mode=", mode, " count=", count);
-    }
-    std::lock_guard lock(g_shadowTraceMutex);
-    g_frameShadowVBs.insert(vbKey);
-    auto& mx = g_vbEverCast[vbKey];
-    if (count > mx) mx = count;
-    if (haveParams) {
-      auto& cs = g_casterShadow[vbKey];
-      std::memcpy(cs.diffuse, snap, 16);
-      std::memcpy(cs.S, snap + 16, 64);
-      cs.frame = frame;
-    }
-    return;
-  }
-  // No battle-state gate: the character close-up that lacks a shadow happens
-  // during action selection (SelectCommand/SelectTarget), not just WaitAction.
-  // The "not cast this frame" check below already excludes meshes casting
-  // normally, so any visible mesh that isn't in the shadow map is a candidate.
-  if (!colorMain || count < 300)
-    return;
-  bool everCast, castThisFrame;
-  CasterShadow cs;
-  bool haveShadowMtx = false;
-  {
-    std::lock_guard lock(g_shadowTraceMutex);
-    everCast = g_vbEverCast.count(vbKey) != 0;
-    castThisFrame = g_frameShadowVBs.count(vbKey) != 0;
-    auto it = g_casterShadow.find(vbKey);
-    if (it != g_casterShadow.end() && it->second.frame == frame) {
-      cs = it->second;
-      haveShadowMtx = true;
-    }
-  }
-  // §33q: do NOT require everCast up front — the cut-in attacker's cinematic
-  // mesh is a separate, never-cast VB, which this filter structurally
-  // excluded through the whole investigation. Character skin (26048) draws
-  // are eligible regardless; everCast still gates the outline fallback.
-  if (castThisFrame) {
-    if (!everCast)
-      return;
-    // Reference caster drawn in both passes: derive (or verify) this frame's
-    // light-VP from S = L x W. Skip hidden casters (near-zero scale).
-    if (!haveShadowMtx)
-      return;
-    uint32_t snapSize = 0;
-    uint8_t snap[kCbSnapBytes];
-    float W[16];
-    if (!readCb0Snap(ctx, &snapSize, snap) || !extractModel(snapSize, snap, W))
-      return;
-    if (std::fabs(mtxDet3(W)) < 1e-12f)
-      return;
-    float Wi[16], L[16];
-    if (!mtxInvert(W, Wi))
-      return;
-    mtxMul(cs.S, Wi, L);
-    std::lock_guard lock(g_pipeMutex);
-    {
-      ColorW& cw = g_colorW[vbKey];
-      std::memcpy(cw.W, W, sizeof(W));
-      cw.frame = frame;
-    }
-    if (g_light.valid && g_light.frame == frame) {
-      // Second valid caster this frame: cross-check that the light-VP is
-      // global, not per-caster.
-      float pred[16];
-      mtxMul(g_light.L, W, pred);
-      const float err = mtxMaxDiff(pred, cs.S);
-      if (g_lvpChecks.fetch_add(1, std::memory_order_relaxed) % 240 == 0)
-        log("CUTIN_LVP check frame=", frame, " err=", err);
-    } else {
-      std::memcpy(g_light.L, L, sizeof(L));
-      std::memcpy(g_light.diffuse, cs.diffuse, sizeof(cs.diffuse));
-      g_light.frame = frame;
-      g_light.valid = true;
-      if (g_lvpDerives.fetch_add(1, std::memory_order_relaxed) % 600 == 0)
-        log("CUTIN_LVP derive frame=", frame,
-            " vb=", reinterpret_cast<void*>(vbKey),
-            " r3=", L[12], ",", L[13], ",", L[14], ",", L[15]);
-    }
-    return;
-  }
-
-  // Decoupled mesh: visible this frame but absent from the shadow map. Record
-  // it (geometry bindings + current Model) for injection into the NEXT frame's
-  // shadow pass.
   uint32_t snapSize = 0;
   uint8_t snap[kCbSnapBytes];
+  if (!readCb0Snap(ctx, &snapSize, snap) || snapSize != 26048)
+    return;
   float W[16];
-  if (!readCb0Snap(ctx, &snapSize, snap) || !extractModel(snapSize, snap, W))
+  std::memcpy(W, snap + 32, 64);         // Model @32 of the skin $Globals
+  if (std::fabs(mtxDet3(W)) < 1e-12f)    // hidden model (near-zero scale)
     return;
-  // Character materials only: field meshes (768/880-byte $Globals) also
-  // decouple when the lighting bounds cull them, and injecting scenery would
-  // paint large wrong shadows.
-  if (snapSize != 26048 && !(snapSize == 256 && everCast))
-    return;
-  if (std::fabs(mtxDet3(W)) < 1e-12f)   // hidden mesh, nothing to cast
-    return;
-  // §33r: battle-HUD character portraits use the skin material too and sit at
-  // exactly y=0 (world translations like (0,0,5.5)) — they flooded the queue
-  // and crowded out the attacker. Arena characters always have |y| > 0.
+  // Battle-HUD portraits use the skin material too and sit at exactly y=0;
+  // arena characters always have |y| > 0.
   if (std::fabs(W[7]) < 1e-6f)
     return;
-  // §35: capture this cut-in character's ModelViewProj (26048 $Globals +160)
-  // for the contact-blob overlay — projects the character to screen space.
-  if (snapSize == 26048 && arlandInCinematicBattle())
-    captureCutinMVP(reinterpret_cast<const float*>(snap + 160), W);
-  PendingInject e;
-  ctx->IAGetVertexBuffers(0, 4, e.vb, e.stride, e.offset);
-  ctx->IAGetIndexBuffer(&e.ib, &e.ibFormat, &e.ibOffset);
-  ctx->IAGetPrimitiveTopology(&e.topology);
-  e.indexed = indexed;
-  e.count = count;
-  e.startIndex = startIndex;
-  e.baseVertex = baseVertex;
-  e.vbKey = vbKey;
-  e.cb0Size = snapSize;
-  std::memcpy(e.W, W, sizeof(W));
-  // §41 V2: also record the color draw's OWN input layout + vertex shader.
-  // The piggybacked shadow-proxy IL/VS expects a different vertex format and
-  // rasterizes zero fragments from this VB (root cause A); the re-draw must
-  // use the pipeline that actually made these vertices visible.
-  if (cutinInjectV2Enabled()) {
-    ctx->IAGetInputLayout(&e.il);
-    ctx->VSGetShader(&e.vs, nullptr, nullptr);
-  }
-  // The outline (edge) pass draws the mesh FIRST each frame; every §30d/§30e
-  // injection only ever carried outline geometry (cb0_size=256 in all logs) —
-  // likely an inverted hull the caster's backface culling rejects entirely.
-  // Prefer the skin material's geometry: replace a queued outline entry with
-  // the 26048-material draw of the same VB; drop other duplicates.
-  bool queued = false;
-  {
-    std::lock_guard lock(g_pipeMutex);
-    auto existing = std::find_if(g_injectNext.begin(), g_injectNext.end(),
-      [&](const PendingInject& p) { return p.vbKey == vbKey; });
-    if (existing != g_injectNext.end()) {
-      if (existing->cb0Size == 256 && snapSize == 26048) {
-        releasePendingRefs(*existing);
-        *existing = e;
-        queued = true;
-      }
-    } else if (g_injectNext.size() < 16) {
-      g_injectNext.push_back(e);
-      queued = true;
-    }
-  }
-  if (!queued) {
-    releasePendingRefs(e);
-    return;
-  }
-  if (g_queueLogs.fetch_add(1, std::memory_order_relaxed) % 240 == 0)
-    log("CUTIN_QUEUE vb=", reinterpret_cast<void*>(vbKey), " count=", count,
-        " cb0_size=", snapSize, " frame=", frame,
-        " Wt=", W[3], ",", W[7], ",", W[11]);
-}
-
-// Per-draw recon logging (ARLAND_CUTIN_RECON=1): classify the draw — shadow
-// pass, color draw of a mesh that also cast this frame (the reference caster
-// for any later matrix derivation), color draw of a decoupled mesh (the broken
-// close-up geometry), or a big color mesh that never cast — then log every VS
-// cbuffer slot's buffer pointer, size, and last-written contents, and dump the
-// bound VS bytecode for offline constant-layout analysis.
-bool reconAllow(int category) {
-  static mutex bucketMutex;
-  static uint64_t bucket[4] = {};
-  static int count[4] = {};
-  static const int quota[4] = {2, 2, 4, 1};   // per 500 ms window
-  const uint64_t now = GetTickCount64() / 500;
-  std::lock_guard lock(bucketMutex);
-  if (bucket[category] != now) {
-    bucket[category] = now;
-    count[category] = 0;
-  }
-  return count[category]++ < quota[category];
-}
-
-void cutinRecon(ID3D11DeviceContext* ctx, bool indexed, UINT count) {
-  if (!cutinReconEnabled() || count < 300)
-    return;
-  ID3D11RenderTargetView* rtv = nullptr;
-  ID3D11DepthStencilView* dsv = nullptr;
-  ctx->OMGetRenderTargets(1, &rtv, &dsv);
-  const bool shadowPass = dsv && !rtv;
-  bool colorMain = false;
-  if (rtv) {
-    ID3D11Resource* res = nullptr;
-    rtv->GetResource(&res);
-    if (res) {
-      ID3D11Texture2D* tex = nullptr;
-      if (SUCCEEDED(res->QueryInterface(IID_PPV_ARGS(&tex)))) {
-        D3D11_TEXTURE2D_DESC d = {};
-        tex->GetDesc(&d);
-        colorMain = d.Width == 1920 && d.Height == 1080;
-        tex->Release();
-      }
-      res->Release();
-    }
-  }
-  if (rtv) rtv->Release();
-  if (dsv) dsv->Release();
-  if (!shadowPass && !colorMain)
-    return;
-
-  ID3D11Buffer* vb = nullptr;
-  UINT stride = 0, offset = 0;
-  ctx->IAGetVertexBuffers(0, 1, &vb, &stride, &offset);
-  const uintptr_t vbKey = reinterpret_cast<uintptr_t>(vb);
-  if (vb) vb->Release();
-  if (!vbKey)
-    return;
-
-  int category;
-  const char* role;
-  if (shadowPass) {
-    std::lock_guard lock(g_shadowTraceMutex);
-    g_frameShadowVBs.insert(vbKey);
-    auto& mx = g_vbEverCast[vbKey];
-    if (count > mx) mx = count;
-    category = 0;
-    role = "shadow";
-  } else {
-    bool everCast, castThisFrame;
-    {
-      std::lock_guard lock(g_shadowTraceMutex);
-      everCast = g_vbEverCast.count(vbKey) != 0;
-      castThisFrame = g_frameShadowVBs.count(vbKey) != 0;
-    }
-    if (everCast && castThisFrame) { category = 1; role = "colorcast"; }
-    else if (everCast)             { category = 2; role = "decoup"; }
-    else                           { category = 3; role = "colornew"; }
-  }
-  if (!reconAllow(category))
-    return;
-
-  ID3D11VertexShader* vs = nullptr;
-  ctx->VSGetShader(&vs, nullptr, nullptr);
-  ID3D11InputLayout* il = nullptr;
-  ctx->IAGetInputLayout(&il);
-  ID3D11Buffer* cb[14] = {};
-  ctx->VSGetConstantBuffers(0, 14, cb);
-
-  log("CUTIN_RECON pass=", role, " frame=",
-      g_reconFrame.load(std::memory_order_relaxed),
-      " ms=", GetTickCount64(), " cin=", arlandInCinematicBattle(),
-      " vb=", reinterpret_cast<void*>(vbKey), " n=", count,
-      " indexed=", indexed, " vs=", static_cast<void*>(vs),
-      " il=", static_cast<void*>(il));
-  for (int i = 0; i < 14; ++i) {
-    if (!cb[i])
-      continue;
-    D3D11_BUFFER_DESC desc = {};
-    cb[i]->GetDesc(&desc);
-    CbSnap snap;
-    bool haveSnap = false;
-    {
-      std::lock_guard lock(g_cbSnapMutex);
-      auto it = g_cbSnaps.find(cb[i]);
-      if (it != g_cbSnaps.end()) {
-        snap = it->second;
-        haveSnap = true;
-      }
-    }
-    if (haveSnap) {
-      char floats[512];
-      int off = 0;
-      const float* f = reinterpret_cast<const float*>(snap.data);
-      const uint32_t n = std::min<uint32_t>(
-        std::min<uint32_t>(snap.size, sizeof(snap.data)) / 4, 20);
-      for (uint32_t k = 0; k < n && off < int(sizeof(floats)) - 16; ++k)
-        off += std::snprintf(floats + off, sizeof(floats) - off,
-                             "%s%.6g", k ? "," : "", f[k]);
-      log("CUTIN_RECON_SLOT pass=", role,
-          " vb=", reinterpret_cast<void*>(vbKey), " s=", i,
-          " cb=", static_cast<void*>(cb[i]), " size=", desc.ByteWidth,
-          " seq=", snap.seq, " f=", floats);
-    } else {
-      log("CUTIN_RECON_SLOT pass=", role,
-          " vb=", reinterpret_cast<void*>(vbKey), " s=", i,
-          " cb=", static_cast<void*>(cb[i]), " size=", desc.ByteWidth,
-          " snap=none");
-    }
-  }
-  if (vs)
-    dumpVsOnce(vs, role);
-
-  for (auto* b : cb) if (b) b->Release();
-  if (vs) vs->Release();
-  if (il) il->Release();
-}
-
-// Per-frame reset (called from Present): the "cast this frame" set starts
-// fresh, and the meshes recorded during this frame's color pass become the
-// injection batch for the next frame's shadow pass.
-void cutinShadowPresent() {
-  static std::atomic<bool> envLogged{false};
-  if (!envLogged.exchange(true)) {
-    const char* raw = std::getenv("ARLAND_CUTIN_INJTEST");
-    log("CUTIN_ENV fix=", cutinShadowFixEnabled(),
-        " injtest_raw=", raw ? raw : "(null)",
-        " injtest=", cutinInjTestMode(),
-        " blocker=", cutinBlockerMode(),
-        " recon=", cutinReconEnabled(),
-        " maptrace=", cutinMapTraceEnabled(),
-        " readback=", cutinMapReadbackEnabled(),
-        " lighttrace=", cutinLightTraceEnabled(),
-        " recvtrace=", cutinRecvTraceEnabled());
-  }
-  flushMapEvents();
-  // Advance the frame counter for the map-trace/readback path too — it drives
-  // the readback's "wait N frames" logic. (Previously only incremented in the
-  // fix-only body below, so map-trace-only froze it at 0 and the readback
-  // could never complete.)
-  if (!cutinShadowFixEnabled() && !cutinReconEnabled())
-    g_reconFrame.fetch_add(1, std::memory_order_relaxed);
-  consumeMapReadback();
-  if (!cutinShadowFixEnabled() && !cutinReconEnabled())
-    return;
-  // §33u: on a scene (re)build, purge cross-scene caches — proxy pairings,
-  // recordings, clones, per-cb rot caches and the derived light-VP all
-  // reference geometry the previous scene owned. Stale pairings sent the
-  // cut-in shadow to wrong/off-screen positions after the first scene.
-  {
-    static uint32_t seenGen = 0;
-    const uint32_t gen = arlandSceneGeneration();
-    if (gen != seenGen) {
-      seenGen = gen;
-      std::lock_guard lock(g_pipeMutex);
-      g_colorToProxy.clear();
-      for (auto& [k, r] : g_replayDraws)
-        releaseReplayDraw(r);
-      g_replayDraws.clear();
-      for (auto& [k, e] : g_vbClones)
-        for (int i = 0; i < 4; ++i)
-          if (e.clone[i]) e.clone[i]->Release();
-      g_vbClones.clear();
-      g_colorW.clear();
-      g_healthyByCb.clear();
-      g_charRot.valid = false;
-      g_light.valid = false;
-      log("CUTIN_SCENE_RESET gen=", gen);
-    }
-  }
-  {
-    const uint32_t heals =
-      g_healsThisFrame.exchange(0, std::memory_order_relaxed);
-    const uint32_t healedDraws =
-      g_healedDrawsThisFrame.exchange(0, std::memory_order_relaxed);
-    static std::atomic<uint32_t> flowLogs{0};
-    if (heals &&
-        flowLogs.fetch_add(1, std::memory_order_relaxed) % 60 == 0) {
-      size_t distinct = 0;
-      const uint64_t f = g_reconFrame.load(std::memory_order_relaxed);
-      {
-        std::lock_guard lock(g_pipeMutex);
-        for (auto& e : g_healedCbs)
-          if (f - e.second <= 1)
-            ++distinct;
-      }
-      log("CUTIN_HEALFLOW heals=", heals, " distinct_cbs=", distinct,
-          " healed_draws=", healedDraws);
-    }
-  }
-  g_reconFrame.fetch_add(1, std::memory_order_relaxed);
-  {
-    std::lock_guard lock(g_shadowTraceMutex);
-    g_frameShadowVBs.clear();
-  }
-  std::lock_guard lock(g_pipeMutex);
-  releasePendingList(g_injectReady);   // leftovers: no shadow pass consumed them
-  g_injectReady.swap(g_injectNext);
-  g_injectedDsvTextures.clear();       // §43: fresh per-frame per-map arming
-  g_healedSlices.clear();
-  g_blockerHijacks.store(0, std::memory_order_relaxed);
-  g_injTestThisFrame.store(0, std::memory_order_relaxed);
-  // Drop replay recordings that stopped refreshing (battle over, scene change).
-  const uint64_t now = g_reconFrame.load(std::memory_order_relaxed);
-  for (auto it = g_vbClones.begin(); it != g_vbClones.end();) {
-    if (now - it->second.refreshed > 900) {
-      for (int i = 0; i < 4; ++i)
-        if (it->second.clone[i])
-          it->second.clone[i]->Release();
-      it = g_vbClones.erase(it);
-    } else {
-      ++it;
-    }
-  }
-  for (auto it = g_replayDraws.begin(); it != g_replayDraws.end();) {
-    if (now - it->second.frame > 900) {
-      releaseReplayDraw(it->second);
-      it = g_replayDraws.erase(it);
-    } else {
-      ++it;
-    }
-  }
-}
-
-void traceShadowTargetBind(UINT renderTargetCount,
-                           ID3D11RenderTargetView* const* renderTargets,
-                           ID3D11DepthStencilView* depthTarget) {
-  if (!shadowTraceEnabled() || !depthTarget ||
-      renderTargetCount > D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT)
-    return;
-  bool haveColor = false;
-  for (UINT index = 0; index < renderTargetCount; ++index)
-    haveColor |= renderTargets && renderTargets[index];
-  if (haveColor)
-    return;
-
-  uintptr_t depthResource = 0;
-  uint32_t width = 0, height = 0, format = 0;
-  ID3D11Resource* resource = nullptr;
-  depthTarget->GetResource(&resource);
-  if (resource) {
-    depthResource = reinterpret_cast<uintptr_t>(resource);
-    ID3D11Texture2D* texture = nullptr;
-    if (SUCCEEDED(resource->QueryInterface(IID_PPV_ARGS(&texture)))) {
-      D3D11_TEXTURE2D_DESC desc = {};
-      texture->GetDesc(&desc);
-      width = desc.Width; height = desc.Height; format = uint32_t(desc.Format);
-      texture->Release();
-    }
-    resource->Release();
-  }
-
-  std::lock_guard lock(g_shadowTraceMutex);
-  ++g_shadowDepthOnlyBinds;
-  auto& target = g_shadowTargets[depthResource];
-  ++target.binds;
-  target.width = width; target.height = height; target.format = format;
-}
-
-void traceShadowDraw(ID3D11DeviceContext* context, bool indexed,
-                     UINT elementCount, UINT instanceCount) {
-  if (!shadowTraceEnabled())
-    return;
-
-  ID3D11RenderTargetView* renderTarget = nullptr;
-  ID3D11DepthStencilView* depthTarget = nullptr;
-  context->OMGetRenderTargets(1, &renderTarget, &depthTarget);
-  if (renderTarget || !depthTarget) {
-    if (renderTarget) renderTarget->Release();
-    if (depthTarget) depthTarget->Release();
-    return;
-  }
-
-  ID3D11Resource* depthResource = nullptr;
-  ID3D11Texture2D* depthTexture = nullptr;
-  D3D11_TEXTURE2D_DESC depthDesc = { };
-  depthTarget->GetResource(&depthResource);
-  if (depthResource && SUCCEEDED(
-        depthResource->QueryInterface(IID_PPV_ARGS(&depthTexture))))
-    depthTexture->GetDesc(&depthDesc);
-
-  ID3D11VertexShader* vertexShader = nullptr;
-  ID3D11PixelShader* pixelShader = nullptr;
-  ID3D11InputLayout* inputLayout = nullptr;
-  ID3D11Buffer* vertexBuffer = nullptr;
-  UINT stride = 0;
-  UINT offset = 0;
-  context->VSGetShader(&vertexShader, nullptr, nullptr);
-  context->PSGetShader(&pixelShader, nullptr, nullptr);
-  context->IAGetInputLayout(&inputLayout);
-  context->IAGetVertexBuffers(0, 1, &vertexBuffer, &stride, &offset);
-
-  const ShadowDrawKey key = {
-    reinterpret_cast<uintptr_t>(depthResource),
-    reinterpret_cast<uintptr_t>(vertexShader),
-    reinterpret_cast<uintptr_t>(pixelShader),
-    reinterpret_cast<uintptr_t>(inputLayout),
-    reinterpret_cast<uintptr_t>(vertexBuffer),
-    depthDesc.Width,
-    depthDesc.Height,
-    uint32_t(depthDesc.Format),
-    uint32_t(context->GetType()),
-    indexed ? 1u : 0u,
-  };
-  {
-    std::lock_guard lock(g_shadowTraceMutex);
-    auto& stats = g_shadowDraws[key];
-    ++stats.calls;
-    stats.elements += uint64_t(elementCount) * instanceCount;
-  }
-
-  if (vertexBuffer) vertexBuffer->Release();
-  if (inputLayout) inputLayout->Release();
-  if (pixelShader) pixelShader->Release();
-  if (vertexShader) vertexShader->Release();
-  if (depthTexture) depthTexture->Release();
-  if (depthResource) depthResource->Release();
-  depthTarget->Release();
+  captureCutinMVP(reinterpret_cast<const float*>(snap + 160), W);
 }
 
 // Classify a PS shader-resource view as the shadow map or not, caching the
@@ -3810,165 +808,17 @@ bool isShadowSrvLocked(ID3D11ShaderResourceView* srv) {
   return shadow;
 }
 
-// §41 V2: capture the object-independent world->shadow-UV matrix from the
-// ACTUAL ground receive draw. PSSGLightModelViewProjTex (@752 of the 880-byte
-// receiver material) maps that mesh's LOCAL vertex to shadow-map UV (it bakes
-// the mesh's Model — the receiver VS does dp4 o4, v0_local, cb0[47..50]), so
-// TexWorld = Tex x Model(@0)^-1 is the world->UV mapping the receiver really
-// samples with. Qualifying draw: battle state active, VS cb0 ByteWidth==880,
-// a shadow SRV bound. Largest element count this frame wins (a small prop's
-// receiver cannot displace the arena ground's).
-void captureRecvTexWorld(ID3D11DeviceContext* context, UINT count) {
-  if (!cutinInjectV2Enabled())
-    return;
-  const char* st = arlandBattleStateName();
-  if (!st)
-    return;
-  ID3D11Buffer* cb = nullptr;
-  context->VSGetConstantBuffers(0, 1, &cb);
-  if (!cb)
-    return;
-  D3D11_BUFFER_DESC bd = {};
-  cb->GetDesc(&bd);
-  if (bd.ByteWidth != 880) {
-    cb->Release();
-    return;
-  }
-  // §43 routing diagnostic: the SRV scan runs for EVERY qualifying 880 draw
-  // (not just the frame's largest) so we can log which shadow-map TEXTURE each
-  // ground draw actually samples — the FLATZ experiment proved the injected
-  // caster is abundantly present in the readback map (recvMapTex) while the
-  // visible ground stays shadowless, i.e. the ground samples a DIFFERENT map.
-  // GROUND_MAP groundSrvTex vs INJECT_MAP dsvTex/recvMapTex settles routing.
-  bool samplesShadow = false;
-  void* groundSrvTex = nullptr;    // identity only, logged then released
-  ID3D11ShaderResourceView* srvs[16] = {};
-  context->PSGetShaderResources(0, 16, srvs);
-  for (ID3D11ShaderResourceView* srv : srvs)
-    if (srv && !samplesShadow) {
-      std::lock_guard lock(g_shadowTraceMutex);
-      if (isShadowSrvLocked(srv)) {
-        samplesShadow = true;
-        ID3D11Resource* sres = nullptr;
-        srv->GetResource(&sres);
-        if (sres) {
-          groundSrvTex = sres;
-          sres->Release();
-        }
-      }
-    }
-  for (ID3D11ShaderResourceView* srv : srvs)
-    if (srv)
-      srv->Release();
-  if (!samplesShadow) {
-    cb->Release();
-    return;
-  }
-  {
-    static std::mutex gmMutex;
-    static std::unordered_map<std::string, uint64_t> gmTick;
-    const uint64_t tick = GetTickCount64();
-    char keyc[64];
-    std::snprintf(keyc, sizeof(keyc), "%s/%u", st, count);
-    bool doLog = false;
-    {
-      std::lock_guard<std::mutex> lock(gmMutex);
-      auto& t = gmTick[keyc];
-      if (tick - t > 500 || t == 0) { t = tick; doLog = true; }
-    }
-    if (doLog)
-      log("GROUND_MAP state=", st, " count=", count,
-          " groundSrvTex=", groundSrvTex,
-          " recvMapTex=", g_recvMapTexPtr.load(std::memory_order_relaxed));
-  }
-  const uint64_t frame = g_reconFrame.load(std::memory_order_relaxed);
-  {
-    std::lock_guard<std::mutex> lock(g_texWorldMutex);
-    if (g_texWorldFrame == frame && count <= g_texWorldBestCount) {
-      cb->Release();
-      return;   // a bigger receiver already won this frame
-    }
-  }
-  // §41b: the scene (incl. this receive draw) is recorded on a DEFERRED
-  // context, where a staging-copy readback of the bound cbuffer is impossible
-  // (and readVsCbufferBytes correctly refuses). But every context is hooked,
-  // so the Map/UpdateSubresource hooks have already snapshotted the LAST WRITE
-  // to this exact buffer object into g_cbSnaps — read Model@0 and
-  // PSSGLightModelViewProjTex@752 from that CPU-side snapshot instead. This
-  // both works on any context AND is guaranteed to be the payload of the
-  // buffer bound at THIS draw (correct object, not "last 880 write of the
-  // frame"). Immediate-context staging read kept only as a fallback.
-  const bool immediate =
-      context->GetType() == D3D11_DEVICE_CONTEXT_IMMEDIATE;
-  uint8_t win[816];
-  bool haveWin = false;
-  const char* winSrc = "snap";
-  {
-    std::lock_guard lock(g_cbSnapMutex);
-    auto it = g_cbSnaps.find(cb);
-    if (it != g_cbSnaps.end() && it->second.size == 880) {
-      static_assert(kCbSnapBytes >= 816, "snapshot must cover @752 matrix");
-      std::memcpy(win, it->second.data, sizeof(win));
-      haveWin = true;
-    }
-  }
-  if (!haveWin && immediate) {
-    haveWin = readVsCbufferBytes(context, 0, 0, 816, win);
-    winSrc = "staging";
-  }
-  cb->Release();
-  if (!haveWin) {
-    static std::atomic<uint64_t> missLogs{0};
-    if (missLogs.fetch_add(1, std::memory_order_relaxed) % 600 == 0)
-      log("CUTIN_V2_TEX miss ctx=", immediate ? "immediate" : "deferred",
-          " count=", count, " (no cb snapshot for bound 880)");
-    return;
-  }
-  float M[16], T[16], Mi[16], TW[16];
-  std::memcpy(M, win, 64);          // Model @0
-  std::memcpy(T, win + 752, 64);    // PSSGLightModelViewProjTex @752
-  if (!mtxInvert(M, Mi))
-    return;
-  mtxMul(T, Mi, TW);                // world -> shadow UV
-  // §42: fold the receiver shader's v-flip (samples at 1 - v) into row 1:
-  // row1' = e3 - row1. Exact for w=1 points since TW row3 = (0,0,0,1).
-  const bool mirrorY = cutinInjectMirrorYEnabled();
-  if (mirrorY) {
-    TW[4] = -TW[4];
-    TW[5] = -TW[5];
-    TW[6] = -TW[6];
-    TW[7] = 1.0f - TW[7];
-  }
-  {
-    std::lock_guard<std::mutex> lock(g_texWorldMutex);
-    g_texWorldFrame = frame;
-    g_texWorldBestCount = count;
-    std::memcpy(g_texWorld, TW, 64);
-  }
-  g_texWorldValid.store(true, std::memory_order_relaxed);
-  static std::atomic<uint64_t> capLogs{0};
-  if (capLogs.fetch_add(1, std::memory_order_relaxed) % 240 == 0)
-    log("CUTIN_V2_TEX capture count=", count,
-        " ctx=", immediate ? "immediate" : "deferred", " src=", winSrc,
-        " mirrorY=", mirrorY ? 1 : 0,
-        " Mt=", M[3], ",", M[7], ",", M[11],
-        " TWr0=", TW[0], ",", TW[1], ",", TW[2], ",", TW[3],
-        " TWr3=", TW[12], ",", TW[13], ",", TW[14], ",", TW[15]);
-}
-
-// §32b draw-time gate-hold (the write-path-independent net). Runs on every
-// draw during a cinematic battle state when ARLAND_CUTIN_GATE_HOLD is on:
-// if the draw's VS cb0 is an 880-byte receiver material AND the shadow SRV is
-// bound, record a 16-byte box UpdateSubresource over [832,848) setting the VS
-// `diffuse` to (1,1,1,1) immediately before the draw. min(diffuse.w,diffuse.x)
-// then clears the 0.75 shadow-fade threshold and the receiver PS's shadow
-// block executes. Catches ALL write-path scenarios: unseen write path, stale
-// pre-cinematic content re-bound, deferred-context recording. Idempotent, 16
-// bytes/draw on at most a handful of receiver draws per frame.
+// Draw-time gate-hold — the load-bearing piece of the cut-in shadow fix,
+// independent of the (engine-internal) write path. At every draw during a
+// cinematic battle state whose VS cb0 is an 880-byte receiver material with
+// the shadow SRV bound, record a 16-byte BOX UpdateSubresource over bytes
+// [832,848) forcing diffuse=(1,1,1,1) right before the draw. This works even
+// if the buffer was written pre-cinematic and re-bound stale, or written
+// through a path none of our hooks cover. Partial constant-buffer updates are
+// legal on the 11.1 runtime semantics DXVK implements, and we only touch the
+// 16 gate bytes, so stale-snapshot matrix corruption is impossible.
 void gateHoldAtDraw(ID3D11DeviceContext* context) {
-  if (!cutinGateHoldEnabled() || !cutinGateDrawEnabled())
-    return;
-  if (!arlandInCinematicBattle())
+  if (!cutinGateHoldEnabled() || !arlandInCinematicBattle())
     return;
   ID3D11Buffer* cb = nullptr;
   context->VSGetConstantBuffers(0, 1, &cb);
@@ -3996,32 +846,9 @@ void gateHoldAtDraw(ID3D11DeviceContext* context) {
     cb->Release();
     return;
   }
-  // Log the last CPU-side write's @832 (when we have one) so the run shows
-  // what the gate value WAS at draw time — 0.7 proves the stale/unseen-path
-  // theory; a missing snapshot proves the write path bypasses all cb hooks.
-  {
-    static std::atomic<uint64_t> dl{0};
-    const uint64_t dk = GetTickCount64() / 500;
-    if (dl.exchange(dk) != dk) {
-      float d[4] = {};
-      bool haveSnap = false;
-      {
-        std::lock_guard lock(g_cbSnapMutex);
-        auto it = g_cbSnaps.find(cb);
-        if (it != g_cbSnaps.end() && it->second.size == 880) {
-          std::memcpy(d, it->second.data + 832, 16);
-          haveSnap = true;
-        }
-      }
-      const char* st = arlandBattleStateName();  // capture once (race)
-      log("GATE_DRAW res=", static_cast<void*>(cb),
-          " state=", st ? st : "-", " snap=", haveSnap ? 1 : 0,
-          " @832=", d[0], ",", d[1], ",", d[2], ",", d[3]);
-    }
-  }
   // Force the gate open for this draw: partial 16-byte update of the bound
   // DEFAULT buffer, recorded in-order before the draw on THIS context (legal
-  // on deferred contexts; DXVK implements 11.1 partial-cb-update semantics).
+  // on deferred contexts too).
   static const float kOpen[4] = {1.0f, 1.0f, 1.0f, 1.0f};
   D3D11_BOX box = {};
   box.left = 832;
@@ -4032,223 +859,7 @@ void gateHoldAtDraw(ID3D11DeviceContext* context) {
   box.back = 1;
   getContextProcs(context)->UpdateSubresource(context, cb, 0, &box, kOpen,
                                               16, 16);
-  {
-    static std::atomic<uint64_t> t{0};
-    const uint64_t k = GetTickCount64() / 500;
-    if (t.exchange(k) != k)
-      log("GATE_HOLD draw res=", static_cast<void*>(cb),
-          " diffuse@832 -> 1.0 (gate opened at draw)");
-  }
   cb->Release();
-}
-
-// Count draws that sample the shadow map (the receiver side). If cut-in frames
-// show zero of these while overview frames show many, the cut-in never binds the
-// shadow SRV — the missing "receive" step.
-void traceShadowReceive(ID3D11DeviceContext* context) {
-  if (!shadowTraceEnabled())
-    return;
-  ID3D11ShaderResourceView* srvs[16] = {};
-  context->PSGetShaderResources(0, 16, srvs);
-  bool samplesShadow = false;
-  for (ID3D11ShaderResourceView* srv : srvs)
-    if (srv) {
-      std::lock_guard lock(g_shadowTraceMutex);
-      if (isShadowSrvLocked(srv)) {
-        samplesShadow = true;
-        break;
-      }
-    }
-
-  // §27 decisive probe: for FIELD/GROUND-material draws (VS cb0 = 768 no-shadow
-  // or 880 shadow-receiving) during battle, log state + which material + whether
-  // a shadow SRV is bound. Tells us definitively whether the cut-in ground is
-  // drawn with the shadow family (880) or the no-shadow family (768), and if it
-  // samples — the fact that decides whether "draw the ground with the shadow
-  // family" is the right lever. Throttled per (state, size).
-  {
-    const char* st = arlandBattleStateName();
-    if (st) {
-      ID3D11Buffer* vscb = nullptr;
-      context->VSGetConstantBuffers(0, 1, &vscb);
-      uint32_t cbSize = 0;
-      if (vscb) {
-        D3D11_BUFFER_DESC bd = {};
-        vscb->GetDesc(&bd);
-        cbSize = bd.ByteWidth;
-        vscb->Release();
-      }
-      if (cbSize == 768 || cbSize == 880) {
-        static std::mutex m;
-        static std::unordered_map<std::string, uint64_t> lastTick;
-        const uint64_t tick = GetTickCount64();
-        char keyc[48];
-        std::snprintf(keyc, sizeof(keyc), "%s/%u", st, cbSize);
-        bool doLog = false;
-        { std::lock_guard<std::mutex> lock(m);
-          auto& t = lastTick[keyc];
-          if (tick - t > 500 || t == 0) { t = tick; doLog = true; } }
-        if (doLog)
-          log("GROUND_DRAW state=", st, " material=", cbSize,
-              " (", (cbSize == 880 ? "shadow-recv" : "no-shadow"),
-              ") shadowSrvBound=", samplesShadow);
-      }
-    }
-  }
-
-  ReceiverBucketKey bucket;
-  bool haveBucket = false;
-  if (receiverRtTraceEnabled()) {
-    ID3D11RenderTargetView* rtv = nullptr;
-    ID3D11DepthStencilView* dsv = nullptr;
-    context->OMGetRenderTargets(1, &rtv, &dsv);
-    if (rtv) {
-      ID3D11Resource* resource = nullptr;
-      rtv->GetResource(&resource);
-      if (resource) {
-        ID3D11Texture2D* texture = nullptr;
-        if (SUCCEEDED(resource->QueryInterface(IID_PPV_ARGS(&texture)))) {
-          D3D11_TEXTURE2D_DESC desc = {};
-          texture->GetDesc(&desc);
-          ID3D11PixelShader* ps = nullptr;
-          context->PSGetShader(&ps, nullptr, nullptr);
-          bucket = {reinterpret_cast<uintptr_t>(resource),
-            reinterpret_cast<uintptr_t>(ps), desc.Width,
-            desc.Height, uint32_t(desc.Format)};
-          haveBucket = true;
-          if (ps) ps->Release();
-          texture->Release();
-        }
-        resource->Release();
-      }
-      rtv->Release();
-    }
-    if (dsv)
-      dsv->Release();
-  }
-
-  {
-    std::lock_guard lock(g_shadowTraceMutex);
-    if (samplesShadow)
-      ++g_shadowReceiveDraws;
-    if (haveBucket) {
-      auto& stats = g_receiverBuckets[bucket];
-      ++stats.draws;
-      if (samplesShadow)
-        ++stats.shadowSampling;
-    }
-  }
-
-  for (ID3D11ShaderResourceView* srv : srvs)
-    if (srv)
-      srv->Release();
-}
-
-// §32c receiver-constants probe: on draws whose PS samples the shadow map,
-// dump the PS (once) and log its bound constant buffers' latest CPU writes,
-// tagged with the battle state. A phase-level "stop resolving shadows" switch
-// must show up as a per-state diff here (or in the PS itself changing).
-void traceShadowRecvConstants(ID3D11DeviceContext* context) {
-  if (!cutinRecvTraceEnabled() && !cutinMapTraceEnabled())
-    return;
-  const char* state = arlandBattleStateName();
-  if (!state)
-    return;
-  static mutex recvMutex;
-  static const char* lastState = nullptr;
-  static int logged = 0;
-  {
-    std::lock_guard lock(recvMutex);
-    if (lastState != state) {
-      lastState = state;
-      logged = 0;
-    }
-    if (logged >= 4)
-      return;
-  }
-  ID3D11ShaderResourceView* srvs[16] = {};
-  context->PSGetShaderResources(0, 16, srvs);
-  bool samplesShadow = false;
-  int shadowSlot = -1;
-  for (int i = 0; i < 16; ++i)
-    if (srvs[i]) {
-      std::lock_guard lock(g_shadowTraceMutex);
-      if (isShadowSrvLocked(srvs[i])) {
-        samplesShadow = true;
-        shadowSlot = i;
-        break;
-      }
-    }
-  if (samplesShadow && cutinMapTraceEnabled() && shadowSlot >= 0) {
-    ID3D11Resource* rres = nullptr;
-    srvs[shadowSlot]->GetResource(&rres);
-    if (rres) {
-      recordMapEvent('R', rres, "shadow_map", context);
-      rres->Release();
-    }
-  }
-  for (ID3D11ShaderResourceView* srv : srvs)
-    if (srv)
-      srv->Release();
-  if (!samplesShadow || !cutinRecvTraceEnabled())
-    return;
-  {
-    std::lock_guard lock(recvMutex);
-    if (lastState != state || logged >= 4)
-      return;
-    ++logged;
-  }
-  ID3D11PixelShader* ps = nullptr;
-  context->PSGetShader(&ps, nullptr, nullptr);
-  if (ps)
-    dumpPsOnce(ps, "recv");
-  ID3D11Buffer* cbs[4] = {};
-  context->PSGetConstantBuffers(0, 4, cbs);
-  for (int i = 0; i < 4; ++i) {
-    if (!cbs[i])
-      continue;
-    CbSnap snap;
-    bool have = false;
-    {
-      std::lock_guard lock(g_cbSnapMutex);
-      auto it = g_cbSnaps.find(cbs[i]);
-      if (it != g_cbSnaps.end()) {
-        snap = it->second;
-        have = true;
-      }
-    }
-    if (!have) {
-      log("CUTIN_RECV state=", state, " ps=", reinterpret_cast<void*>(ps),
-        " slot=", i, " cb=", reinterpret_cast<void*>(cbs[i]), " snap=none");
-      continue;
-    }
-    const float* f = reinterpret_cast<const float*>(snap.data);
-    log("CUTIN_RECV state=", state, " ps=", reinterpret_cast<void*>(ps),
-      " srv_slot=", shadowSlot, " slot=", i, " size=", snap.size,
-      " f0=", f[0], ",", f[1], ",", f[2], ",", f[3],
-      " f4=", f[4], ",", f[5], ",", f[6], ",", f[7],
-      " f8=", f[8], ",", f[9], ",", f[10], ",", f[11]);
-    // Receiver material: PSSGLightModelViewProjTex at +752 is the matrix the
-    // shadow resolve projects through — the prime phase-desync suspect.
-    if (snap.size == 880 || snap.size == 768) {
-      const float* tm = reinterpret_cast<const float*>(snap.data + 752);
-      const float* ts = reinterpret_cast<const float*>(snap.data + 816);
-      const float* lp = reinterpret_cast<const float*>(snap.data + 832);
-      log("CUTIN_RECV_TEXMTX state=", state,
-        " cb=", reinterpret_cast<void*>(cbs[i]),
-        " r0=", tm[0], ",", tm[1], ",", tm[2], ",", tm[3],
-        " r1=", tm[4], ",", tm[5], ",", tm[6], ",", tm[7],
-        " r2=", tm[8], ",", tm[9], ",", tm[10], ",", tm[11],
-        " r3=", tm[12], ",", tm[13], ",", tm[14], ",", tm[15],
-        " tapScale=", ts[0],
-        " shadowLPos=", lp[0], ",", lp[1], ",", lp[2]);
-    }
-  }
-  for (ID3D11Buffer* cb : cbs)
-    if (cb)
-      cb->Release();
-  if (ps)
-    ps->Release();
 }
 
 bool transitionTraceEnabled() {
@@ -4572,10 +1183,30 @@ const char* configPath() {
       WritePrivateProfileStringA("Rendering", "MSAA", "1", result.data());
       WritePrivateProfileStringA("Rendering", "Width", "", result.data());
       WritePrivateProfileStringA("Rendering", "Height", "", result.data());
+      WritePrivateProfileStringA("Battle", "BattleShadows", "true", result.data());
+      WritePrivateProfileStringA("Battle", "BattleCutInShadows", "true", result.data());
+      WritePrivateProfileStringA("Battle", "BattleCutInDimming", "false", result.data());
     }
     return result;
   }();
   return path[0] ? path.data() : nullptr;
+}
+
+// Read a boolean from arland-fix.ini. If the key is missing, write the default
+// into the file (so users discover the option) and return it. Accepts
+// true/false, 1/0, yes/no (first character, case-insensitive).
+bool arlandConfigBool(const char* section, const char* key, bool def) {
+  const char* path = configPath();
+  if (!path)
+    return def;
+  char value[16] = { };
+  GetPrivateProfileStringA(section, key, "\x01", value, sizeof(value), path);
+  if (value[0] == '\x01') {   // absent: persist the default so it appears in the ini
+    WritePrivateProfileStringA(section, key, def ? "true" : "false", path);
+    return def;
+  }
+  return value[0] == 't' || value[0] == 'T' || value[0] == '1' ||
+         value[0] == 'y' || value[0] == 'Y';
 }
 
 bool configuredResolution(UINT* width, UINT* height) {
@@ -5333,27 +1964,21 @@ HRESULT STDMETHODCALLTYPE ID3D11Device_CreateBuffer(
     }
   }
 
-  // §32b: an 880 receiver material created WITH initial data (transient
-  // per-frame cb pattern) bypasses both the Map and UpdateSubresource hooks —
-  // trace it, and hold the shadow gate open in the initial payload too.
+  // Gate-hold write path: an 880 receiver material created WITH initial data
+  // (transient per-frame cb pattern) bypasses both the Map and
+  // UpdateSubresource hooks — hold the shadow gate open in the initial
+  // payload too.
   D3D11_SUBRESOURCE_DATA gateInit;
   uint8_t gateInitCopy[880];
-  if (pDesc && pData && pData->pSysMem &&
+  if (cutinGateHoldEnabled() && arlandInCinematicBattle() &&
+      pDesc && pData && pData->pSysMem &&
       (pDesc->BindFlags & D3D11_BIND_CONSTANT_BUFFER) &&
-      pDesc->ByteWidth >= 768 && pDesc->ByteWidth <= 1024) {
-    gateTraceCbWrite("create", pData->pSysMem, pDesc->ByteWidth, nullptr);
-    if (cutinGateHoldEnabled() && pDesc->ByteWidth == 880 &&
-        arlandInCinematicBattle()) {
-      std::memcpy(gateInitCopy, pData->pSysMem, 880);
-      if (gateHoldPatch(gateInitCopy, 880)) {
-        gateInit = *pData;
-        gateInit.pSysMem = gateInitCopy;
-        pData = &gateInit;
-        static std::atomic<uint64_t> t{0};
-        const uint64_t k = GetTickCount64() / 500;
-        if (t.exchange(k) != k)
-          log("GATE_HOLD create diffuse@832 -> 1.0 (gate opened)");
-      }
+      pDesc->ByteWidth == 880) {
+    std::memcpy(gateInitCopy, pData->pSysMem, 880);
+    if (gateHoldPatch(gateInitCopy, 880)) {
+      gateInit = *pData;
+      gateInit.pSysMem = gateInitCopy;
+      pData = &gateInit;
     }
   }
 
@@ -5380,7 +2005,7 @@ HRESULT STDMETHODCALLTYPE ID3D11Device_CreateBuffer(
     (*ppBuffer)->SetPrivateData(
       IID_ResolutionBufferData, pDesc->ByteWidth, pData->pSysMem);
   }
-  if (cbSnapEnabled() && SUCCEEDED(hr) && ppBuffer && *ppBuffer &&
+  if (cutinBlobEnabled() && SUCCEEDED(hr) && ppBuffer && *ppBuffer &&
       pDesc && pData && pData->pSysMem && pDesc->ByteWidth >= 16 &&
       (pDesc->BindFlags & D3D11_BIND_CONSTANT_BUFFER))
     snapCbWrite(*ppBuffer, pData->pSysMem, pDesc->ByteWidth);
@@ -5396,9 +2021,6 @@ HRESULT STDMETHODCALLTYPE ID3D11Device_CreateVertexShader(
   auto procs = getDeviceProcs(pDevice);
   const HRESULT hr = procs->CreateVertexShader(pDevice, pShaderBytecode,
     BytecodeLength, pClassLinkage, ppVertexShader);
-  if (cutinReconEnabled() && SUCCEEDED(hr) && ppVertexShader && *ppVertexShader &&
-      pShaderBytecode && BytecodeLength && BytecodeLength <= (1u << 20))
-    recordVsBytecode(*ppVertexShader, pShaderBytecode, BytecodeLength);
   return hr;
 }
 
@@ -5411,10 +2033,6 @@ HRESULT STDMETHODCALLTYPE ID3D11Device_CreatePixelShader(
   auto procs = getDeviceProcs(pDevice);
   const HRESULT hr = procs->CreatePixelShader(pDevice, pShaderBytecode,
     BytecodeLength, pClassLinkage, ppPixelShader);
-  if ((cutinReconEnabled() || cutinRecvTraceEnabled()) && SUCCEEDED(hr) &&
-      ppPixelShader && *ppPixelShader &&
-      pShaderBytecode && BytecodeLength && BytecodeLength <= (1u << 20))
-    recordPsBytecode(*ppPixelShader, pShaderBytecode, BytecodeLength);
   return hr;
 }
 
@@ -5525,15 +2143,6 @@ HRESULT STDMETHODCALLTYPE ID3D11Device_CreateTexture2D(
   }
 
   const HRESULT hr = procs->CreateTexture2D(pDevice, pDesc, pData, ppTexture);
-  if ((cutinMapTraceEnabled() || cutinMapReadbackEnabled()) &&
-      SUCCEEDED(hr) && pDesc &&
-      pDesc->Width == 1024 && pDesc->Height == 1024 &&
-      pDesc->Format == DXGI_FORMAT_R24G8_TYPELESS &&
-      pDesc->Usage != D3D11_USAGE_STAGING && ppTexture && *ppTexture) {
-    std::lock_guard lock(g_mapTraceMutex);
-    mapTraceId(*ppTexture, "shadow_map_created");
-    g_shadowMapTexSet.insert(*ppTexture);
-  }
   if (resolutionTraceEnabled() && SUCCEEDED(hr) && ppTexture && *ppTexture &&
       haveOriginalDesc) {
     D3D11_TEXTURE2D_DESC actual = { };
@@ -5885,10 +2494,6 @@ void STDMETHODCALLTYPE ID3D11DeviceContext_CopyResource(
   TransitionTimer transitionTimer(g_transitionCopy);
   auto procs = getContextProcs(pContext);
 
-  if (cutinMapTraceEnabled() && (isTracedShadowMapTex(pDstResource) ||
-                                 isTracedShadowMapTex(pSrcResource)))
-    recordMapEvent('P', pDstResource, "shadow_map", pContext, pSrcResource);
-
   traceResolutionCopy("resource", pContext, pDstResource, pSrcResource);
 
   resolveIfMSAA(pContext, pSrcResource);
@@ -5934,13 +2539,6 @@ void STDMETHODCALLTYPE ID3D11DeviceContext_CopySubresourceRegion(
         ID3D11Resource*           pSrcResource,
         UINT                      SrcSubresource,
   const D3D11_BOX*                pSrcBox) {
-  if ((cutinMapTraceEnabled() || cutinMapReadbackEnabled()) &&
-      (isTracedShadowMapTex(pDstResource) ||
-       isTracedShadowMapTex(pSrcResource))) {
-    recordMapEvent('Q', pDstResource, "shadow_map", pContext, pSrcResource);
-    if (cutinMapReadbackEnabled() && isTracedShadowMapTex(pDstResource))
-      rememberRecvMap(pDstResource);
-  }
   TransitionTimer transitionTimer(g_transitionCopy);
   auto procs = getContextProcs(pContext);
 
@@ -6071,8 +2669,6 @@ void STDMETHODCALLTYPE ID3D11DeviceContext_OMSetRenderTargets(
   updateRtvShadowResources(pContext);
   resolveBoundMSAA(pContext);
   getRasterState(pContext)->dirty.store(true, std::memory_order_release);
-  traceShadowTargetBind(RTVCount, ppRTVs, pDSV);
-  updateShadowPassFlag(RTVCount, ppRTVs, pDSV);
 
   ID3D11RenderTargetView* msaaRtv = nullptr;
   ID3D11DepthStencilView* msaaDsv = nullptr;
@@ -6107,8 +2703,6 @@ void STDMETHODCALLTYPE ID3D11DeviceContext_OMSetRenderTargetsAndUnorderedAccessV
   updateRtvShadowResources(pContext);
   resolveBoundMSAA(pContext);
   getRasterState(pContext)->dirty.store(true, std::memory_order_release);
-  traceShadowTargetBind(RTVCount, ppRTVs, pDSV);
-  updateShadowPassFlag(RTVCount, ppRTVs, pDSV);
 
   ID3D11RenderTargetView* msaaRtv = nullptr;
   ID3D11DepthStencilView* msaaDsv = nullptr;
@@ -6148,67 +2742,24 @@ void STDMETHODCALLTYPE ID3D11DeviceContext_UpdateSubresource(
   const void* effectiveData = pData;
   uint8_t dimHoldCopy[16];
   uint8_t gateHoldCopy[880];
-  // §32b blind-spot check: the gate-hold below only sees full-buffer writes
-  // (no box, subresource 0). If the engine updates the 880 receiver with a BOX
-  // (partial or full-extent), it would silently bypass every cb hook — log it.
-  if (cutinGateHoldEnabled() && pData && (pBox || Subresource != 0)) {
-    D3D11_BUFFER_DESC boxDesc = {};
-    if (isConstantBuffer(pResource, &boxDesc) && boxDesc.ByteWidth >= 768 &&
-        boxDesc.ByteWidth <= 1024) {
-      static std::atomic<uint64_t> t{0};
-      const uint64_t k = GetTickCount64() / 300;
-      if (t.exchange(k) != k) {
-        const char* boxSt = arlandBattleStateName();  // capture once (race)
-        log("GATE_TRACE path=update_box res=", pResource,
-            " size=", boxDesc.ByteWidth, " sub=", Subresource,
-            " box=", pBox ? int64_t(pBox->left) : -1,
-            "..", pBox ? int64_t(pBox->right) : -1,
-            " state=", boxSt ? boxSt : "-",
-            " cine=", arlandInCinematicBattle());
-      }
-    }
-  }
-  if (cbSnapEnabled() && pData && !pBox && Subresource == 0) {
+  if (cbCaptureEnabled() && pData && !pBox && Subresource == 0) {
     D3D11_BUFFER_DESC desc = {};
     if (isConstantBuffer(pResource, &desc)) {
-      snapCbWrite(pResource, pData, desc.ByteWidth);
-      gateTraceCbWrite("update", pData, desc.ByteWidth, pResource);
-      lightDiagLog(pData, desc.ByteWidth);   // see the 880 receiver's constants
-      captureRecvTex(pData, desc.ByteWidth);
-      logSmallCbChange(pData, desc.ByteWidth, pResource);
-      // §22 fix: hold the faded light $Params at 1.0 during the cut-in. pData is
-      // const (DEFAULT buffer), so patch a copy and pass that to the real call.
-      if (cutinDimHoldEnabled() && desc.ByteWidth == 16 &&
-          arlandInCinematicBattle()) {
-        std::memcpy(dimHoldCopy, pData, 16);
-        if (dimHoldPatch(dimHoldCopy, 16)) {
-          effectiveData = dimHoldCopy;
-          static std::atomic<uint64_t> t{0};
-          const uint64_t k = GetTickCount64() / 500;
-          if (t.exchange(k) != k)
-            log("DIM_HOLD update res=", pResource, " -> 1.0");
+      if (cutinBlobEnabled())
+        snapCbWrite(pResource, pData, desc.ByteWidth);
+      if (arlandInCinematicBattle()) {
+        // Dim-hold: keep the faded light $Params at 1.0 during the cut-in.
+        // pData is const (DEFAULT buffer), so patch a copy and pass that on.
+        if (cutinDimHoldEnabled() && desc.ByteWidth == 16) {
+          std::memcpy(dimHoldCopy, pData, 16);
+          if (dimHoldPatch(dimHoldCopy, 16))
+            effectiveData = dimHoldCopy;
         }
-      }
-      // §32 fix: OPEN the shadow-reception gate on the 880 receiver material by
-      // holding its VS `diffuse` (byte 832) at 1.0 during cinematic states.
-      if (cutinGateHoldEnabled() && desc.ByteWidth == 880 &&
-          arlandInCinematicBattle()) {
-        // Log the incoming diffuse so we can confirm it is the faded 0.7.
-        static std::atomic<uint64_t> tl{0};
-        const uint64_t kl = GetTickCount64() / 500;
-        if (tl.exchange(kl) != kl) {
-          const float* d = reinterpret_cast<const float*>(
-            static_cast<const uint8_t*>(pData) + 832);
-          log("GATE_DIFFUSE res=", pResource, " @832=", d[0], ",", d[1], ",",
-              d[2], ",", d[3], " gate=", 2.5f - 2.0f * (d[0] < d[3] ? d[0] : d[3]));
-        }
-        std::memcpy(gateHoldCopy, pData, 880);
-        if (gateHoldPatch(gateHoldCopy, 880)) {
-          effectiveData = gateHoldCopy;
-          static std::atomic<uint64_t> t{0};
-          const uint64_t k = GetTickCount64() / 500;
-          if (t.exchange(k) != k)
-            log("GATE_HOLD update res=", pResource, " diffuse@832 -> 1.0 (gate opened)");
+        // Gate-hold: open the 880 receiver material's shadow-reception gate.
+        if (cutinGateHoldEnabled() && desc.ByteWidth == 880) {
+          std::memcpy(gateHoldCopy, pData, 880);
+          if (gateHoldPatch(gateHoldCopy, 880))
+            effectiveData = gateHoldCopy;
         }
       }
     }
@@ -6602,13 +3153,7 @@ void STDMETHODCALLTYPE ID3D11DeviceContext_Draw(
   auto procs = getContextProcs(pContext);
   flushDirtyShadows(pContext);
   updateViewportScissor(pContext);
-  traceShadowDraw(pContext, false, VertexCount, 1);
-  traceShadowReceive(pContext);
-  captureRecvTexWorld(pContext, VertexCount);
   gateHoldAtDraw(pContext);
-  traceShadowRecvConstants(pContext);
-  traceCasterCoverage(pContext, VertexCount);
-  traceShadowMatrix(pContext, VertexCount);
   traceResolutionDraw(pContext, "draw", VertexCount, 1);
 
   // Carry dialogue-snapshot identity through the three-vertex blur passes so
@@ -6642,8 +3187,7 @@ void STDMETHODCALLTYPE ID3D11DeviceContext_Draw(
   if (blurInput) blurInput->Release();
   if (blurView) blurView->Release();
 
-  cutinRecon(pContext, false, VertexCount);
-  cutinShadowDraw(pContext, false, VertexCount, StartVertexLocation, 0);
+  cutinBlobCaptureDraw(pContext, VertexCount);
   procs->Draw(pContext, VertexCount, StartVertexLocation);
 }
 
@@ -6653,13 +3197,7 @@ void STDMETHODCALLTYPE ID3D11DeviceContext_DrawIndexed(
   auto procs = getContextProcs(pContext);
   flushDirtyShadows(pContext);
   updateViewportScissor(pContext);
-  traceShadowDraw(pContext, true, IndexCount, 1);
-  traceShadowReceive(pContext);
-  captureRecvTexWorld(pContext, IndexCount);
   gateHoldAtDraw(pContext);
-  traceShadowRecvConstants(pContext);
-  traceCasterCoverage(pContext, IndexCount);
-  traceShadowMatrix(pContext, IndexCount);
   traceResolutionDraw(pContext, "indexed", IndexCount, 1);
 
   // The 48-byte 1920x1080 quad is shared by other cutscene layers. Keep the
@@ -6710,8 +3248,7 @@ void STDMETHODCALLTYPE ID3D11DeviceContext_DrawIndexed(
     if (resource) resource->Release();
     if (view) view->Release();
   }
-  cutinRecon(pContext, true, IndexCount);
-  cutinShadowDraw(pContext, true, IndexCount, StartIndexLocation, BaseVertexLocation);
+  cutinBlobCaptureDraw(pContext, IndexCount);
   procs->DrawIndexed(pContext, IndexCount, StartIndexLocation, BaseVertexLocation);
 }
 
@@ -6722,14 +3259,7 @@ void STDMETHODCALLTYPE ID3D11DeviceContext_DrawInstanced(
   auto procs = getContextProcs(pContext);
   flushDirtyShadows(pContext);
   updateViewportScissor(pContext);
-  traceShadowDraw(
-    pContext, false, VertexCountPerInstance, InstanceCount);
-  traceShadowReceive(pContext);
-  captureRecvTexWorld(pContext, VertexCountPerInstance);
   gateHoldAtDraw(pContext);
-  traceShadowRecvConstants(pContext);
-  traceCasterCoverage(pContext, VertexCountPerInstance);
-  traceShadowMatrix(pContext, VertexCountPerInstance);
   traceResolutionDraw(
     pContext, "instanced", VertexCountPerInstance, InstanceCount);
   procs->DrawInstanced(pContext, VertexCountPerInstance, InstanceCount,
@@ -6743,14 +3273,7 @@ void STDMETHODCALLTYPE ID3D11DeviceContext_DrawIndexedInstanced(
   auto procs = getContextProcs(pContext);
   flushDirtyShadows(pContext);
   updateViewportScissor(pContext);
-  traceShadowDraw(
-    pContext, true, IndexCountPerInstance, InstanceCount);
-  traceShadowReceive(pContext);
-  captureRecvTexWorld(pContext, IndexCountPerInstance);
   gateHoldAtDraw(pContext);
-  traceShadowRecvConstants(pContext);
-  traceCasterCoverage(pContext, IndexCountPerInstance);
-  traceShadowMatrix(pContext, IndexCountPerInstance);
   traceResolutionDraw(
     pContext, "indexed-instanced", IndexCountPerInstance, InstanceCount);
   procs->DrawIndexedInstanced(pContext, IndexCountPerInstance, InstanceCount,
@@ -6874,31 +3397,6 @@ void STDMETHODCALLTYPE ID3D11DeviceContext_PSSetShaderResources(
       }
     }
   }
-  // §20 experiment: during a cut-in, substitute the receiver's shadow map with a
-  // uniform 1x1 map so sample_c returns a constant (no per-pixel shadow). If the
-  // ground brightens, the shadow term is the darkener (§19).
-  if (cutinShadowOffEnabled() && arlandInCinematicBattle() &&
-      ppShaderResourceViews && NumViews > 0 && NumViews <= 16) {
-    ID3D11ShaderResourceView* lit = getLitShadowSrv(pContext);  // cached; no lock held
-    if (lit) {
-      ID3D11ShaderResourceView* subst[16];
-      bool anyShadow = false;
-      {
-        std::lock_guard<mutex> lock(g_shadowTraceMutex);
-        for (UINT i = 0; i < NumViews; i++) {
-          subst[i] = ppShaderResourceViews[i];
-          if (subst[i] && isShadowSrvLocked(subst[i])) {
-            subst[i] = lit;
-            anyShadow = true;
-          }
-        }
-      }
-      if (anyShadow) {
-        procs->PSSetShaderResources(pContext, StartSlot, NumViews, subst);
-        return;
-      }
-    }
-  }
   procs->PSSetShaderResources(pContext, StartSlot, NumViews,
     ppShaderResourceViews);
 }
@@ -6919,7 +3417,6 @@ void STDMETHODCALLTYPE ID3D11DeviceContext_ExecuteCommandList(
   TransitionTimer transitionTimer(g_transitionCommands);
   auto procs = getContextProcs(pContext);
   flushDirtyShadows(pContext);
-  recordMapEvent('X', pCommandList, "cmdlist", pContext);
   procs->ExecuteCommandList(pContext, pCommandList, RestoreContextState);
 }
 
@@ -6958,8 +3455,7 @@ void hookDevice(ID3D11Device* pDevice) {
 
   log("Hooking device ", pDevice,
       " msaa=", msaaSamples(),
-      " resolution_trace=", resolutionTraceEnabled(),
-      " shadow_trace=", shadowTraceEnabled());
+      " resolution_trace=", resolutionTraceEnabled());
 
   DeviceProcs* procs = &g_deviceProcs;
   HOOK_PROC(ID3D11Device, pDevice, procs, 3,  CreateBuffer);
@@ -7099,154 +3595,6 @@ void traceTransitionD3DFrame(uint64_t intervalMicros) {
       " calls=", stats.calls, " resources=", stats.resources.size(),
       " bytes=", stats.estimatedBytes,
       " api_us=", stats.nanos / 1000);
-  }
-}
-
-void traceShadowD3DFrame() {
-  if (!shadowTraceEnabled())
-    return;
-
-  std::map<ShadowDrawKey, ShadowDrawStats> draws;
-  std::map<ReceiverBucketKey, ReceiverBucketStats> receiverBuckets;
-  std::map<uintptr_t, ShadowTargetStats> shadowTargets;
-  std::map<uintptr_t, VbCoverage> vbCoverage;
-  std::map<uintptr_t, uint64_t> drawsPerTarget;
-  uint64_t depthOnlyBinds = 0;
-  uint64_t receiveDraws = 0;
-  uint64_t sequence = 0;
-  {
-    std::lock_guard lock(g_shadowTraceMutex);
-    if (++g_shadowTraceFrames < 20)
-      return;
-    g_shadowTraceFrames = 0;
-    sequence = ++g_shadowTraceSequence;
-    depthOnlyBinds = g_shadowDepthOnlyBinds;
-    g_shadowDepthOnlyBinds = 0;
-    receiveDraws = g_shadowReceiveDraws;
-    g_shadowReceiveDraws = 0;
-    draws.swap(g_shadowDraws);
-    receiverBuckets.swap(g_receiverBuckets);
-    shadowTargets.swap(g_shadowTargets);
-    vbCoverage.swap(g_vbCoverage);
-  }
-  g_cbMtxLogged.store(0, std::memory_order_relaxed);
-
-  // Coverage summary: character-sized meshes (maxElements high) split by whether
-  // they cast (shadow), are visible (color), or both. color-only = visible but
-  // not casting — the transform/coherence break we're testing for.
-  if (!vbCoverage.empty()) {
-    uint64_t colorOnly = 0, both = 0, shadowOnly = 0;
-    uint64_t colorOnlyBig = 0, bothBig = 0;
-    for (const auto& [vb, c] : vbCoverage) {
-      const bool big = c.maxElements >= 300;  // character-scale mesh
-      if (c.color && !c.shadow) { ++colorOnly; if (big) ++colorOnlyBig; }
-      else if (c.color && c.shadow) { ++both; if (big) ++bothBig; }
-      else if (c.shadow && !c.color) ++shadowOnly;
-    }
-    log("SHADOW coverage window=", sequence,
-        " color_only=", colorOnly, " (big=", colorOnlyBig, ")",
-        " both=", both, " (big=", bothBig, ")",
-        " shadow_only=", shadowOnly);
-    // The decoupled mesh: casts in the overview (in g_vbEverCast) but is
-    // visible-and-not-casting right now, during a battle cinematic state.
-    const bool cinematic = arlandInCinematicBattle();
-    for (const auto& [vb, c] : vbCoverage) {
-      if (!(c.color && !c.shadow && c.maxElements >= 300))
-        continue;
-      auto ever = g_vbEverCast.find(vb);
-      if (cinematic && ever != g_vbEverCast.end() &&
-          g_decoupledReported.insert(vb).second)
-        log("SHADOW DECOUPLED_MESH window=", sequence,
-            " vb=", reinterpret_cast<void*>(vb),
-            " elements_now=", c.maxElements,
-            " elements_when_casting=", ever->second,
-            " (visible now, cast in overview)");
-    }
-  }
-
-  using GroupKey = std::tuple<uintptr_t, uintptr_t, uintptr_t, uintptr_t,
-    uint32_t, uint32_t, uint32_t, uint32_t, uint32_t>;
-  struct GroupStats {
-    uint64_t calls = 0;
-    uint64_t elements = 0;
-    std::set<uintptr_t> vertexBuffers;
-  };
-  std::map<GroupKey, GroupStats> groups;
-  uint64_t totalCalls = 0;
-  uint64_t totalElements = 0;
-  for (const auto& [key, stats] : draws) {
-    const GroupKey groupKey = {
-      key.depthResource, key.vertexShader, key.pixelShader, key.inputLayout,
-      key.targetWidth, key.targetHeight, key.targetFormat,
-      key.contextType, key.indexed,
-    };
-    auto& group = groups[groupKey];
-    group.calls += stats.calls;
-    group.elements += stats.elements;
-    drawsPerTarget[key.depthResource] += stats.calls;
-    if (key.vertexBuffer)
-      group.vertexBuffers.insert(key.vertexBuffer);
-    totalCalls += stats.calls;
-    totalElements += stats.elements;
-  }
-
-  log("SHADOW window=", sequence,
-      " ms=", GetTickCount64(),
-      " frames=20 depth_only_binds=", depthOnlyBinds,
-      " recv_draws=", receiveDraws,
-      " draws=", totalCalls,
-      " elements=", totalElements,
-      " groups=", groups.size());
-  // Distinct shadow depth targets bound this window, with how many caster draws
-  // each received. The battle binds two 1024x1024/44 targets; if one gets many
-  // draws and the other zero, the empty one is the cut-in's unpopulated map.
-  for (const auto& [resource, stats] : shadowTargets) {
-    log("SHADOW target window=", sequence,
-        " depth_resource=", reinterpret_cast<void*>(resource),
-        " dims=", stats.width, "x", stats.height, "/", stats.format,
-        " binds=", stats.binds,
-        " caster_draws=", drawsPerTarget.count(resource)
-          ? drawsPerTarget[resource] : 0);
-  }
-
-  size_t reported = 0;
-  for (const auto& [key, stats] : groups) {
-    if (reported++ >= 64)
-      break;
-    const auto& [depthResource, vs, ps, layout, width, height, format,
-                 contextType, indexed] = key;
-    log("SHADOW group window=", sequence,
-        " calls=", stats.calls,
-        " elements=", stats.elements,
-        " buffers=", stats.vertexBuffers.size(),
-        " depth_resource=", reinterpret_cast<void*>(depthResource),
-        " target=", width, "x", height, "/", format,
-        " context=", contextType,
-        " indexed=", indexed,
-        " vs=", reinterpret_cast<void*>(vs),
-        " ps=", reinterpret_cast<void*>(ps),
-        " layout=", reinterpret_cast<void*>(layout));
-  }
-
-  // Per-color-RT receiver buckets: a bucket with many draws but
-  // shadow_sampling=0 that appears during a cut-in is the pass that fails to
-  // sample the shadow map. Report the busiest buckets.
-  if (!receiverBuckets.empty()) {
-    std::vector<std::pair<ReceiverBucketKey, ReceiverBucketStats>> ordered(
-      receiverBuckets.begin(), receiverBuckets.end());
-    std::sort(ordered.begin(), ordered.end(),
-      [](const auto& a, const auto& b) { return a.second.draws > b.second.draws; });
-    size_t rt = 0;
-    for (const auto& [key, stats] : ordered) {
-      if (rt++ >= 24)
-        break;
-      log("SHADOW recv_rt window=", sequence,
-          " draws=", stats.draws,
-          " shadow_sampling=", stats.shadowSampling,
-          " target=", key.width, "x", key.height, "/", key.format,
-          " ps=", reinterpret_cast<void*>(key.pixelShader),
-          " resource=", reinterpret_cast<void*>(key.colorResource));
-    }
   }
 }
 

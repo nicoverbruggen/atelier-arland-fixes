@@ -11,9 +11,8 @@ namespace atfix {
 void hookDevice(ID3D11Device* pDevice);
 void hookContext(ID3D11DeviceContext* pContext);
 bool applyResolutionOverride(DXGI_SWAP_CHAIN_DESC* pDesc);
+bool arlandConfigBool(const char* section, const char* key, bool def);
 void traceTransitionD3DFrame(uint64_t intervalMicros);
-void traceShadowD3DFrame();
-void cutinShadowPresent();
 void cutinDrawContactBlobs(IDXGISwapChain* swapChain);
 
 /* lives in main.cpp */
