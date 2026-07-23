@@ -742,6 +742,7 @@ struct BattleBuildAddrs {
   uintptr_t battlePublishRet;  // ShadowHelperInit return address, battle setup
   uintptr_t fieldReentryRet;   // ShadowHelperInit return address, field re-entry
   uintptr_t helperSlotOffset;  // active-helper offset inside the scene manager
+  uintptr_t helperEmbedOffset; // ShadowHelper embed offset inside the game mode
   uintptr_t partyVectorOffset; // party std::vector<BtlChara*> offset in gameMode
   uintptr_t initFlagOffset;    // BtlChara one-time actor-init flag byte offset
   bool casterRestore;          // install the full caster-restoration hook set
@@ -751,13 +752,13 @@ constexpr BattleBuildAddrs kRoronaAddrsEn = {
   kBtlCharaVtableRvasEn, std::size(kBtlCharaVtableRvasEn),
   0x74e598, 0x74eb70, 0x76e018, 0x74e3f8,
   0x10c73c8, 0xfe6e1, 0x397307,
-  0x9d0, 0x658, 0x2d0, true,
+  0x9d0, 0x68, 0x658, 0x2d0, true,
 };
 constexpr BattleBuildAddrs kRoronaAddrsMulti = {
   kBtlCharaVtableRvasMulti, std::size(kBtlCharaVtableRvasMulti),
   0x76c138, 0x76c710, 0x78bc48, 0x76bf98,
   0x11044c8, 0x106781, 0x3ac8d7,
-  0x9d0, 0x658, 0x2d0, true,
+  0x9d0, 0x68, 0x658, 0x2d0, true,
 };
 // Meruru: managerSlot/helperSlotOffset read straight from the caster-group
 // build's prologue (EN 0x396f80: mov rax,[rip+...]=0xfe0b30; mov r10,[rax+0x960];
@@ -771,13 +772,38 @@ constexpr BattleBuildAddrs kMeruruAddrsEn = {
   kBtlCharaVtableRvasMeruruEn, std::size(kBtlCharaVtableRvasMeruruEn),
   0x6681e8, 0x667fe8, 0x66ffb8, 0x668048,
   0xfe0b30, 0x119a47, 0x392875,
-  0x960, 0x648, 0x2c0, false,
+  0x960, 0x68, 0x648, 0x2c0, false,
 };
 constexpr BattleBuildAddrs kMeruruAddrsMulti = {
   kBtlCharaVtableRvasMeruruMulti, std::size(kBtlCharaVtableRvasMeruruMulti),
   0x664268, 0x664068, 0x66bfa8, 0x6640c8,
   0x1040410, 0x106e97, 0x38f925,
-  0x960, 0x648, 0x2c0, false,
+  0x960, 0x68, 0x648, 0x2c0, false,
+};
+// Totori (EN): static investigation + runtime probe 2026-07-23. Structural
+// outlier: the battle helper is EMBEDDED at gameMode+0x60 (not +0x68), there
+// is NO global scene-manager/active-helper slot (field and battle each render
+// their own helper), and caster registration is native and healthy (probe:
+// config byte 1, helper context live before the BtlChara ctors, registry
+// fills) — so like Meruru, Totori only needs battle-state tracking for the
+// cut-in gate/dim patches. managerSlot/helperSlotOffset/initFlagOffset are 0:
+// no such structures exist; the global-slot code paths treat 0 as absent.
+// battlePublishRet/fieldReentryRet are the only two static ShadowHelperInit
+// (0x1a8930) call sites. BtlChara/Chara/EventExec vtables via RTTI.
+const uintptr_t kBtlCharaVtableRvasTotoriEn[] = {
+  0x6dbcf8,  // BtlChara
+  0x6dbe88,  // BtlCharaEffect
+  0x6dbfd8,  // BtlCharaDummy
+  0x6dc128,  // BtlCharaSynchro
+  0x6dc3c8,  // BtlCharaMonster
+  0x6dc518,  // BtlCharaParty
+  0x6dc278,  // BtlCharaRemoteWeapon
+};
+constexpr BattleBuildAddrs kTotoriAddrsEn = {
+  kBtlCharaVtableRvasTotoriEn, std::size(kBtlCharaVtableRvasTotoriEn),
+  0x6d4350, 0x6d4240, 0x6dbc90, 0x6d4288,
+  0, 0x1512f0, 0x94212,
+  0, 0x60, 0x5f8, 0, false,
 };
 
 // Null until a battle-capable build is recognized; battle-shadow code paths
@@ -838,6 +864,22 @@ const BattleStateEntry kBattleStatesMeruruMulti[] = {
   {0x66b760, "TurnEventWait"}, {0x66b7b0, "EndWait"}, {0x66b940, "AfterBattle"},
   {0x66b6c0, "DeadBoss"}, {0x66b800, "ResultStart"}, {0x66b850, "ResultCountExp"},
   {0x66b8f0, "ResultDropItem"}, {0x66b8a0, "ResultLevelUp"},
+};
+// Totori (A12V EN) battle states via the same RTTI locator method. 22 states:
+// no SelectDefence, and the result chain is renamed (Result/AddPay/DropItem/
+// LvUp instead of ResultStart/ResultCountExp/ResultDropItem/ResultLevelUp);
+// isCinematicState carries the Totori spellings. Multilingual RVAs not yet
+// matched.
+const BattleStateEntry kBattleStatesTotoriEn[] = {
+  {0x6daeb0, "Enter"}, {0x6db310, "StartWait"}, {0x6daf50, "SelectCommand"},
+  {0x6db040, "SelectTarget"}, {0x6dafa0, "SelectSkill"},
+  {0x6daff0, "SelectItem"}, {0x6db180, "WaitAction"},
+  {0x6db090, "ExecCommand"}, {0x6db220, "Reaction"},
+  {0x6db130, "ReactionSkillBefore"}, {0x6db0e0, "HelpSkillBefore"},
+  {0x6db1d0, "HelpSkillAfter"}, {0x6daf00, "ChangeActiveChara"},
+  {0x6db270, "EndCheck"}, {0x6db360, "TurnEventWait"}, {0x6db3b0, "EndWait"},
+  {0x6db540, "AfterBattle"}, {0x6db2c0, "DeadBoss"}, {0x6db400, "Result"},
+  {0x6db450, "AddPay"}, {0x6db4f0, "DropItem"}, {0x6db4a0, "LvUp"},
 };
 const BattleStateEntry* g_battleStates = nullptr;
 size_t g_battleStateCount = 0;
@@ -911,7 +953,8 @@ uintptr_t tracedBtlCharaMonsterCtor(uintptr_t self, uintptr_t a2, uintptr_t a3,
 // the helper-init resource argument, which the field path proves equals the
 // scene ShadowCharacterBuild expects.
 size_t dispatchBattleCharaShadows(uintptr_t helper, uintptr_t scene) {
-  const uintptr_t gameMode = helper ? helper - 0x68 : 0;
+  const uintptr_t gameMode = helper && g_battleAddrs
+    ? helper - g_battleAddrs->helperEmbedOffset : 0;
   const bool contextLive = helper &&
     *reinterpret_cast<const uintptr_t*>(helper + 0x18) != 0;
   size_t dispatched = 0;
@@ -1078,7 +1121,8 @@ size_t locateBattleCharaContainer(uintptr_t gameMode, uintptr_t scene,
 // exactly this slot; on Meruru both were read from the caster-group build's
 // own manager load.
 uintptr_t* globalActiveHelperSlot() {
-  if (!gameBase || !g_battleAddrs)
+  // managerSlot == 0 marks a game with no global helper slot (Totori).
+  if (!gameBase || !g_battleAddrs || !g_battleAddrs->managerSlot)
     return nullptr;
   const uintptr_t manager =
     *reinterpret_cast<uintptr_t*>(gameBase + g_battleAddrs->managerSlot);
@@ -1328,7 +1372,8 @@ uintptr_t tracedShadowHelperInit(uintptr_t helper, uintptr_t id,
   // back to the field helper. Both return addresses are per-build (EN
   // 0xfe6e1/0x397307, multi 0x106781/0x3ac8d7).
   if (g_battleAddrs && callerRva == g_battleAddrs->battlePublishRet) {
-    const uintptr_t gameMode = helper ? helper - 0x68 : 0;
+    const uintptr_t gameMode =
+      helper ? helper - g_battleAddrs->helperEmbedOffset : 0;
     g_battleHelper.store(helper, std::memory_order_release);
     g_battleGameMode.store(gameMode, std::memory_order_release);
     g_battleScene.store(resource, std::memory_order_release);
@@ -1377,7 +1422,8 @@ uintptr_t tracedShadowHelperInit(uintptr_t helper, uintptr_t id,
   // The per-frame scene shadow pass reads the active helper from the manager
   // global (+helperSlotOffset) and early-outs when it is null; log it here to
   // see whether battle leaves it unset while field publishes it.
-  const uintptr_t globalMgr = gameBase && g_battleAddrs
+  const uintptr_t globalMgr = gameBase && g_battleAddrs &&
+      g_battleAddrs->managerSlot
     ? *reinterpret_cast<const uintptr_t*>(
         gameBase + g_battleAddrs->managerSlot) : 0;
   const uintptr_t globalActiveHelper = globalMgr
@@ -1413,7 +1459,8 @@ uintptr_t tracedBattleActorInit(uintptr_t actor, uintptr_t scene) {
     ? *reinterpret_cast<const uintptr_t*>(actor + 0x10) : 0;
   const uintptr_t character = actor
     ? *reinterpret_cast<const uintptr_t*>(actor + 0x18) : 0;
-  const uintptr_t helper = gameMode ? gameMode + 0x68 : 0;
+  const uintptr_t helper = gameMode && g_battleAddrs
+    ? gameMode + g_battleAddrs->helperEmbedOffset : 0;
   const uintptr_t contextBefore = helper
     ? *reinterpret_cast<const uintptr_t*>(helper + 0x18) : 0;
   const uintptr_t result = originalBattleActorInit(actor, scene);
@@ -3009,6 +3056,163 @@ bool installBucTextCacheScope(BYTE* base, const Game& game) {
     reinterpret_cast<void**>(&originalBucBalloonCtor));
 }
 
+// ---- Totori battle-shadow gate probe ---------------------------------------
+// Runtime probe distinguishing the two candidate root causes of Totori's
+// missing battle shadows (static investigation 2026-07-23; see TODO.md and the
+// project notes). Totori's caster registration is native but double-gated:
+//   A) config byte [gameMode+0xa00], copied from the battle request at mode
+//      creation — if 0, helper init, registration, and the per-frame render
+//      are all skipped;
+//   B) ordering — the BtlChara model build registers casters only while the
+//      battle helper's context mirror [gameMode+0x78] is live; if the
+//      game-mode setup (battle ShadowHelperInit, ret RVA 0x1512f0) runs after
+//      the BtlChara ctors, registration silently skips.
+// The probe hooks ShadowHelperInit and both BtlChara ctors and logs both
+// gates plus the caster-registry fill at each event: helper init never firing
+// from the battle site => A; firing but ctors seeing ctx_78=0 or the registry
+// staying empty => B. Totori English build only; a handful of log lines per
+// battle. Totori's battle helper is EMBEDDED at gameMode+0x60 (not +0x68).
+// The helper-init hook itself now belongs to the shared battle-state tracking
+// (installMeruruBattleStateHook handles Totori EN); the probe keeps only the
+// ctor and per-frame render observers.
+constexpr uintptr_t kTotoriPartyCtorRva = 0x16c9f0;
+constexpr uintptr_t kTotoriMonsterCtorRva = 0x16c800;
+BtlCharaCtorProc originalTotoriPartyCtor = nullptr;
+BtlCharaCtorProc originalTotoriMonsterCtor = nullptr;
+
+// Caster-registry entry count (std::vector at helper+0x48/+0x50), or -1.
+int64_t totoriRegistryCount(uintptr_t helper) {
+  if (!readableRange(helper + 0x48, 0x10))
+    return -1;
+  const uintptr_t begin = *reinterpret_cast<const uintptr_t*>(helper + 0x48);
+  const uintptr_t end = *reinterpret_cast<const uintptr_t*>(helper + 0x50);
+  if (!begin || end < begin)
+    return -1;
+  return int64_t((end - begin) / sizeof(uintptr_t));
+}
+
+void totoriLogGates(const char* site, uintptr_t gameMode) {
+  int cfg = -1;
+  int inited = -1;
+  uintptr_t ctx = 0;
+  if (readableRange(gameMode + 0xa00, 1))
+    cfg = *reinterpret_cast<const BYTE*>(gameMode + 0xa00);
+  if (readableRange(gameMode + 0x78, 8))
+    ctx = *reinterpret_cast<const uintptr_t*>(gameMode + 0x78);
+  if (readableRange(gameMode + 0x60 + 0x41, 1))
+    inited = *reinterpret_cast<const BYTE*>(gameMode + 0x60 + 0x41);
+  atfix::log("TOTORI_SHADOW_PROBE ", site,
+    " gm=", reinterpret_cast<void*>(gameMode),
+    " cfg_a00=", cfg,
+    " ctx_78=", reinterpret_cast<void*>(ctx),
+    " inited_41=", inited,
+    " registry=", totoriRegistryCount(gameMode + 0x60));
+}
+
+// Both ctors log after the original returns: the model build inside the ctor
+// is where native registration happens, so ctx_78/registry at ctor exit show
+// whether this character registered.
+uintptr_t probedTotoriPartyCtor(uintptr_t a, uintptr_t b,
+                                uintptr_t c, uintptr_t d) {
+  const uintptr_t result = originalTotoriPartyCtor(a, b, c, d);
+  uintptr_t gameMode = 0;
+  if (readableRange(a + 0x10, 8))
+    gameMode = *reinterpret_cast<const uintptr_t*>(a + 0x10);
+  if (gameMode)
+    totoriLogGates("partyCtor", gameMode);
+  else
+    atfix::log("TOTORI_SHADOW_PROBE partyCtor chara=",
+      reinterpret_cast<void*>(a), " gm=0");
+  return result;
+}
+
+uintptr_t probedTotoriMonsterCtor(uintptr_t a, uintptr_t b,
+                                  uintptr_t c, uintptr_t d) {
+  const uintptr_t result = originalTotoriMonsterCtor(a, b, c, d);
+  uintptr_t gameMode = 0;
+  if (readableRange(a + 0x10, 8))
+    gameMode = *reinterpret_cast<const uintptr_t*>(a + 0x10);
+  if (gameMode)
+    totoriLogGates("monsterCtor", gameMode);
+  else
+    atfix::log("TOTORI_SHADOW_PROBE monsterCtor chara=",
+      reinterpret_cast<void*>(a), " gm=0");
+  return result;
+}
+
+// Per-frame battle helper render (0x1ab0d0): logs the enable flag the game
+// passes plus the game-mode's render-enable bytes, throttled. Round 1 of the
+// probe proved registration works (cfg=1, ctx live, registry fills), so the
+// break is downstream: either this enable chain or the receiver's reception
+// gate.
+using TotoriHelperRenderProc = uintptr_t (*)(
+  uintptr_t, uintptr_t, uintptr_t, uintptr_t);
+constexpr uintptr_t kTotoriHelperRenderRva = 0x1ab0d0;
+TotoriHelperRenderProc originalTotoriHelperRender = nullptr;
+
+uintptr_t probedTotoriHelperRender(uintptr_t helper, uintptr_t ctx,
+                                   uintptr_t enable, uintptr_t d) {
+  static std::atomic<uint32_t> calls{0};
+  static std::atomic<uint32_t> lastEnable{0xffffffff};
+  const uint32_t n = calls.fetch_add(1, std::memory_order_relaxed);
+  const uint32_t enableBit = uint32_t(enable & 0xff);
+  const uint32_t previous = lastEnable.exchange(
+    enableBit, std::memory_order_relaxed);
+  if (n < 8 || n % 300 == 0 || enableBit != previous) {
+    const uintptr_t gameMode = helper - 0x60;
+    int a00 = -1, a03 = -1, a98 = -1, a9b = -1;
+    if (readableRange(gameMode + 0xa00, 4)) {
+      a00 = *reinterpret_cast<const BYTE*>(gameMode + 0xa00);
+      a03 = *reinterpret_cast<const BYTE*>(gameMode + 0xa03);
+    }
+    if (readableRange(gameMode + 0xa98, 4)) {
+      a98 = *reinterpret_cast<const BYTE*>(gameMode + 0xa98);
+      a9b = *reinterpret_cast<const BYTE*>(gameMode + 0xa9b);
+    }
+    atfix::log("TOTORI_SHADOW_PROBE helperRender n=", n,
+      " enable=", enableBit,
+      " a00=", a00, " a03=", a03, " a98=", a98, " a9b=", a9b,
+      " registry=", totoriRegistryCount(helper));
+  }
+  return originalTotoriHelperRender(helper, ctx, enable, d);
+}
+
+bool installTotoriShadowProbe(BYTE* base, const Game& game) {
+  if (game.atlasVariant != AtlasTotori || game.exeBuild != BuildEnglish)
+    return false;
+  auto* partyCtor = base + kTotoriPartyCtorRva;
+  auto* monsterCtor = base + kTotoriMonsterCtorRva;
+  auto* helperRender = base + kTotoriHelperRenderRva;
+  const std::array<BYTE, 16> partyExpected = {
+    0x48, 0x89, 0x4c, 0x24, 0x08, 0x57, 0x48, 0x83,
+    0xec, 0x30, 0x48, 0xc7, 0x44, 0x24, 0x20, 0xfe,
+  };
+  // Totori's monster ctor is the push-rbp variant of Rorona's push-rbx one.
+  const std::array<BYTE, 16> monsterExpected = {
+    0x40, 0x55, 0x56, 0x57, 0x48, 0x83, 0xec, 0x60,
+    0x48, 0xc7, 0x44, 0x24, 0x20, 0xfe, 0xff, 0xff,
+  };
+  const std::array<BYTE, 16> helperRenderExpected = {
+    0x48, 0x8b, 0xc4, 0x55, 0x41, 0x54, 0x41, 0x55,
+    0x41, 0x56, 0x41, 0x57, 0x48, 0x8d, 0x68, 0x98,
+  };
+  if (!matches(partyCtor, partyExpected) ||
+      !matches(monsterCtor, monsterExpected) ||
+      !matches(helperRender, helperRenderExpected))
+    return false;
+  if (!installMinHookDetour(partyCtor,
+      reinterpret_cast<void*>(&probedTotoriPartyCtor),
+      reinterpret_cast<void**>(&originalTotoriPartyCtor)))
+    return false;
+  if (!installMinHookDetour(monsterCtor,
+      reinterpret_cast<void*>(&probedTotoriMonsterCtor),
+      reinterpret_cast<void**>(&originalTotoriMonsterCtor)))
+    return false;
+  return installMinHookDetour(helperRender,
+    reinterpret_cast<void*>(&probedTotoriHelperRender),
+    reinterpret_cast<void**>(&originalTotoriHelperRender));
+}
+
 bool installShadowLayerTrace(BYTE* base, const Game& game) {
   if (!shadowLayerTraceEnabled() || game.atlasVariant != AtlasRorona ||
       game.exeBuild != BuildEnglish)
@@ -3248,14 +3452,24 @@ bool installShadowMappingTrace(BYTE* base, const Game& game) {
 // battle-state tracking. That takes exactly one hook: the ShadowHelperInit
 // observer, whose battle/field call sites (battlePublishRet/fieldReentryRet)
 // flip g_battleActive and seed g_battleGameMode for the per-frame state scan.
-// The hooked prologue is byte-identical across Rorona EN and both Meruru
-// builds; the RVAs are per-build (EN 0x17b540, multilingual 0x168b20), each
-// confirmed as the target of the two known call sites.
+// The hooked prologue is byte-identical across Rorona EN, both Meruru builds,
+// and Totori EN; the RVAs are per-build (Meruru EN 0x17b540, Meruru
+// multilingual 0x168b20, Totori EN 0x1a8930), each confirmed as the target of
+// the two known call sites. Totori reuses the identical mechanism — its
+// fighting shadows are natively healthy (2026-07-23 probe), so like Meruru it
+// only needs the state tracking for the cut-in patches. Totori's multilingual
+// helper-init RVA is not yet matched, so that build stays uninstalled.
 bool installMeruruBattleStateHook(BYTE* base, const Game& game) {
-  if (!battleShadowRestoreEnabled() || game.atlasVariant != AtlasLaterArland)
+  if (!battleShadowRestoreEnabled())
     return false;
-  const uintptr_t helperInitRva = game.exeBuild == BuildMultilingual
-    ? 0x168b20 : 0x17b540;
+  uintptr_t helperInitRva = 0;
+  if (game.atlasVariant == AtlasLaterArland)
+    helperInitRva = game.exeBuild == BuildMultilingual ? 0x168b20 : 0x17b540;
+  else if (game.atlasVariant == AtlasTotori &&
+           game.exeBuild == BuildEnglish)
+    helperInitRva = 0x1a8930;
+  if (!helperInitRva)
+    return false;
   auto* helperInit = base + helperInitRva;
   const std::array<BYTE, 16> helperInitExpected = {
     0x48, 0x8b, 0xc4, 0x55, 0x56, 0x57, 0x48, 0x81,
@@ -3296,6 +3510,14 @@ void detectAndInstallGameHooks() {
         ? kBattleStatesMeruruMulti : kBattleStatesMeruruEn;
       g_battleStateCount = game.exeBuild == BuildMultilingual
         ? std::size(kBattleStatesMeruruMulti) : std::size(kBattleStatesMeruruEn);
+    } else if (game.atlasVariant == AtlasTotori &&
+               game.exeBuild == BuildEnglish) {
+      // Totori (EN): battle-state tracking only, like Meruru — fighting
+      // shadows are natively healthy; the tracking drives the cut-in
+      // gate/dim patches. Multilingual addresses not yet matched.
+      g_battleAddrs = &kTotoriAddrsEn;
+      g_battleStates = kBattleStatesTotoriEn;
+      g_battleStateCount = std::size(kBattleStatesTotoriEn);
     }
     atfix::log("Recognized menu-fix executable ", game.executable,
       game.exeBuild == BuildMultilingual ? " (multilingual build)"
@@ -3321,6 +3543,9 @@ void detectAndInstallGameHooks() {
     // hooks; without them the ctor/dtor hooks would only count balloons.
     const bool bucTextCacheInstalled = atlasInstalled
       ? installBucTextCacheScope(gameBase, game) : false;
+    if (game.atlasVariant == AtlasTotori)
+      atfix::log("Totori shadow probe installed=",
+        installTotoriShadowProbe(gameBase, game));
     const bool deepStatsInstalled = atlasInstalled
       ? installDeepMenuStats(gameBase, game) : false;
     const bool shadowLayerTraceInstalled =
@@ -3329,11 +3554,11 @@ void detectAndInstallGameHooks() {
       installShadowConstructorTrace(gameBase, game);
     const bool shadowMappingTraceInstalled =
       installShadowMappingTrace(gameBase, game);
-    const bool meruruBattleStateInstalled =
+    const bool battleStateInstalled =
       installMeruruBattleStateHook(gameBase, game);
-    if (game.atlasVariant == AtlasLaterArland)
-      atfix::log("Meruru battle-state hook installed=",
-        meruruBattleStateInstalled);
+    if (game.atlasVariant == AtlasLaterArland ||
+        game.atlasVariant == AtlasTotori)
+      atfix::log("Battle-state hook installed=", battleStateInstalled);
     const bool cutinFlagTraceInstalled =
       installCutinFlagTrace(gameBase, game);
     if (cutinFlagTraceEnabled())
@@ -3475,7 +3700,7 @@ void trackBattleStateTick() {
   ++snaps;
   // Dump the shadow caster registry nodes (helper+0x48) — the actual nodes the
   // shadow traversal walks; their per-node visibility gates the shadow draw.
-  const uintptr_t helper = gameMode + 0x68;
+  const uintptr_t helper = gameMode + g_battleAddrs->helperEmbedOffset;
   if (readableRange(helper + 0x48, 0x10)) {
     const uintptr_t rb = *reinterpret_cast<const uintptr_t*>(helper + 0x48);
     const uintptr_t re = *reinterpret_cast<const uintptr_t*>(helper + 0x50);
@@ -3514,6 +3739,9 @@ bool isCinematicState(const char* name) {
     "WaitAction", "HelpSkillBefore", "HelpSkillAfter", "ReactionSkillBefore",
     "Reaction", "ResultStart", "ResultCountExp", "ResultDropItem",
     "ResultLevelUp", "DeadBoss", "AfterBattle",
+    // Totori's renamed result chain (its other cinematic states share the
+    // Rorona/Meruru names above).
+    "Result", "AddPay", "DropItem", "LvUp",
   };
   for (const char* n : kNames)
     if (std::strcmp(name, n) == 0)

@@ -349,10 +349,11 @@ ID3D11ShaderResourceView* getShadowResTwinSrv(
 }
 
 // Reopen the receiver's shadow-reception gate during cut-ins. Per-game and
-// override handling (env ARLAND_CUTIN_SHADOWS, ini [Battle] BattleCutInShadows
-// default true) now live in the capability matrix (game.cpp); Totori is
-// Unsupported there until its cut-in detection is ported, so this stays off for
-// Totori. Cached because it is read in hot draw paths.
+// override handling (env ARLAND_CUTIN_SHADOWS, ini [Battle] BattleCutInShadows)
+// live in the capability matrix (game.cpp); all three games are OptIn while
+// the cut-in character-juggling glitch is investigated (Totori's battle-state
+// tracking landed 2026-07-23, English build). Cached because it is read in hot
+// draw paths.
 bool cutinGateHoldEnabled() {
   static const bool enabled = featureEnabled(Feature::CutInShadows);
   return enabled;

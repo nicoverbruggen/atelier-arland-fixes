@@ -26,7 +26,9 @@ public:
       m_start = now;
     const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
       now - m_start).count();
-    m_file << '[' << std::setw(8) << ms << "] ";
+    // std::dec guards against a previous line's sticky std::hex manipulator
+    // bleeding into the timestamp.
+    m_file << std::dec << '[' << std::setw(8) << ms << "] ";
     (m_file << ... << args) << std::endl;
   }
 

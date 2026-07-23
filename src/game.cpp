@@ -69,16 +69,17 @@ constexpr Support X = Support::OnByDefault;
 // The capability matrix. Rows are Rorona / Totori / Meruru, columns follow the
 // Feature enum. KEEP IN SYNC with the "Feature support by game" table in
 // README.md. Notes: FrameAtlasCache is Rorona-only; BattleShadows (mod-side
-// caster restoration) is OnByDefault only on Rorona — Meruru casts them
-// natively and Totori's are still broken (planned, see TODO.md); Totori has no
-// cut-in state detection yet, so its cut-in cells are Unsupported. CutInShadows
-// and CutInDimHold are OptIn (off by default) on Rorona/Meruru WHILE the cut-in
-// character-juggling shadow glitch is being fixed (see TODO.md); flip both back
-// to OnByDefault once that is stable.
+// caster restoration) is OnByDefault only on Rorona — Meruru and Totori cast
+// them natively (Totori confirmed healthy by the 2026-07-23 probe). CutInShadows
+// and CutInDimHold are OptIn (off by default) everywhere WHILE the cut-in
+// character-juggling shadow glitch is being fixed (see TODO.md); flip them back
+// to OnByDefault once that is stable. Totori's cut-in support (battle-state
+// tracking + the shared gate/dim patches) is English-build only so far and
+// awaiting first validation.
 constexpr Support kMatrix[3][static_cast<int>(Feature::Count)] = {
   //           Sync Menu Atls Frme Res  MSAA ShMl Bat  CutS CutD
   /* Rorona */ { X,   X,   X,   X,   X,   O,   O,   X,   O,   O },
-  /* Totori */ { X,   X,   X,   U,   X,   O,   O,   U,   U,   U },
+  /* Totori */ { X,   X,   X,   U,   X,   O,   O,   U,   O,   O },
   /* Meruru */ { X,   X,   X,   U,   X,   O,   O,   U,   O,   O },
 };
 
