@@ -62,6 +62,30 @@ used alone as a much cheaper alternative to MSAA. Note: the very fine lace trim
 is sub-pixel alpha-test detail that no post-process (SMAA included) can fully
 resolve — only rendering at a higher internal resolution does.
 
+## UI font
+
+The games draw all UI text from a low-resolution pre-baked bitmap font. `Font`
+in the `[Rendering]` section chooses how it is rendered; it is **`replaced` by
+default**:
+
+```ini
+[Rendering]
+Font=replaced
+```
+
+- **`replaced`** (default) — re-render each string from a scalable font (Cuprum,
+  embedded in the DLL) at full resolution, keeping the game's own layout. Glyphs
+  the font lacks — such as the custom controller-button icons — fall back to
+  `upscaled` automatically, so nothing is left pixelated or missing.
+- **`upscaled`** — keep the original baked glyphs but smooth them (the exact
+  original look, just sharper).
+- **`default`** (or `off`) — the untouched original bitmap font.
+
+To supply your own replacement font, drop a `arland-hires-font.ttf` next to the
+DLL; it overrides the embedded one. `ARLAND_UIFONT` overrides the mode for a
+session (`ARLAND_UIFONT=upscaled`, etc.). English versions only — the Japanese
+and Chinese builds are unaffected.
+
 ## MSAA
 
 Multisample anti-aliasing is disabled by default. `MSAA` in the `[Rendering]`
