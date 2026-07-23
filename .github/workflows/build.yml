@@ -35,9 +35,15 @@ jobs:
             found { print }
             END { if (!found) exit 1 }
           ' CHANGELOG.md > release-notes.md
+          # Tags containing "pre" (e.g. v0.5-pre) publish as a GitHub pre-release.
+          if echo "${GITHUB_REF_NAME}" | grep -qi 'pre'; then
+            PRERELEASE="--prerelease"
+          else
+            PRERELEASE="--latest"
+          fi
           if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
-            gh release edit "${GITHUB_REF_NAME}" --notes-file release-notes.md
+            gh release edit "${GITHUB_REF_NAME}" --notes-file release-notes.md $PRERELEASE
             gh release upload "${GITHUB_REF_NAME}" build64/d3d11.dll build32/msimg32.dll --clobber
           else
-            gh release create "${GITHUB_REF_NAME}" build64/d3d11.dll build32/msimg32.dll --verify-tag --notes-file release-notes.md --title "Atelier Arland Fixes ${GITHUB_REF_NAME}"
+            gh release create "${GITHUB_REF_NAME}" build64/d3d11.dll build32/msimg32.dll --verify-tag --notes-file release-notes.md --title "Atelier Arland Fixes ${GITHUB_REF_NAME}" $PRERELEASE
           fi
