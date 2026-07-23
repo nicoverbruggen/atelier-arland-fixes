@@ -120,10 +120,10 @@ UIFontMode uiFontMode() {
     if (const char* env = std::getenv("ARLAND_UIFONT")) {
       std::strncpy(value, env, sizeof(value) - 1);
     } else if (const char* path = configPath()) {
-      GetPrivateProfileStringA("Other", "UIFont", "\x01", value,
+      GetPrivateProfileStringA("Rendering", "Font", "\x01", value,
         sizeof(value), path);
       if (value[0] == '\x01') {                    // absent: seed the default
-        WritePrivateProfileStringA("Other", "UIFont", "replaced", path);
+        WritePrivateProfileStringA("Rendering", "Font", "replaced", path);
         std::strncpy(value, "replaced", sizeof(value) - 1);
       }
     } else {

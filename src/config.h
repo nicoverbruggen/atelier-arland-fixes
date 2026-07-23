@@ -29,7 +29,7 @@ unsigned int msaaSamples();
 // probe and other opt-in diagnostic lines so the default log stays quiet.
 bool verboseLogging();
 
-// How UI text is rendered: [Other] UIFont — "replaced" (the DEFAULT: re-render
+// How UI text is rendered: [Rendering] Font — "replaced" (the DEFAULT: re-render
 // each string from the embedded scalable font (Cuprum), multi-line and glyph-
 // atlas-cached, falling back to upscaling for glyphs it can't resolve), "upscaled"
 // (filter-upscale the baked glyphs, preserving the engine's exact layout), or

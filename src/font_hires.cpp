@@ -357,6 +357,17 @@ void decodeUtf8Lines(const char* s, std::vector<int>& out) {
     ++i;
     for (int k = 0; k < extra && s[i]; ++k, ++i)
       cp = (cp << 6) | (static_cast<unsigned char>(s[i]) & 0x3F);
+    // Unicode Roman numerals (U+2160 Ⅰ .. U+216B Ⅻ) -> ASCII letters; the game
+    // uses these for dungeon/quest tiers ("Moyori Forest Ⅰ/Ⅱ"), which a Latin
+    // font has no single glyph for. They expand to several ASCII chars, so emit
+    // them directly and skip the single-codepoint folds below.
+    if (cp >= 0x2160 && cp <= 0x216B) {
+      static const char* const kRoman[] = {
+        "I", "II", "III", "IV", "V", "VI", "VII", "VIII", "IX", "X", "XI", "XII" };
+      for (const char* p = kRoman[cp - 0x2160]; *p; ++p)
+        out.push_back(static_cast<unsigned char>(*p));
+      continue;
+    }
     // Fold stray whitespace (incl. full-width U+3000, nbsp, thin/zero-width) to a
     // normal space so it doesn't trip the missing-glyph "keep baked" guard.
     if (cp == '\r' || cp == '\t' || cp == 0x00A0 || cp == 0x3000 ||
@@ -442,7 +453,12 @@ float userScale() {
 int userVOff() {
   static const int v = [] {
     const char* e = std::getenv("ARLAND_HIRES_VOFF");
-    return e ? std::atoi(e) : 0;
+    if (e)
+      return std::atoi(e);
+    // Per-game baseline nudge (baked px). Meruru's replaced text reads slightly
+    // low against its ruled-paper panels; -5 lands it on the lines. Rorona and
+    // Totori look right at 0. ARLAND_HIRES_VOFF overrides.
+    return (currentTitle() == Title::Meruru) ? -5 : 0;
   }();
   return v;
 }
@@ -482,9 +498,24 @@ bool renderReplaced(BYTE* output, const char* utf8, uintptr_t pixels,
   int numLines = 1;
   for (const int cp : cps)
     if (cp == '\n') ++numLines;
-  const float lineH = static_cast<float>(usedH) / numLines;
-  const float scale = stbtt_ScaleForPixelHeight(&g_font, lineH) * userScale();
+  // FONT SIZE basis stays usedH/numLines so single-line menus render exactly as
+  // before. LINE PITCH, though, comes from the engine's own lineHeight (output
+  // +0x18 = lineHeight/potH), NOT usedH/numLines: usedH = topOffset +
+  // numLines*lineHeight, so dividing usedH evenly overestimates the pitch and a
+  // multi-line block drifts off the paper's ruled lines. Center the block in usedH
+  // (topOff) so the single-line case is byte-identical to the even split. Fall
+  // back to the even split if the lineHeight metric is missing/inconsistent.
+  const float sizeH = static_cast<float>(usedH) / numLines;
+  const float scale = stbtt_ScaleForPixelHeight(&g_font, sizeH) * userScale();
   const int sizeKey = static_cast<int>(scale * 8192.0f + 0.5f);
+
+  float pitch = sizeH;
+  float topOff = 0.0f;
+  const float lineHeightPx = metrics[2] * newH;   // output+0x18 = lineHeight/potH
+  if (lineHeightPx > 1.0f && metrics[2] * numLines <= metrics[1] + 1e-4f) {
+    pitch = lineHeightPx;
+    topOff = (static_cast<float>(usedH) - numLines * pitch) * 0.5f;
+  }
 
   // Fixed baseline reference: center the cap box (measured once from 'H') in the
   // line slot. Using a font constant instead of each string's own ink keeps every
@@ -492,7 +523,7 @@ bool renderReplaced(BYTE* output, const char* utf8, uintptr_t pixels,
   // longer rides higher than an all-caps one); capitals stay optically centered.
   int hx0 = 0, hy0 = 0, hx1 = 0, hy1 = 0;
   stbtt_GetCodepointBitmapBox(&g_font, 'H', scale, scale, &hx0, &hy0, &hx1, &hy1);
-  const int baseInLine = static_cast<int>(lineH * 0.5f - (hy0 + hy1) * 0.5f);
+  const int baseInLine = static_cast<int>(pitch * 0.5f - (hy0 + hy1) * 0.5f);
 
   void* buffer = alloc(static_cast<size_t>(newW) * newH);
   if (!buffer)
@@ -506,7 +537,7 @@ bool renderReplaced(BYTE* output, const char* utf8, uintptr_t pixels,
   while (i < cps.size()) {
     size_t j = i;
     while (j < cps.size() && cps[j] != '\n') ++j;
-    const int lineTop = static_cast<int>(lineIdx * lineH + 0.5f);
+    const int lineTop = static_cast<int>(topOff + lineIdx * pitch + 0.5f);
     const int baseline = lineTop + baseInLine + userVOff() * kScale;
     float penX = 0.0f;
     for (size_t g = i; g < j; ++g) {
