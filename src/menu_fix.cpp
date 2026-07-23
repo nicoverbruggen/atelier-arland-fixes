@@ -16,6 +16,7 @@
 #include <vector>
 
 #include "../vendor/minhook/include/MinHook.h"
+#include "game.h"
 #include "log.h"
 
 namespace atfix {
@@ -25,6 +26,7 @@ bool arlandConfigBool(const char* section, const char* key, bool def);  // sync_
 }
 
 const char* currentBattleState();
+bool inActionCutin();   // mid-battle action cut-in (excludes result/teardown)
 
 // ============================================================================
 // menu_fix.cpp — the executable-specific hooks. Kept as one translation unit:
@@ -745,6 +747,9 @@ struct BattleBuildAddrs {
   uintptr_t helperEmbedOffset; // ShadowHelper embed offset inside the game mode
   uintptr_t partyVectorOffset; // party std::vector<BtlChara*> offset in gameMode
   uintptr_t initFlagOffset;    // BtlChara one-time actor-init flag byte offset
+  uintptr_t hideAllRva;        // tactical-scene hideAll(charaMgr, fade)
+  uintptr_t showAllRva;        // tactical-scene showAll(charaMgr)
+  uintptr_t deferredHideArmRva; // per-actor deferred setVisible arm
   bool casterRestore;          // install the full caster-restoration hook set
 };
 
@@ -752,13 +757,13 @@ constexpr BattleBuildAddrs kRoronaAddrsEn = {
   kBtlCharaVtableRvasEn, std::size(kBtlCharaVtableRvasEn),
   0x74e598, 0x74eb70, 0x76e018, 0x74e3f8,
   0x10c73c8, 0xfe6e1, 0x397307,
-  0x9d0, 0x68, 0x658, 0x2d0, true,
+  0x9d0, 0x68, 0x658, 0x2d0, 0x10c2c0, 0x10c270, 0xc5f80, true,
 };
 constexpr BattleBuildAddrs kRoronaAddrsMulti = {
   kBtlCharaVtableRvasMulti, std::size(kBtlCharaVtableRvasMulti),
   0x76c138, 0x76c710, 0x78bc48, 0x76bf98,
   0x11044c8, 0x106781, 0x3ac8d7,
-  0x9d0, 0x68, 0x658, 0x2d0, true,
+  0x9d0, 0x68, 0x658, 0x2d0, 0x1143c0, 0x114370, 0xce020, true,
 };
 // Meruru: managerSlot/helperSlotOffset read straight from the caster-group
 // build's prologue (EN 0x396f80: mov rax,[rip+...]=0xfe0b30; mov r10,[rax+0x960];
@@ -772,13 +777,13 @@ constexpr BattleBuildAddrs kMeruruAddrsEn = {
   kBtlCharaVtableRvasMeruruEn, std::size(kBtlCharaVtableRvasMeruruEn),
   0x6681e8, 0x667fe8, 0x66ffb8, 0x668048,
   0xfe0b30, 0x119a47, 0x392875,
-  0x960, 0x68, 0x648, 0x2c0, false,
+  0x960, 0x68, 0x648, 0x2c0, 0x1369b0, 0x136940, 0x102cd0, false,
 };
 constexpr BattleBuildAddrs kMeruruAddrsMulti = {
   kBtlCharaVtableRvasMeruruMulti, std::size(kBtlCharaVtableRvasMeruruMulti),
   0x664268, 0x664068, 0x66bfa8, 0x6640c8,
   0x1040410, 0x106e97, 0x38f925,
-  0x960, 0x68, 0x648, 0x2c0, false,
+  0x960, 0x68, 0x648, 0x2c0, 0x124080, 0x124010, 0xf0070, false,
 };
 // Totori (EN): static investigation + runtime probe 2026-07-23. Structural
 // outlier: the battle helper is EMBEDDED at gameMode+0x60 (not +0x68), there
@@ -803,7 +808,7 @@ constexpr BattleBuildAddrs kTotoriAddrsEn = {
   kBtlCharaVtableRvasTotoriEn, std::size(kBtlCharaVtableRvasTotoriEn),
   0x6d4350, 0x6d4240, 0x6dbc90, 0x6d4288,
   0, 0x1512f0, 0x94212,
-  0, 0x60, 0x5f8, 0, false,
+  0, 0x60, 0x5f8, 0, 0x170cb0, 0x170c30, 0, false,
 };
 
 // Null until a battle-capable build is recognized; battle-shadow code paths
@@ -1312,6 +1317,122 @@ void restoreBattleSnodeFlags(const char* site) {
       " tick=", t);
 }
 
+// ---- tactical-scene caster clear (stray-shadow fix, engine-cooperative) ----
+// The engine clears the juggled non-focus battlers' caster flags only ~0.25 s
+// AFTER the cut-in hide starts (deferred with the visual cross-fade) and
+// restores them INSTANTLY at exit — vanilla's dim fade covers both stale
+// windows by closing the reception gate. When the mod holds brightness/
+// reception from the first fade frame (to remove the visible dim ride-down),
+// that cover is gone, so the mod front-runs the engine instead: hooks on the
+// tactical-scene hideAll/showAll wrappers clear the registered casters' flags
+// immediately at hide, re-clear them at show (undoing the engine's instant
+// restore), and restore them shortly after the juggle settles. Visible cut-in
+// participants get their flags re-set by the event system's own immediate
+// show paths, so the focus actor keeps its shadow.
+std::atomic<bool> g_tacticalHooksActive{false};
+std::atomic<uint64_t> g_snodeRestoreDeadlineMs{0};
+
+// Inverse of restoreBattleSnodeFlags: clear the caster bit on every
+// registered battle snode. Same guarded walk; +0xbc stamps are untouched.
+void clearBattleSnodeFlags(const char* site) {
+  const uintptr_t battleHelper = g_battleHelper.load(std::memory_order_acquire);
+  if (!battleHelper || !readableRange(battleHelper + 0x48, 0x10))
+    return;
+  const uintptr_t rb = *reinterpret_cast<const uintptr_t*>(battleHelper + 0x48);
+  const uintptr_t re = *reinterpret_cast<const uintptr_t*>(battleHelper + 0x50);
+  if (!rb || re <= rb || (re - rb) > 0x200 || !readableRange(rb, re - rb))
+    return;
+  uint32_t cleared = 0, nodes = 0;
+  for (uintptr_t p = rb; p < re; p += sizeof(uintptr_t)) {
+    const uintptr_t snode = *reinterpret_cast<const uintptr_t*>(p);
+    if (!snode || !readableRange(snode, 0xc4))
+      continue;
+    ++nodes;
+    auto* flag = reinterpret_cast<uint32_t*>(snode + 0xc0);
+    if (*flag & 0x10000) {
+      *flag &= ~0x10000u;
+      ++cleared;
+    }
+  }
+  atfix::log("CUTIN_SNODE_CLEAR site=", site, " cleared=", cleared,
+    " nodes=", nodes,
+    " state=", currentBattleState() ? currentBattleState() : "?");
+}
+
+
+using TacticalSceneProc = uintptr_t (*)(uintptr_t, uintptr_t,
+                                        uintptr_t, uintptr_t);
+TacticalSceneProc originalTacticalHideAll = nullptr;
+TacticalSceneProc originalTacticalShowAll = nullptr;
+
+// Per-actor deferred hide arm: within a cut-in the event choreography hides
+// individual actors through a deferred setVisible (alpha fade ~0.25 s, caster
+// flags cleared by the engine only at fade END). Vanilla's closed reception
+// gate covered that window; with the mod's hold open, the full-strength shadow
+// would outlive the fading character. Front-run it: on a HIDE arm during a
+// cinematic state, clear the actor's subtree caster flags at fade START.
+// Shows re-set flags through the engine's immediate paths, so arriving actors
+// are unaffected. The visibility object holds its parts vector at +0x28/+0x30;
+// the model root is [firstPart+0x10] (mirrors the engine's own expiry path).
+using DeferredHideArmProc = uintptr_t (*)(uintptr_t, uintptr_t,
+                                          float, uintptr_t);
+DeferredHideArmProc originalDeferredHideArm = nullptr;
+
+uintptr_t tracedDeferredHideArm(uintptr_t obj, uintptr_t target,
+                                float fade, uintptr_t d) {
+  const uintptr_t result = originalDeferredHideArm(obj, target, fade, d);
+  // Force-expiry fix (static RE 2026-07-23). The battle caster registry at
+  // helper+0x48 holds model LOCATOR ROOTS, not the drawable shadow leaves, so
+  // clearing their +0xC2 never affected the shadow map — the shadow pass walks
+  // straight through a cleared root to the leaves, which keep casting. A
+  // non-focus battler hidden mid-cut-in therefore keeps its shadow until the
+  // engine's own alpha-fade expiry (~0.25 s) recursively hides the whole model
+  // subtree, including the shadow leaves — that lag is the stray shadow. The
+  // fix forces that expiry to happen on the next frame: when a hide (target 0)
+  // latches on this Model (+0x8f == 1, i.e. the arm did not early-out) during a
+  // cinematic state, zero the fade timer at Model+0x90. The engine's own visTick
+  // then performs the complete, bookkeeping-correct hide (subtree setVisibility
+  // via 0xb9720 plus the +0x8d/+0x8f state the cancel/show path depends on), so
+  // there are ZERO manual node writes and the focus actor is untouched (the
+  // enumerator never arms it). Cost: the hidden battler pops rather than fading,
+  // off-camera and cosmetically negligible.
+  // inActionCutin() (NOT arlandInCinematicBattle) — restricted to the mid-
+  // battle action cut-ins, excluding the result/victory teardown states where
+  // force-expiring would hit the field transition (black-screen risk).
+  if ((target & 0xff) == 0 &&
+      g_battleActive.load(std::memory_order_acquire) &&
+      g_tacticalHooksActive.load(std::memory_order_acquire) &&
+      inActionCutin() &&
+      readableRange(obj + 0x8f, sizeof(float) + 1) &&
+      *reinterpret_cast<const uint8_t*>(obj + 0x8f) == 1) {
+    *reinterpret_cast<float*>(obj + 0x90) = 0.0f;
+  }
+  return result;
+}
+
+uintptr_t tracedTacticalHideAll(uintptr_t a, uintptr_t b,
+                                uintptr_t c, uintptr_t d) {
+  const uintptr_t result = originalTacticalHideAll(a, b, c, d);
+  if (g_battleActive.load(std::memory_order_acquire)) {
+    clearBattleSnodeFlags("hide_all");
+    g_snodeRestoreDeadlineMs.store(0, std::memory_order_release);
+  }
+  return result;
+}
+
+uintptr_t tracedTacticalShowAll(uintptr_t a, uintptr_t b,
+                                uintptr_t c, uintptr_t d) {
+  const uintptr_t result = originalTacticalShowAll(a, b, c, d);
+  if (g_battleActive.load(std::memory_order_acquire)) {
+    // The original just restored every caster flag while positions may still
+    // be mid-restore; re-clear and restore after the juggle settles.
+    clearBattleSnodeFlags("show_all");
+    g_snodeRestoreDeadlineMs.store(GetTickCount64() + 300,
+      std::memory_order_release);
+  }
+  return result;
+}
+
 // Detour of the per-frame scene shadow pass (RVA 0x39cfd0). It reads the active
 // helper from the manager global and early-outs / processes whatever it finds.
 // While a battle is active and publishing is enabled, we swap that global to the
@@ -1389,6 +1510,7 @@ uintptr_t tracedShadowHelperInit(uintptr_t helper, uintptr_t id,
       g_registeredCharacters.clear();
     }
     g_battleTickCounter.store(0, std::memory_order_release);
+    g_snodeRestoreDeadlineMs.store(0, std::memory_order_release);
     g_battleActive.store(true, std::memory_order_release);
     atfix::log("==== BATTLE_START ms=", GetTickCount64(),
       " gamemode=", reinterpret_cast<void*>(gameMode),
@@ -3056,163 +3178,6 @@ bool installBucTextCacheScope(BYTE* base, const Game& game) {
     reinterpret_cast<void**>(&originalBucBalloonCtor));
 }
 
-// ---- Totori battle-shadow gate probe ---------------------------------------
-// Runtime probe distinguishing the two candidate root causes of Totori's
-// missing battle shadows (static investigation 2026-07-23; see TODO.md and the
-// project notes). Totori's caster registration is native but double-gated:
-//   A) config byte [gameMode+0xa00], copied from the battle request at mode
-//      creation — if 0, helper init, registration, and the per-frame render
-//      are all skipped;
-//   B) ordering — the BtlChara model build registers casters only while the
-//      battle helper's context mirror [gameMode+0x78] is live; if the
-//      game-mode setup (battle ShadowHelperInit, ret RVA 0x1512f0) runs after
-//      the BtlChara ctors, registration silently skips.
-// The probe hooks ShadowHelperInit and both BtlChara ctors and logs both
-// gates plus the caster-registry fill at each event: helper init never firing
-// from the battle site => A; firing but ctors seeing ctx_78=0 or the registry
-// staying empty => B. Totori English build only; a handful of log lines per
-// battle. Totori's battle helper is EMBEDDED at gameMode+0x60 (not +0x68).
-// The helper-init hook itself now belongs to the shared battle-state tracking
-// (installMeruruBattleStateHook handles Totori EN); the probe keeps only the
-// ctor and per-frame render observers.
-constexpr uintptr_t kTotoriPartyCtorRva = 0x16c9f0;
-constexpr uintptr_t kTotoriMonsterCtorRva = 0x16c800;
-BtlCharaCtorProc originalTotoriPartyCtor = nullptr;
-BtlCharaCtorProc originalTotoriMonsterCtor = nullptr;
-
-// Caster-registry entry count (std::vector at helper+0x48/+0x50), or -1.
-int64_t totoriRegistryCount(uintptr_t helper) {
-  if (!readableRange(helper + 0x48, 0x10))
-    return -1;
-  const uintptr_t begin = *reinterpret_cast<const uintptr_t*>(helper + 0x48);
-  const uintptr_t end = *reinterpret_cast<const uintptr_t*>(helper + 0x50);
-  if (!begin || end < begin)
-    return -1;
-  return int64_t((end - begin) / sizeof(uintptr_t));
-}
-
-void totoriLogGates(const char* site, uintptr_t gameMode) {
-  int cfg = -1;
-  int inited = -1;
-  uintptr_t ctx = 0;
-  if (readableRange(gameMode + 0xa00, 1))
-    cfg = *reinterpret_cast<const BYTE*>(gameMode + 0xa00);
-  if (readableRange(gameMode + 0x78, 8))
-    ctx = *reinterpret_cast<const uintptr_t*>(gameMode + 0x78);
-  if (readableRange(gameMode + 0x60 + 0x41, 1))
-    inited = *reinterpret_cast<const BYTE*>(gameMode + 0x60 + 0x41);
-  atfix::log("TOTORI_SHADOW_PROBE ", site,
-    " gm=", reinterpret_cast<void*>(gameMode),
-    " cfg_a00=", cfg,
-    " ctx_78=", reinterpret_cast<void*>(ctx),
-    " inited_41=", inited,
-    " registry=", totoriRegistryCount(gameMode + 0x60));
-}
-
-// Both ctors log after the original returns: the model build inside the ctor
-// is where native registration happens, so ctx_78/registry at ctor exit show
-// whether this character registered.
-uintptr_t probedTotoriPartyCtor(uintptr_t a, uintptr_t b,
-                                uintptr_t c, uintptr_t d) {
-  const uintptr_t result = originalTotoriPartyCtor(a, b, c, d);
-  uintptr_t gameMode = 0;
-  if (readableRange(a + 0x10, 8))
-    gameMode = *reinterpret_cast<const uintptr_t*>(a + 0x10);
-  if (gameMode)
-    totoriLogGates("partyCtor", gameMode);
-  else
-    atfix::log("TOTORI_SHADOW_PROBE partyCtor chara=",
-      reinterpret_cast<void*>(a), " gm=0");
-  return result;
-}
-
-uintptr_t probedTotoriMonsterCtor(uintptr_t a, uintptr_t b,
-                                  uintptr_t c, uintptr_t d) {
-  const uintptr_t result = originalTotoriMonsterCtor(a, b, c, d);
-  uintptr_t gameMode = 0;
-  if (readableRange(a + 0x10, 8))
-    gameMode = *reinterpret_cast<const uintptr_t*>(a + 0x10);
-  if (gameMode)
-    totoriLogGates("monsterCtor", gameMode);
-  else
-    atfix::log("TOTORI_SHADOW_PROBE monsterCtor chara=",
-      reinterpret_cast<void*>(a), " gm=0");
-  return result;
-}
-
-// Per-frame battle helper render (0x1ab0d0): logs the enable flag the game
-// passes plus the game-mode's render-enable bytes, throttled. Round 1 of the
-// probe proved registration works (cfg=1, ctx live, registry fills), so the
-// break is downstream: either this enable chain or the receiver's reception
-// gate.
-using TotoriHelperRenderProc = uintptr_t (*)(
-  uintptr_t, uintptr_t, uintptr_t, uintptr_t);
-constexpr uintptr_t kTotoriHelperRenderRva = 0x1ab0d0;
-TotoriHelperRenderProc originalTotoriHelperRender = nullptr;
-
-uintptr_t probedTotoriHelperRender(uintptr_t helper, uintptr_t ctx,
-                                   uintptr_t enable, uintptr_t d) {
-  static std::atomic<uint32_t> calls{0};
-  static std::atomic<uint32_t> lastEnable{0xffffffff};
-  const uint32_t n = calls.fetch_add(1, std::memory_order_relaxed);
-  const uint32_t enableBit = uint32_t(enable & 0xff);
-  const uint32_t previous = lastEnable.exchange(
-    enableBit, std::memory_order_relaxed);
-  if (n < 8 || n % 300 == 0 || enableBit != previous) {
-    const uintptr_t gameMode = helper - 0x60;
-    int a00 = -1, a03 = -1, a98 = -1, a9b = -1;
-    if (readableRange(gameMode + 0xa00, 4)) {
-      a00 = *reinterpret_cast<const BYTE*>(gameMode + 0xa00);
-      a03 = *reinterpret_cast<const BYTE*>(gameMode + 0xa03);
-    }
-    if (readableRange(gameMode + 0xa98, 4)) {
-      a98 = *reinterpret_cast<const BYTE*>(gameMode + 0xa98);
-      a9b = *reinterpret_cast<const BYTE*>(gameMode + 0xa9b);
-    }
-    atfix::log("TOTORI_SHADOW_PROBE helperRender n=", n,
-      " enable=", enableBit,
-      " a00=", a00, " a03=", a03, " a98=", a98, " a9b=", a9b,
-      " registry=", totoriRegistryCount(helper));
-  }
-  return originalTotoriHelperRender(helper, ctx, enable, d);
-}
-
-bool installTotoriShadowProbe(BYTE* base, const Game& game) {
-  if (game.atlasVariant != AtlasTotori || game.exeBuild != BuildEnglish)
-    return false;
-  auto* partyCtor = base + kTotoriPartyCtorRva;
-  auto* monsterCtor = base + kTotoriMonsterCtorRva;
-  auto* helperRender = base + kTotoriHelperRenderRva;
-  const std::array<BYTE, 16> partyExpected = {
-    0x48, 0x89, 0x4c, 0x24, 0x08, 0x57, 0x48, 0x83,
-    0xec, 0x30, 0x48, 0xc7, 0x44, 0x24, 0x20, 0xfe,
-  };
-  // Totori's monster ctor is the push-rbp variant of Rorona's push-rbx one.
-  const std::array<BYTE, 16> monsterExpected = {
-    0x40, 0x55, 0x56, 0x57, 0x48, 0x83, 0xec, 0x60,
-    0x48, 0xc7, 0x44, 0x24, 0x20, 0xfe, 0xff, 0xff,
-  };
-  const std::array<BYTE, 16> helperRenderExpected = {
-    0x48, 0x8b, 0xc4, 0x55, 0x41, 0x54, 0x41, 0x55,
-    0x41, 0x56, 0x41, 0x57, 0x48, 0x8d, 0x68, 0x98,
-  };
-  if (!matches(partyCtor, partyExpected) ||
-      !matches(monsterCtor, monsterExpected) ||
-      !matches(helperRender, helperRenderExpected))
-    return false;
-  if (!installMinHookDetour(partyCtor,
-      reinterpret_cast<void*>(&probedTotoriPartyCtor),
-      reinterpret_cast<void**>(&originalTotoriPartyCtor)))
-    return false;
-  if (!installMinHookDetour(monsterCtor,
-      reinterpret_cast<void*>(&probedTotoriMonsterCtor),
-      reinterpret_cast<void**>(&originalTotoriMonsterCtor)))
-    return false;
-  return installMinHookDetour(helperRender,
-    reinterpret_cast<void*>(&probedTotoriHelperRender),
-    reinterpret_cast<void**>(&originalTotoriHelperRender));
-}
-
 bool installShadowLayerTrace(BYTE* base, const Game& game) {
   if (!shadowLayerTraceEnabled() || game.atlasVariant != AtlasRorona ||
       game.exeBuild != BuildEnglish)
@@ -3459,6 +3424,78 @@ bool installShadowMappingTrace(BYTE* base, const Game& game) {
 // fighting shadows are natively healthy (2026-07-23 probe), so like Meruru it
 // only needs the state tracking for the cut-in patches. Totori's multilingual
 // helper-init RVA is not yet matched, so that build stays uninstalled.
+// Tactical-scene hooks (see the caster-clear block above). Installed only when
+// a cut-in hold is enabled — they exist to protect it from stray shadows.
+// hideAll's prologue is byte-identical across all five battle-capable builds;
+// showAll differs per engine generation.
+bool installTacticalSceneHooks(BYTE* base, const Game& game) {
+  if (!battleShadowRestoreEnabled() || !g_battleAddrs ||
+      !g_battleAddrs->hideAllRva || !g_battleAddrs->showAllRva)
+    return false;
+  if (!atfix::featureEnabled(atfix::Feature::CutInShadows) &&
+      !atfix::featureEnabled(atfix::Feature::CutInDimHold))
+    return false;
+  auto* hideAll = base + g_battleAddrs->hideAllRva;
+  auto* showAll = base + g_battleAddrs->showAllRva;
+  const std::array<BYTE, 16> hideAllExpected = {
+    0x40, 0x53, 0x48, 0x83, 0xec, 0x20, 0x41, 0xb9,
+    0x03, 0x00, 0x00, 0x00, 0x0f, 0x28, 0xd1, 0x33,
+  };
+  const std::array<BYTE, 16> showAllRoronaExpected = {
+    0x40, 0x53, 0x48, 0x83, 0xec, 0x40, 0x41, 0xb8,
+    0x03, 0x00, 0x00, 0x00, 0x0f, 0x57, 0xc9, 0x48,
+  };
+  // Meruru/Totori showAll prologues end in a RIP displacement (stack-cookie
+  // load), so the verified window stops before it.
+  const std::array<BYTE, 9> showAllMeruruExpected = {
+    0x40, 0x53, 0x48, 0x83, 0xec, 0x50, 0x48, 0x8b, 0x05,
+  };
+  const std::array<BYTE, 14> showAllTotoriExpected = {
+    0x40, 0x53, 0x48, 0x83, 0xec, 0x60, 0x0f, 0x29,
+    0x74, 0x24, 0x50, 0x48, 0x8b, 0x05,
+  };
+  bool showAllOk = false;
+  if (game.atlasVariant == AtlasRorona)
+    showAllOk = matches(showAll, showAllRoronaExpected);
+  else if (game.atlasVariant == AtlasLaterArland)
+    showAllOk = matches(showAll, showAllMeruruExpected);
+  else if (game.atlasVariant == AtlasTotori)
+    showAllOk = matches(showAll, showAllTotoriExpected);
+  if (!matches(hideAll, hideAllExpected) || !showAllOk)
+    return false;
+  if (!installMinHookDetour(hideAll,
+      reinterpret_cast<void*>(&tracedTacticalHideAll),
+      reinterpret_cast<void**>(&originalTacticalHideAll)))
+    return false;
+  if (!installMinHookDetour(showAll,
+      reinterpret_cast<void*>(&tracedTacticalShowAll),
+      reinterpret_cast<void**>(&originalTacticalShowAll)))
+    return false;
+  g_tacticalHooksActive.store(true, std::memory_order_release);
+  // Per-actor deferred-hide front-run: fixes the mid-cut-in stray shadow of a
+  // battler hidden during the close-up (see tracedDeferredHideArm — force-
+  // expiry, engine-native, zero manual node writes). On by default now that it
+  // is validated (Rorona/Meruru); ARLAND_CUTIN_ACTOR_CLEAR=0 is a diagnostic
+  // kill switch.
+  static const bool actorClearEnabled = [] {
+    const char* value = std::getenv("ARLAND_CUTIN_ACTOR_CLEAR");
+    return !value || value[0] != '0';
+  }();
+  if (actorClearEnabled && g_battleAddrs->deferredHideArmRva) {
+    auto* arm = base + g_battleAddrs->deferredHideArmRva;
+    const std::array<BYTE, 16> armExpected = {
+      0x38, 0x91, 0x80, 0x00, 0x00, 0x00, 0x74, 0x15,
+      0xf3, 0x0f, 0x11, 0x91, 0x90, 0x00, 0x00, 0x00,
+    };
+    if (matches(arm, armExpected))
+      atfix::log("Deferred-hide arm hook installed=",
+        installMinHookDetour(arm,
+          reinterpret_cast<void*>(&tracedDeferredHideArm),
+          reinterpret_cast<void**>(&originalDeferredHideArm)));
+  }
+  return true;
+}
+
 bool installMeruruBattleStateHook(BYTE* base, const Game& game) {
   if (!battleShadowRestoreEnabled())
     return false;
@@ -3543,9 +3580,6 @@ void detectAndInstallGameHooks() {
     // hooks; without them the ctor/dtor hooks would only count balloons.
     const bool bucTextCacheInstalled = atlasInstalled
       ? installBucTextCacheScope(gameBase, game) : false;
-    if (game.atlasVariant == AtlasTotori)
-      atfix::log("Totori shadow probe installed=",
-        installTotoriShadowProbe(gameBase, game));
     const bool deepStatsInstalled = atlasInstalled
       ? installDeepMenuStats(gameBase, game) : false;
     const bool shadowLayerTraceInstalled =
@@ -3559,6 +3593,9 @@ void detectAndInstallGameHooks() {
     if (game.atlasVariant == AtlasLaterArland ||
         game.atlasVariant == AtlasTotori)
       atfix::log("Battle-state hook installed=", battleStateInstalled);
+    if (g_battleAddrs && g_battleAddrs->hideAllRva)
+      atfix::log("Tactical caster-clear hooks installed=",
+        installTacticalSceneHooks(gameBase, game));
     const bool cutinFlagTraceInstalled =
       installCutinFlagTrace(gameBase, game);
     if (cutinFlagTraceEnabled())
@@ -3749,10 +3786,39 @@ bool isCinematicState(const char* name) {
   return false;
 }
 
+// The mid-battle ACTION cut-ins only — the subset of cinematic states in which
+// a non-focus battler can be hidden and leave a stray shadow. Deliberately
+// EXCLUDES the result/victory/teardown states (ResultStart..LvUp, DeadBoss,
+// AfterBattle): during the battle→field transition those states overlap with
+// the field beginning to arm its own model hides, and force-expiring those
+// would abruptly hide field geometry (observed as a ~1 s black screen on the
+// gathering-area return). The force-expiry stray fix gates on this, not on the
+// broader isCinematicState.
+bool isActionCutinState(const char* name) {
+  if (!name)
+    return false;
+  static const char* const kNames[] = {
+    "WaitAction", "HelpSkillBefore", "HelpSkillAfter",
+    "ReactionSkillBefore", "Reaction",
+  };
+  for (const char* n : kNames)
+    if (std::strcmp(name, n) == 0)
+      return true;
+  return false;
+}
+
+bool inActionCutin() {
+  return isActionCutinState(currentBattleState());
+}
+
 // Exposed to the D3D layer (sync_fix) so draws can be tagged cut-in vs overview.
 namespace atfix {
 bool arlandInCinematicBattle() {
   return isCinematicState(currentBattleState());
+}
+
+bool arlandCutinCasterClearActive() {
+  return g_tacticalHooksActive.load(std::memory_order_acquire);
 }
 
 uint32_t arlandSceneGeneration() {
@@ -3932,12 +3998,20 @@ void battleShadowFrameTick() {
       g_battleContainerFound.store(false, std::memory_order_release);
       g_battleRegistered.store(false, std::memory_order_release);
       g_battleDeadFrames.store(0, std::memory_order_release);
+      g_snodeRestoreDeadlineMs.store(0, std::memory_order_release);
       return;
     }
   }
 
   if (!g_battleActive.load(std::memory_order_acquire))
     return;
+  // Delayed caster restore after the tactical showAll re-clear.
+  uint64_t restoreDeadline =
+    g_snodeRestoreDeadlineMs.load(std::memory_order_acquire);
+  if (restoreDeadline && GetTickCount64() >= restoreDeadline &&
+      g_snodeRestoreDeadlineMs.compare_exchange_strong(
+        restoreDeadline, 0, std::memory_order_acq_rel))
+    restoreBattleSnodeFlags("tactical_restore");
   const uint64_t tick = g_battleTickCounter.fetch_add(
     1, std::memory_order_relaxed);
   const uintptr_t scene = g_battleScene.load(std::memory_order_acquire);

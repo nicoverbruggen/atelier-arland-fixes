@@ -22,6 +22,12 @@ extern Log log;
    currently active? Lets the D3D layer tag draws by cut-in vs overview. */
 bool arlandInCinematicBattle();
 
+/* lives in menu_fix.cpp: are the tactical-scene caster-clear hooks installed?
+   When true, the mod front-runs the engine's late cut-in caster disable, so
+   the D3D-layer dim/gate holds may engage immediately instead of waiting for
+   the dim value to settle. */
+bool arlandCutinCasterClearActive();
+
 /* lives in menu_fix.cpp: current battle state name (null outside battle). */
 const char* arlandBattleStateName();
 

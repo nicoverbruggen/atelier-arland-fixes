@@ -3,7 +3,8 @@
 The mod works as a drop-in with no configuration: faster menus, the
 synchronization and text-corruption fixes, high-resolution rendering support,
 and Atelier Rorona DX's restored battle shadows are all active by default. This
-document covers the optional enhancements that are **off by default**, how to
+document covers the optional graphics tweaks, the on-by-default features you
+may want to adjust, how to
 combine them for the best experience, and the diagnostic switches. For
 installation and the default feature set, see [README.md](README.md).
 
@@ -93,9 +94,10 @@ BattleShadows=true
 ## Battle cut-in shadows and brightness
 
 During the battle action cut-ins (the close-up attack cameras), the games show
-no ground shadows on any platform and dim the scene. The mod can restore the
-shadows and keep the close-up at full brightness in Atelier Rorona DX and
-Atelier Meruru DX. Both options live in the `[Battle]` section:
+no ground shadows on any platform and dim the scene. The mod restores the
+shadows and keeps the close-up at full brightness in all three games, **on by
+default**. Both are controlled from the `[Battle]` section if you prefer the
+vanilla look:
 
 ```ini
 [Battle]
@@ -103,15 +105,12 @@ BattleCutInShadows=true
 BattleCutInDimming=false
 ```
 
-`BattleCutInShadows` restores the ground shadows during cut-ins. It is **off
-by default** while a cut-in glitch is being fixed: the engine sometimes hides
-or repositions the non-focus characters during the close-up, which can leave a
-ground shadow standing where its character is not.
+`BattleCutInShadows` (default `true`) restores the ground shadows during
+cut-ins; set it to `false` for the vanilla shadowless close-up.
 
-`BattleCutInDimming` controls the original close-up dimming. It defaults to
-`true` (the vanilla darkened cut-in); set it to `false` to keep the close-up
-fully lit. The two options are independent. Neither option affects Atelier
-Totori DX.
+`BattleCutInDimming` (default `false`) controls the original close-up dimming;
+set it to `true` to restore the vanilla darkened cut-in. The two options are
+independent and apply to all three games.
 
 ## Suggested "best experience" configuration
 
@@ -131,8 +130,9 @@ BattleCutInShadows=true
 BattleCutInDimming=false
 ```
 
-Raise `MSAA` to `8` and `ShadowMultiplier` to `4` on strong hardware. Expect
-occasional cut-in shadow oddities until the glitch noted above is fixed.
+Raise `MSAA` to `8` and `ShadowMultiplier` to `4` on strong hardware. (Battle
+shadows and the cut-in restorations are on by default; they are listed here
+only for completeness.)
 
 ## Logs and crash reports
 

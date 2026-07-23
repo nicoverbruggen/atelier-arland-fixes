@@ -9,7 +9,7 @@ The mod ships with a 64-bit `d3d11.dll` for the games and a 32-bit `msimg32.dll`
 
 ## How it works
 
-Everything above works out of the box with default settings by simply dropping `d3d11.dll` into your game folders. Optional, off-by-default enhancements (higher-resolution shadows, restored cut-in shadows, cut-in brightness) are documented in [ADVANCED.md](ADVANCED.md).
+Everything above works out of the box with default settings by simply dropping `d3d11.dll` into your game folders. Optional, off-by-default enhancements (MSAA, higher-resolution shadows) are documented in [ADVANCED.md](ADVANCED.md).
 
 The mod is intended for the Steam versions of the games. See [TECHNICAL.md](TECHNICAL.md) for implementation details and tested executable fingerprints.
 
@@ -30,23 +30,24 @@ These are on by default.
 | Text-corruption fix                          | ✓      | ✓      | ✓      |
 | Higher resolution rendering                  | ✓      | ✓      | ✓      |
 | Restored battle shadows while fighting       | ✓      | ⏳     | —      |
+| Restored battle cut-in shadows               | ✓      | ✓      | ✓      |
+| Cut-in scene kept at full brightness         | ✓      | ✓      | ✓      |
 | Conversation slowdown fix                    | —      | —      | ✓      |
 
 ✓ fixed, enabled by default · ⏳ planned · — not needed (no defect in that game)
 
-### Advanced graphics tweaks and restored features
+The cut-in shadow and brightness restorations can be turned off in `arland-fix.ini` if you prefer the vanilla darkened, shadowless close-ups; see [ADVANCED.md](ADVANCED.md).
 
-These are optional improvements that are opt-in and documented in [ADVANCED.md](ADVANCED.md).
+### Advanced graphics tweaks
+
+These are optional improvements that are off by default and documented in [ADVANCED.md](ADVANCED.md).
 
 | Enhancement                                  | Rorona | Totori | Meruru |
 | -------------------------------------------- | :----: | :----: | :----: |
 | MSAA                                         | ✓      | ✓      | ✓      |
-| Shadow multiplier (+)                        | ✓      | ✓      | ✓      |
-| Cut-in shadows (*)                           | ✓      | TODO   | ✓      |
-| Cut-in brightness adjustment                 | ✓      | TODO   | ✓      |
+| Shadow multiplier                            | ✓      | ✓      | ✓      |
 
-(+) Tends to cause crashes, probably worth keeping disabled.<br/>
-(*) Some visual glitches may occur. See TODO for investigation into this issue, which is likely related to positioning of characters.
+Rare crashes have been observed during long sessions with the advanced graphics tweaks enabled at their highest settings; no individual feature has been confirmed as the cause. If you hit instability, lower or disable them — crashes append a report to `arland-fix.log` that helps pinpoint the cause.
 
 ## Installation on Windows
 

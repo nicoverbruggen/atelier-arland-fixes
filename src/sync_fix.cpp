@@ -376,23 +376,177 @@ bool cutinShadowsEnabled() {
 
 bool cutinBlobEnabled();   // defined with the contact-blob overlay below
 
-// Rewrite a matching 16-byte light-intensity $Params to full brightness in place.
-// Returns true if it patched. Only touches (s,s,s,~1) with s in (0.5,0.98) — the
-// faded cut-in value — so a genuine (1,1,1,1) or unrelated buffer is left alone.
-bool dimHoldPatch(void* data, uint32_t size) {
-  if (size != 16)
-    return false;
-  float* v = static_cast<float*>(data);
+// Shared dim-hold value predicate: a float4 (s,s,s,~1) with s in (0.5,0.98) —
+// the faded cut-in value. Match and write are split so callers can interpose
+// settle gating between them.
+bool dimHoldValueMatches(const float* v) {
   const float s = v[0];
   const float near1 = [](float a, float b) { float d = a - b; return d < 0 ? -d : d; }(v[3], 1.0f);
   const float uni01 = [](float a, float b) { float d = a - b; return d < 0 ? -d : d; }(v[0], v[1]);
   const float uni02 = [](float a, float b) { float d = a - b; return d < 0 ? -d : d; }(v[0], v[2]);
-  if (near1 < 0.02f && uni01 < 0.01f && uni02 < 0.01f &&
-      s > 0.5f && s < 0.98f) {
-    v[0] = v[1] = v[2] = 1.0f;
-    return true;
-  }
+  return near1 < 0.02f && uni01 < 0.01f && uni02 < 0.01f &&
+    s > 0.5f && s < 0.98f;
+}
+
+bool dimHoldValuePatch(float* v) {
+  if (!dimHoldValueMatches(v))
+    return false;
+  v[0] = v[1] = v[2] = 1.0f;
+  return true;
+}
+
+// The cut-in dim `diffuse` field per constant-buffer layout. Rorona and Meruru
+// ship the PS3-style shader pack where the scene-light fade is the 16-byte
+// $Params. Totori's shader set was rewritten for D3D11 (static RE 2026-07-23:
+// commonShaderWin.PSSG) and carries the same (0.7,0.7,0.7,1.0) BtlField fade
+// through different layouts: battle ground btl_field_shadow_frag (32, diffuse
+// @0), the chara_*_frag PS family (16, @0), and the toon character VS families
+// (224,@208) (13024,@13008) (12960,@12944) (160,@144) (96,@80).
+struct DimHoldField { uint32_t size; uint32_t offset; };
+constexpr DimHoldField kDimFieldsClassic[] = { {16, 0} };
+// Totori's battle arenas render with the FIELDMAP shader family (runtime
+// CUTIN_CB trace 2026-07-23: the dim flowed through (304,16) fieldmap fog,
+// (48,32), (80,0), (32,0) — not the btl_field layouts the static analysis
+// predicted for battle). (304,16)/(144,0)/(160,16) also FEED THE RECEPTION
+// GATE (the fog VS computes 2.7-2*min(diffuse...), closing below 0.85), so on
+// Totori the dim-hold doubles as the gate-hold and is settle-gated (see
+// dimHoldPatch). The trace also matched (304,272) — inside
+// PSSGLightModelViewProjTex; a light-matrix row, never patch it.
+constexpr DimHoldField kDimFieldsTotori[] = {
+  {16, 0}, {32, 0}, {48, 32}, {80, 0}, {96, 80},
+  {144, 0}, {160, 16}, {160, 144}, {224, 208},
+  {304, 16}, {12960, 12944}, {13024, 13008},
+};
+
+// The dim-field table for the running game, cached.
+std::pair<const DimHoldField*, size_t> dimHoldFields() {
+  static const std::pair<const DimHoldField*, size_t> fields =
+    currentTitle() == Title::Totori
+      ? std::make_pair(kDimFieldsTotori, std::size(kDimFieldsTotori))
+      : std::make_pair(kDimFieldsClassic, std::size(kDimFieldsClassic));
+  return fields;
+}
+
+bool dimHoldEligibleSize(uint32_t size) {
+  const auto [fields, count] = dimHoldFields();
+  for (size_t i = 0; i < count; i++)
+    if (fields[i].size == size)
+      return true;
   return false;
+}
+
+float gateHoldSettleRamp(float s);   // defined below with gateHoldPatch
+
+// Rewrite a matching light-intensity `diffuse` to full brightness in place.
+// Returns true if it patched. On Totori the dim field doubles as the fieldmap
+// reception gate, so the hold is settle-gated there (same stray-shadow cover
+// logic as gateHoldPatch); Rorona/Meruru keep the instant hold — their gate
+// lives in the separate 880 receiver and carries its own settle gating.
+bool dimHoldPatch(void* data, uint32_t size) {
+  const auto [fields, count] = dimHoldFields();
+  static const bool settleGated = currentTitle() == Title::Totori;
+  bool patched = false;
+  for (size_t i = 0; i < count; i++) {
+    if (fields[i].size != size)
+      continue;
+    float* v = reinterpret_cast<float*>(
+      static_cast<uint8_t*>(data) + fields[i].offset);
+    if (!dimHoldValueMatches(v))
+      continue;
+    float target = 1.0f;
+    if (settleGated) {
+      const float t = gateHoldSettleRamp(v[0]);
+      if (t <= 0.0f)
+        continue;
+      target = v[0] + (1.0f - v[0]) * t;
+    }
+    v[0] = v[1] = v[2] = target;
+    patched = true;
+  }
+  return patched;
+}
+
+// ARLAND_CUTIN_CB_TRACE: during cinematic battle states, scan constant-buffer
+// payloads on every write path for the dim value pattern ((s,s,s,~1),
+// s in (0.5,0.98)) at any 16-aligned offset, and log each unique
+// (path, size, offset) once. Discovery diagnostic for games whose dim-carrying
+// layouts are not yet in the dim-hold table (used to pin Totori's real
+// layouts when the statically derived table missed).
+bool cutinCbTraceEnabled() {
+  static const bool enabled = [] {
+    const char* value = std::getenv("ARLAND_CUTIN_CB_TRACE");
+    return value && value[0] != '0';
+  }();
+  return enabled;
+}
+
+void cutinCbTraceScan(const char* path, const void* data, uint32_t size) {
+  if (!cutinCbTraceEnabled() || !data || size < 16 ||
+      !arlandInCinematicBattle())
+    return;
+  static mutex traceMutex;
+  static std::set<uint64_t> seen;
+  const uint8_t* bytes = static_cast<const uint8_t*>(data);
+  const uint32_t limit = size < 16384u ? size : 16384u;
+  for (uint32_t off = 0; off + 16 <= limit; off += 16) {
+    float v[4];
+    std::memcpy(v, bytes + off, sizeof(v));
+    const float s = v[0];
+    auto ad = [](float a, float b) { float d = a - b; return d < 0 ? -d : d; };
+    if (ad(v[3], 1.0f) < 0.02f && ad(v[0], v[1]) < 0.01f &&
+        ad(v[0], v[2]) < 0.01f && s > 0.5f && s < 0.98f) {
+      const uint64_t key = (uint64_t(uintptr_t(path) & 0xffffu) << 48) |
+        (uint64_t(size) << 20) | off;
+      std::lock_guard lock(traceMutex);
+      if (seen.size() < 64 && seen.insert(key).second)
+        log("CUTIN_CB path=", path, " size=", size, " offset=", off,
+          " v=(", v[0], ",", v[1], ",", v[2], ",", v[3], ")");
+    }
+  }
+}
+
+// Transition-aware settle detector for the reception gate (stray-shadow fix,
+// static RE 2026-07-23). The vanilla cut-in fades the scene light through the
+// receiver's 0.75 reception threshold during exactly the windows in which the
+// engine juggles the non-focus battlers: their per-node caster flags
+// (PNode+0xC2, PNode::setCastShadow) are cleared only ~0.25 s AFTER the hide
+// starts (deferred with the visual cross-fade) and restored INSTANTLY at
+// cut-in exit, before positions finish restoring. The closed gate is the
+// designed cover for those stale-caster frames; holding it open during the
+// fade is what exposed stray floor shadows for hidden/"sky"-parked
+// characters. Fix: only hold the gate once the observed dim value has been
+// bit-identical for >= 100 ms — entry-side that is after the fade bottoms out
+// (casters already cleared by then), and exit-side the value starts moving on
+// the first frame, releasing the hold so the vanilla covered window returns.
+// Returns the hold strength for the observed dim value s: 0 while the value
+// is still animating or freshly settled (< 60 ms stable), then easing 0→1
+// over the following 120 ms so the brightness/reception hold fades in instead
+// of popping (visible as a hard brightness step in capture analysis).
+float gateHoldSettleRamp(float s) {
+  // When the tactical caster-clear hooks are active, the mod front-runs the
+  // engine's late cut-in caster disable — there are no stale casters for a
+  // held-open gate to expose, so the hold engages immediately and the visible
+  // dim ride-down disappears entirely. Settle+ramp remains the fallback for
+  // builds where those hooks did not install.
+  if (arlandCutinCasterClearActive())
+    return 1.0f;
+  static std::atomic<uint32_t> observedBits{0};
+  static std::atomic<uint64_t> stableSinceMs{0};
+  constexpr uint64_t kSettleMs = 60;
+  constexpr uint64_t kRampMs = 120;
+  uint32_t bits = 0;
+  std::memcpy(&bits, &s, sizeof(bits));
+  const uint64_t now = GetTickCount64();
+  if (observedBits.exchange(bits, std::memory_order_acq_rel) != bits) {
+    stableSinceMs.store(now, std::memory_order_release);
+    return 0.0f;
+  }
+  const uint64_t stable =
+    now - stableSinceMs.load(std::memory_order_acquire);
+  if (stable < kSettleMs)
+    return 0.0f;
+  const uint64_t ramp = stable - kSettleMs;
+  return ramp >= kRampMs ? 1.0f : float(ramp) / float(kRampMs);
 }
 
 // Open the shadow-reception gate in an 880 receiver material: force the faded
@@ -406,8 +560,12 @@ bool gateHoldPatch(void* data, uint32_t size) {
   const float s = v[0];
   if (ad(v[0], v[1]) < 0.01f && ad(v[0], v[2]) < 0.01f &&
       s > 0.5f && s < 0.98f) {
-    v[0] = v[1] = v[2] = 1.0f;
-    if (v[3] < 0.76f) v[3] = 1.0f;   // ensure min(.w,.x) clears the 0.75 gate
+    const float t = gateHoldSettleRamp(s);
+    if (t <= 0.0f)
+      return false;
+    const float target = s + (1.0f - s) * t;
+    v[0] = v[1] = v[2] = target;
+    if (v[3] < 0.76f) v[3] = target;  // min(.w,.x) clears the 0.75 gate as t rises
     return true;
   }
   return false;
@@ -504,6 +662,7 @@ void captureCbUnmap(ID3D11DeviceContext*, ID3D11Resource* resource,
   }
   if (!pending.first)
     return;
+  cutinCbTraceScan("map", pending.first, pending.second);
   // Patch the CPU-visible contents in place BEFORE the real Unmap invalidates
   // them: dim-hold on the 16-byte $Params, gate-hold on the 880 receiver.
   if (arlandInCinematicBattle()) {
@@ -2059,10 +2218,14 @@ HRESULT STDMETHODCALLTYPE ID3D11Device_CreateBuffer(
     }
   }
 
-  // Gate-hold write path: an 880 receiver material created WITH initial data
+  // Gate/dim-hold write path: a constant buffer created WITH initial data
   // (transient per-frame cb pattern) bypasses both the Map and
-  // UpdateSubresource hooks — hold the shadow gate open in the initial
-  // payload too.
+  // UpdateSubresource hooks — patch the initial payload too. The 880 receiver
+  // gate needed this on Rorona; Totori's D3D11 material pattern makes it
+  // plausible for its dim-carrying layouts as well.
+  if (pDesc && pData && pData->pSysMem &&
+      (pDesc->BindFlags & D3D11_BIND_CONSTANT_BUFFER))
+    cutinCbTraceScan("create", pData->pSysMem, pDesc->ByteWidth);
   D3D11_SUBRESOURCE_DATA gateInit;
   uint8_t gateInitCopy[880];
   if (cutinGateHoldEnabled() && arlandInCinematicBattle() &&
@@ -2074,6 +2237,20 @@ HRESULT STDMETHODCALLTYPE ID3D11Device_CreateBuffer(
       gateInit = *pData;
       gateInit.pSysMem = gateInitCopy;
       pData = &gateInit;
+    }
+  }
+  D3D11_SUBRESOURCE_DATA dimInit;
+  static thread_local std::vector<uint8_t> dimInitCopy;
+  if (cutinDimHoldEnabled() && arlandInCinematicBattle() &&
+      pDesc && pData && pData->pSysMem &&
+      (pDesc->BindFlags & D3D11_BIND_CONSTANT_BUFFER) &&
+      dimHoldEligibleSize(pDesc->ByteWidth)) {
+    dimInitCopy.assign(static_cast<const uint8_t*>(pData->pSysMem),
+      static_cast<const uint8_t*>(pData->pSysMem) + pDesc->ByteWidth);
+    if (dimHoldPatch(dimInitCopy.data(), pDesc->ByteWidth)) {
+      dimInit = *pData;
+      dimInit.pSysMem = dimInitCopy.data();
+      pData = &dimInit;
     }
   }
 
@@ -2119,6 +2296,70 @@ HRESULT STDMETHODCALLTYPE ID3D11Device_CreateVertexShader(
   return hr;
 }
 
+// ---- trim-aliasing probe (ARLAND_TRIM_PROBE) -------------------------------
+// Pure diagnostics for the thin-costume-trim aliasing investigation: classify
+// pixel shaders as alpha-tested (shader-side `discard` and/or a `g_alpha_ref`
+// cbuffer field, per the static PSSG parse) at creation, then at draw time log
+// once per classified shader whether it draws into the mod's MSAA twin, its
+// blend state, and its bound texture/cb — enough to confirm the alpha-test +
+// alpha-blend hypothesis and enumerate the character-shader population in one
+// session. No behaviour change; everything is gated off by default.
+bool trimProbeEnabled() {
+  static const bool enabled = [] {
+    const char* value = std::getenv("ARLAND_TRIM_PROBE");
+    return value && value[0] != '0';
+  }();
+  return enabled;
+}
+
+std::mutex g_alphaTestPsMutex;
+std::set<ID3D11PixelShader*> g_alphaTestPs;
+std::set<ID3D11PixelShader*> g_trimLoggedPs;
+
+// Walk a DXBC container: report whether the shader has a `discard` instruction
+// (SHEX/SHDR opcode token low 11 bits == 13) and/or a `g_alpha_ref` reflection
+// field (RDEF string). Bounds-checked; returns quietly on any malformed input.
+void classifyDxbc(const void* bytecode, size_t length,
+                  bool* hasDiscard, bool* hasAlphaRef) {
+  *hasDiscard = false;
+  *hasAlphaRef = false;
+  const auto* base = static_cast<const uint8_t*>(bytecode);
+  if (!base || length < 0x20 || std::memcmp(base, "DXBC", 4) != 0)
+    return;
+  uint32_t chunkCount = 0;
+  std::memcpy(&chunkCount, base + 0x1c, sizeof(chunkCount));
+  if (chunkCount > 32 || length < 0x20 + chunkCount * 4u)
+    return;
+  for (uint32_t i = 0; i < chunkCount; i++) {
+    uint32_t off = 0;
+    std::memcpy(&off, base + 0x20 + i * 4u, sizeof(off));
+    if (off + 8 > length)
+      continue;
+    char fourcc[4];
+    std::memcpy(fourcc, base + off, 4);
+    uint32_t size = 0;
+    std::memcpy(&size, base + off + 4, sizeof(size));
+    if (uint64_t(off) + 8 + size > length)
+      continue;
+    const uint8_t* body = base + off + 8;
+    if (!std::memcmp(fourcc, "RDEF", 4)) {
+      for (uint32_t j = 0; j + 11 <= size; j++)
+        if (!std::memcmp(body + j, "g_alpha_ref", 11)) { *hasAlphaRef = true; break; }
+    } else if (!std::memcmp(fourcc, "SHEX", 4) || !std::memcmp(fourcc, "SHDR", 4)) {
+      // Header is 2 dwords (version, dword-length); tokens follow.
+      for (uint32_t j = 8; j + 4 <= size; ) {
+        uint32_t tok = 0;
+        std::memcpy(&tok, body + j, sizeof(tok));
+        const uint32_t op = tok & 0x7ff;
+        const uint32_t len = (tok >> 24) & 0x7f;
+        if (op == 13) { *hasDiscard = true; break; }   // discard
+        if (len == 0) break;
+        j += len * 4u;
+      }
+    }
+  }
+}
+
 HRESULT STDMETHODCALLTYPE ID3D11Device_CreatePixelShader(
         ID3D11Device*             pDevice,
   const void*                     pShaderBytecode,
@@ -2128,7 +2369,75 @@ HRESULT STDMETHODCALLTYPE ID3D11Device_CreatePixelShader(
   auto procs = getDeviceProcs(pDevice);
   const HRESULT hr = procs->CreatePixelShader(pDevice, pShaderBytecode,
     BytecodeLength, pClassLinkage, ppPixelShader);
+  if (trimProbeEnabled() && SUCCEEDED(hr) && ppPixelShader && *ppPixelShader) {
+    bool discard = false, alphaRef = false;
+    classifyDxbc(pShaderBytecode, BytecodeLength, &discard, &alphaRef);
+    if (discard || alphaRef) {
+      std::lock_guard lock(g_alphaTestPsMutex);
+      g_alphaTestPs.insert(*ppPixelShader);
+      log("TRIM_PS classified ps=", *ppPixelShader,
+        " discard=", discard, " alpha_ref=", alphaRef,
+        " bytes=", std::dec, uint32_t(BytecodeLength));
+    }
+  }
   return hr;
+}
+
+// Draw-time classification for the trim probe: if the bound pixel shader is an
+// alpha-test shader, log (once per shader) the blend state, whether the draw
+// lands on the mod's MSAA twin, and the bound texture — the signatures that
+// distinguish "needs alpha-to-coverage" from "pure alpha-blend".
+void trimProbeDraw(ID3D11DeviceContext* pContext, UINT indexCount) {
+  ID3D11PixelShader* ps = nullptr;
+  pContext->PSGetShader(&ps, nullptr, nullptr);
+  if (!ps)
+    return;
+  bool classified;
+  bool firstSighting;
+  {
+    std::lock_guard lock(g_alphaTestPsMutex);
+    classified = g_alphaTestPs.count(ps) != 0;
+    firstSighting = classified && g_trimLoggedPs.insert(ps).second;
+  }
+  if (firstSighting) {
+    void* host = nullptr;
+    UINT hostSize = sizeof(host);
+    const bool msaaTwin = SUCCEEDED(pContext->GetPrivateData(
+      IID_MSAABoundHost, &hostSize, &host)) && host;
+    ID3D11BlendState* blend = nullptr;
+    FLOAT factor[4] = {};
+    UINT sampleMask = 0;
+    pContext->OMGetBlendState(&blend, factor, &sampleMask);
+    D3D11_BLEND_DESC bd = {};
+    if (blend) blend->GetDesc(&bd);
+    ID3D11ShaderResourceView* srv = nullptr;
+    pContext->PSGetShaderResources(0, 1, &srv);
+    D3D11_TEXTURE2D_DESC td = {};
+    bool haveTex = false;
+    if (srv) {
+      ID3D11Resource* res = nullptr;
+      srv->GetResource(&res);
+      if (res) {
+        ID3D11Texture2D* tex = nullptr;
+        if (SUCCEEDED(res->QueryInterface(IID_PPV_ARGS(&tex)))) {
+          tex->GetDesc(&td); haveTex = true; tex->Release();
+        }
+        res->Release();
+      }
+    }
+    log("TRIM_DRAW ps=", ps, " indices=", std::dec, indexCount,
+      " msaa_twin=", msaaTwin,
+      " blend_enable=", bd.RenderTarget[0].BlendEnable,
+      " a2c=", bd.AlphaToCoverageEnable,
+      " src=", bd.RenderTarget[0].SrcBlend,
+      " dst=", bd.RenderTarget[0].DestBlend,
+      " tex=", haveTex ? int(td.Width) : -1, "x",
+      haveTex ? int(td.Height) : -1,
+      " fmt=", haveTex ? int(td.Format) : -1);
+    if (srv) srv->Release();
+    if (blend) blend->Release();
+  }
+  ps->Release();
 }
 
 HRESULT STDMETHODCALLTYPE ID3D11Device_CreateDeferredContext(
@@ -2997,20 +3306,25 @@ void STDMETHODCALLTYPE ID3D11DeviceContext_UpdateSubresource(
     dumpCompositeUpdate(pResource, pData);
 
   const void* effectiveData = pData;
-  uint8_t dimHoldCopy[16];
   uint8_t gateHoldCopy[880];
   if (cbCaptureEnabled() && pData && !pBox && Subresource == 0) {
     D3D11_BUFFER_DESC desc = {};
     if (isConstantBuffer(pResource, &desc)) {
       if (cutinBlobEnabled())
         snapCbWrite(pResource, pData, desc.ByteWidth);
+      cutinCbTraceScan("update", pData, desc.ByteWidth);
       if (arlandInCinematicBattle()) {
         // Dim-hold: keep the faded light $Params at 1.0 during the cut-in.
         // pData is const (DEFAULT buffer), so patch a copy and pass that on.
-        if (cutinDimHoldEnabled() && desc.ByteWidth == 16) {
-          std::memcpy(dimHoldCopy, pData, 16);
-          if (dimHoldPatch(dimHoldCopy, 16))
-            effectiveData = dimHoldCopy;
+        if (cutinDimHoldEnabled() && dimHoldEligibleSize(desc.ByteWidth)) {
+          // Totori's largest dim-carrying layout is 13024 bytes (skinned toon
+          // VS $Params) — too big for the stack; a thread-local scratch keeps
+          // the substitution allocation-free per call.
+          static thread_local std::vector<uint8_t> dimHoldScratch;
+          dimHoldScratch.assign(static_cast<const uint8_t*>(pData),
+            static_cast<const uint8_t*>(pData) + desc.ByteWidth);
+          if (dimHoldPatch(dimHoldScratch.data(), desc.ByteWidth))
+            effectiveData = dimHoldScratch.data();
         }
         // Gate-hold: open the 880 receiver material's shadow-reception gate.
         if (cutinGateHoldEnabled() && desc.ByteWidth == 880) {
@@ -3421,6 +3735,8 @@ void STDMETHODCALLTYPE ID3D11DeviceContext_Draw(
   updateViewportScissor(pContext);
   gateHoldAtDraw(pContext);
   traceResolutionDraw(pContext, "draw", VertexCount, 1);
+  if (trimProbeEnabled())
+    trimProbeDraw(pContext, VertexCount);
 
   // Carry dialogue-snapshot identity through the three-vertex blur passes so
   // the later four-vertex composite can be distinguished from the raw copy.
@@ -3465,6 +3781,8 @@ void STDMETHODCALLTYPE ID3D11DeviceContext_DrawIndexed(
   updateViewportScissor(pContext);
   gateHoldAtDraw(pContext);
   traceResolutionDraw(pContext, "indexed", IndexCount, 1);
+  if (trimProbeEnabled())
+    trimProbeDraw(pContext, IndexCount);
 
   // The 48-byte 1920x1080 quad is shared by other cutscene layers. Keep the
   // game's original buffer bound everywhere except the corrected dialogue
