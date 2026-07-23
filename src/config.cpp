@@ -34,12 +34,10 @@ const char* configPath() {
       WritePrivateProfileStringA("Rendering", "Height", "", result.data());
       WritePrivateProfileStringA("Rendering", "ShadowMultiplier", "1", result.data());
       WritePrivateProfileStringA("Battle", "BattleShadows", "true", result.data());
-      // Seed the cut-in keys only for games the matrix supports, so e.g. Totori
-      // (no cut-in detection yet) does not advertise options that do nothing.
-      if (featureSupport(Feature::CutInShadows) != Support::Unsupported)
-        WritePrivateProfileStringA("Battle", "BattleCutInShadows", "true", result.data());
-      if (featureSupport(Feature::CutInDimHold) != Support::Unsupported)
-        WritePrivateProfileStringA("Battle", "BattleCutInDimming", "false", result.data());
+      // The cut-in keys (BattleCutInShadows / BattleCutInDimming) are seeded
+      // lazily by featureEnabled() using their per-game matrix defaults, so they
+      // stay correct when those defaults change (currently OptIn/off while the
+      // cut-in shadow glitch is fixed); not written eagerly here.
     }
     return result;
   }();
