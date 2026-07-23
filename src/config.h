@@ -29,11 +29,12 @@ unsigned int msaaSamples();
 // probe and other opt-in diagnostic lines so the default log stays quiet.
 bool verboseLogging();
 
-// How UI text is rendered: [Other] UIFont — "upscaled" (the DEFAULT: filter-
-// upscale the baked glyphs, preserving the engine's exact layout), "default"/"off"
-// (the untouched baked bitmap font), or "replaced" (re-render from a bundled
-// scalable font). "replaced" is recognized but NOT YET IMPLEMENTED — it needs
-// multi-line layout + a glyph atlas; see the TODO plan. ARLAND_UIFONT overrides.
+// How UI text is rendered: [Other] UIFont — "replaced" (the DEFAULT: re-render
+// each string from the embedded scalable font (Cuprum), multi-line and glyph-
+// atlas-cached, falling back to upscaling for glyphs it can't resolve), "upscaled"
+// (filter-upscale the baked glyphs, preserving the engine's exact layout), or
+// "default"/"off" (the untouched baked bitmap font). A arland-hires-font.ttf
+// beside the DLL overrides the embedded font. ARLAND_UIFONT overrides the mode.
 enum class UIFontMode { Default, Upscaled, Replaced };
 UIFontMode uiFontMode();
 

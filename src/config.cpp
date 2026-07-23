@@ -123,17 +123,17 @@ UIFontMode uiFontMode() {
       GetPrivateProfileStringA("Other", "UIFont", "\x01", value,
         sizeof(value), path);
       if (value[0] == '\x01') {                    // absent: seed the default
-        WritePrivateProfileStringA("Other", "UIFont", "upscaled", path);
-        std::strncpy(value, "upscaled", sizeof(value) - 1);
+        WritePrivateProfileStringA("Other", "UIFont", "replaced", path);
+        std::strncpy(value, "replaced", sizeof(value) - 1);
       }
     } else {
-      std::strncpy(value, "upscaled", sizeof(value) - 1);
+      std::strncpy(value, "replaced", sizeof(value) - 1);
     }
     if (!_strnicmp(value, "default", 7) || !_strnicmp(value, "off", 3))
       return UIFontMode::Default;
-    if (!_strnicmp(value, "replace", 7))
-      return UIFontMode::Replaced;   // recognized; not implemented (see TODO)
-    return UIFontMode::Upscaled;     // the default
+    if (!_strnicmp(value, "upscale", 7))
+      return UIFontMode::Upscaled;
+    return UIFontMode::Replaced;     // the default (embedded Cuprum, see font_hires)
   }();
   return mode;
 }
