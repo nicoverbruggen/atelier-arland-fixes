@@ -114,6 +114,16 @@ bool configuredResolution(UINT* width, UINT* height) {
   return true;
 }
 
+bool verboseLogging() {
+  static const bool on = [] {
+    const char* env = std::getenv("ARLAND_VERBOSE_LOG");
+    if (env)
+      return env[0] != '0';
+    return arlandConfigBool("Diagnostics", "VerboseLogging", false);
+  }();
+  return on;
+}
+
 UINT msaaSamples() {
   static const UINT samples = [] {
     const char* path = configPath();

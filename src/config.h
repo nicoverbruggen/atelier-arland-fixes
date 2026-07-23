@@ -24,4 +24,9 @@ bool configuredResolution(unsigned int* width, unsigned int* height);
 // Requested MSAA sample count (1/2/4/8) from ARLAND_MSAA or [Rendering] MSAA.
 unsigned int msaaSamples();
 
+// Whether extra diagnostic logging is enabled: [Diagnostics] VerboseLogging
+// (default false), or ARLAND_VERBOSE_LOG. Gates the periodic process-memory
+// probe and other opt-in diagnostic lines so the default log stays quiet.
+bool verboseLogging();
+
 }  // namespace atfix

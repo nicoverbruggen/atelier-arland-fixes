@@ -1,6 +1,7 @@
 // Derived from Philip Rebohle's atelier-sync-fix; see LICENSE (zlib).
 #include <iostream>
 
+#include "config.h"
 #include "crash_log.h"
 #include "menu_fix.h"
 #include "smaa.h"
@@ -123,8 +124,8 @@ HRESULT STDMETHODCALLTYPE tracedPresent(
   // allocation hang in dense battles (the KTGL sound reclaim-starvation leak —
   // see the crash analysis in TECHNICAL.md) leaves a trail in arland-fix.log
   // even though it hangs rather than throwing an exception the post-mortem could
-  // catch. Negligible cost; the trend before a hang is the diagnostic value.
-  {
+  // catch. Opt-in via [Diagnostics] VerboseLogging so the default log stays quiet.
+  if (atfix::verboseLogging()) {
     static std::atomic<int64_t> lastMemNanos{0};
     int64_t prevMem = lastMemNanos.load(std::memory_order_relaxed);
     if (startedNanos - prevMem >= 10'000'000'000LL &&
