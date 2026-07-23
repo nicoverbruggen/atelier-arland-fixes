@@ -26,15 +26,15 @@ that game.
 
 | Enhancement                                  | Rorona | Totori | Meruru |
 | -------------------------------------------- | :----: | :----: | :----: |
-| Faster menus, sync fix, text-corruption fix  |        |        |        |
-| Atlas read cache                             |        |        |        |
-| Frame-scoped atlas cache                     |        |        |        |
-| Direct 2560×1440 / 3840×2160 rendering       |        |        |        |
-| MSAA (optional, off by default)              |        |        |        |
-| Shadow multiplier (optional, off by default) |        |        |        |
-| Battle shadows while fighting                |        |        |        |
-| Cut-in shadows                               |        |        |        |
-| Cut-in brightness hold                       |        |        |        |
+| Faster menus, sync fix, text-corruption fix  | ✓      | ✓      | ✓      |
+| Direct 2560×1440 / 3840×2160 rendering       | ✓      | ✓      | ✓      |
+| MSAA (optional, off by default)              | ✓      | ✓      | ✓      |
+| Shadow multiplier (optional, off by default) | ✓      | ✓      | ✓      |
+| Battle shadows while fighting                | ✓      | ✓      | ✓      |
+| Cut-in shadows (*)                           | ✓      | TODO   | ✓      |
+| Cut-in brightness adjustment                 | ✓      | TODO   | ✓      |
+
+(*) Some visual glitches may occur. See TODO for investigation into this issue, which is likely related to positioning of characters.
 
 ## Installation on Windows
 
