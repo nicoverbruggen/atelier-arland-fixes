@@ -14,7 +14,7 @@ class Log {
 public:
 
   Log(const char* filename)
-  : m_file(filename, std::ios::out | std::ios::trunc) {
+  : m_file((rotate(filename), filename), std::ios::out | std::ios::trunc) {
 
   }
 
@@ -35,6 +35,13 @@ private:
   mutex         m_mutex;
   std::ofstream m_file;
   std::chrono::steady_clock::time_point m_start;
+
+  // Keep the previous session's log (crash post-mortems included) as
+  // <filename>.old instead of truncating it away on launch.
+  static void rotate(const char* filename) {
+    std::string previous = std::string(filename) + ".old";
+    MoveFileExA(filename, previous.c_str(), MOVEFILE_REPLACE_EXISTING);
+  }
 
 };
 

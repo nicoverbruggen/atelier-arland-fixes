@@ -12,28 +12,47 @@ For newer Atelier games, use the upstream [atelier-sync-fix](https://github.com/
 - Fewer pauses caused by the games repeatedly waiting for graphics work to finish.
 - Correct text rendering without the corruption produced by older synchronization fixes in these games.
 - Correct direct rendering at 2560×1440 and 3840×2160 instead of leaving internal render targets and raster state at 1920×1080.
-- Restored character and enemy shadows during battles in Atelier Rorona DX, which the port omitted entirely.
-- Optional restored ground shadows during Atelier Rorona DX and Atelier Meruru DX battle cut-ins, the action close-ups, which had no shadows on any platform and also dimmed the scene; the mod can keep the close-up lit and the shadows visible. Opt-in for now while a cut-in shadow glitch is refined; configurable.
+- Restored character and enemy shadows during battles in Atelier Rorona DX, which the port omitted entirely (Atelier Totori DX's are planned).
+- Smooth field framerate during Atelier Meruru DX's animated-portrait conversations, which collapsed on the English executable.
 - One installation covering the relevant performance fixes for the complete Arland trilogy, in all languages: both the English executable and the multilingual executable used for Japanese and Chinese are supported.
+
+Everything above works out of the box with default settings. Optional, off-by-default enhancements (higher-resolution shadows, restored cut-in shadows, cut-in brightness) are documented in [ADVANCED.md](ADVANCED.md).
 
 The mod is intended for the Steam versions of the games. See [TECHNICAL.md](TECHNICAL.md) for implementation details and tested executable fingerprints.
 
-## Feature support by game
+## What is included
 
-The table below tracks which enhancements have been validated in each game; the
+The tables below tracks which enhancements have been validated in each game; the
 details are in the sections that follow. A ✓ marks a feature confirmed working in
 that game.
 
+### Bug fixes and basic enhancements
+
+These are on by default.
+
+| Fix                                          | Rorona | Totori | Meruru |
+| -------------------------------------------- | :----: | :----: | :----: |
+| Much faster menus (removed stutter)          | ✓      | ✓      | ✓      |
+| Frame sync fix                               | ✓      | ✓      | ✓      |
+| Text-corruption fix                          | ✓      | ✓      | ✓      |
+| Higher resolution rendering                  | ✓      | ✓      | ✓      |
+| Restored battle shadows while fighting       | ✓      | ⏳     | —      |
+| Conversation slowdown fix                    | —      | —      | ✓      |
+
+✓ fixed, enabled by default · ⏳ planned · — not needed (no defect in that game)
+
+### Advanced graphics tweaks and restored features
+
+These are optional improvements that are opt-in and documented in [ADVANCED.md](ADVANCED.md).
+
 | Enhancement                                  | Rorona | Totori | Meruru |
 | -------------------------------------------- | :----: | :----: | :----: |
-| Faster menus, sync fix, text-corruption fix  | ✓      | ✓      | ✓      |
-| Direct 2560×1440 / 3840×2160 rendering       | ✓      | ✓      | ✓      |
-| MSAA (optional, off by default)              | ✓      | ✓      | ✓      |
-| Shadow multiplier (optional, off by default) | ✓      | ✓      | ✓      |
-| Battle shadows while fighting                | ✓      | ✓      | ✓      |
+| MSAA                                         | ✓      | ✓      | ✓      |
+| Shadow multiplier (+)                        | ✓      | ✓      | ✓      |
 | Cut-in shadows (*)                           | ✓      | TODO   | ✓      |
 | Cut-in brightness adjustment                 | ✓      | TODO   | ✓      |
 
+(+) Tends to cause crashes, probably worth keeping disabled.<br/>
 (*) Some visual glitches may occur. See TODO for investigation into this issue, which is likely related to positioning of characters.
 
 ## Installation on Windows
@@ -46,102 +65,17 @@ Remove older copies of this mod's `dinput8.dll` and `winmm.dll`, and do not inst
 
 All performance and text-correctness fixes are enabled automatically. No configuration is required.
 
-### Optional MSAA on Windows
-
-Multisample anti-aliasing is disabled by default. Use `2`, `4`, or `8` to request that sample count. If the GPU or selected format does not support the requested count, the mod falls back to a lower supported count. Use `0` or `1`, or remove the setting entirely, to disable MSAA. Higher sample counts increase GPU and video-memory cost.
-
-On first launch, the mod creates `arland-fix.ini` beside the DLLs with MSAA disabled. To enable it, close the game and change the file to:
-
-```ini
-[Rendering]
-MSAA=4
-Width=
-Height=
-```
-
-### Battle shadows
-
-Atelier Rorona DX's restored battle shadows are enabled by default and need no configuration. They are governed by a `[Battle]` section that the mod adds to `arland-fix.ini` on launch:
-
-```ini
-[Battle]
-BattleShadows=true
-BattleCutInShadows=false
-BattleCutInDimming=true
-```
-
-`BattleShadows` toggles the restored character and enemy shadows during ordinary Atelier Rorona DX battle (Meruru already casts these, so the toggle is Rorona-specific). `BattleCutInShadows` toggles the restored shadows during the action cut-ins in both Rorona and Meruru; it is **off by default** for now while a cut-in shadow glitch is being fixed — set it to `true` to try it. `BattleCutInDimming` controls the original close-up dimming: it defaults to `true` (the vanilla darkened cut-in) while cut-in shadows are opt-in; set it to `false` to keep the close-up at full brightness. The two cut-in options are independent. Missing keys are rewritten with these defaults, so an existing `arland-fix.ini` gains the section automatically. The battle-shadow toggles do not affect Atelier Totori DX.
-
-### Shadow resolution
-
-The games render shadows into a 1024×1024 shadow map, so shadow edges can look blocky, most noticeably in Atelier Meruru DX. `ShadowMultiplier` in the `[Rendering]` section renders shadows at a higher internal resolution for crisper edges:
-
-```ini
-[Rendering]
-ShadowMultiplier=2
-```
-
-Accepted values are `1` (the default, unchanged 1024×1024), `2`, `4`, and `8`, which render the shadow map at 2048, 4096, and 8192 respectively; any other value falls back to `1`. The mod allocates its own higher-resolution shadow maps and redirects the shadow pipeline onto them, leaving the game's own 1024×1024 textures untouched so the engine's size and memory assumptions stay valid. This setting is off by default and higher multipliers increase GPU and video-memory cost. `ARLAND_SHADOW_MULTIPLIER` overrides the INI for a session.
-
-## Advanced use
-
 ### Wine and Proton
 
-Copy both DLLs into the game directory as described above, then add this to the game's Steam Launch Options:
+The mod works under Wine and Proton; the required launch options are documented in [ADVANCED.md](ADVANCED.md).
 
-```text
-WINEDLLOVERRIDES="d3d11,msimg32=n,b" %command%
-```
+### Advanced options
 
-The same `arland-fix.ini` file used on Windows configures MSAA under Wine or Proton. Alternatively, set MSAA directly in the launch options:
-
-```text
-ARLAND_MSAA=4 WINEDLLOVERRIDES="d3d11,msimg32=n,b" %command%
-```
-
-`ARLAND_MSAA` takes precedence over `arland-fix.ini` when both are present. Runtime messages are written to `arland-fix.log` in the game directory.
-
-### Direct resolution override
-
-The launcher DLL always exposes 1920×1080, 2560×1440, and 3840×2160 in both launcher states even when DPI or display-mode enumeration would normally hide them. Keeping 1920×1080 visible is intentional for Steam Deck and other lower-resolution handhelds, where a high-DPI desktop can otherwise prevent the launcher from exposing 1080p; it also supports higher-resolution rendering for downsampling and normal docked use. As a launcher-independent fallback, `arland-fix.ini` can also override the resolution used by the game. Both values must be present; blank values leave the launcher's selection unchanged:
-
-```ini
-[Rendering]
-MSAA=1
-Width=3840
-Height=2160
-```
-
-### Troubleshooting switches
-
-The fixes are enabled by default. `ARLAND_MENU_FIX=0` disables the executable-specific menu hooks while retaining D3D11 forwarding and synchronization. `ARLAND_ATLAS_CACHE=0` disables atlas-read caching. Rorona also accepts `ARLAND_FRAME_ATLAS_CACHE=0` to restrict snapshots to the older queue-scoped behavior. The `[Battle]` shadow settings each have an environment override that takes precedence over `arland-fix.ini` for the session: `ARLAND_BATTLE_SHADOWS`, `ARLAND_CUTIN_SHADOWS`, and `ARLAND_CUTIN_DIMMING` (`0` or `1`). These switches are intended for diagnosis and A/B testing, not normal installation.
+On first launch, the mod creates `arland-fix.ini` beside the DLLs with everything optional disabled. MSAA, higher-resolution shadow maps, battle shadows, restored cut-in shadows, cut-in brightness, a direct resolution override, a suggested best-experience configuration, and troubleshooting are documented in [ADVANCED.md](ADVANCED.md). The drop-in installation never enables the optional features.
 
 ## Build
 
-On Windows, install Visual Studio 2022 with the Desktop development with C++ workload, Python, Meson, and Ninja. Build the game DLL from an x64 Native Tools Developer PowerShell:
-
-```powershell
-meson setup build64 --buildtype release
-meson compile -C build64
-```
-
-Then build the launcher DLL from an x86 Native Tools Developer PowerShell:
-
-```powershell
-meson setup build32 --buildtype release
-meson compile -C build32
-```
-
-On Fedora or another Linux distribution with MinGW, Meson, and Ninja:
-
-```sh
-meson setup build64 --cross-file build-win64.txt --buildtype release
-ninja -C build64
-meson setup build32 --cross-file build-win32.txt --buildtype release
-ninja -C build32
-```
-
-The outputs are `build64/d3d11.dll` and `build32/msimg32.dll`. GitHub Actions produces both DLLs as workflow artifacts and tagged release assets.
+Build instructions for Windows and Linux are in [BUILDING.md](BUILDING.md).
 
 ## Credits
 

@@ -222,6 +222,10 @@ std::atomic<bool> g_battleRegistered{false};
 std::atomic<uint64_t> g_scenePassCalls{0};
 std::atomic<uint64_t> g_battleTickCounter{0};
 std::atomic<uint32_t> g_battleDeadFrames{0};
+// The battle game-mode pointer most recently observed alive (party vector
+// holding BtlCharas). The battle-end watchdog only arms for a game-mode it has
+// seen alive, so a slow battle intro (party not yet spawned) cannot trip it.
+std::atomic<uintptr_t> g_battleSeenLiveMode{0};
 std::atomic<uintptr_t> g_battleStateSlot{0};
 std::atomic<uintptr_t> g_lastBattleStateVt{0};
 std::atomic<uint32_t> g_cutinRegistered{0};
@@ -317,6 +321,24 @@ uint64_t renderOutputInvalidSamples = 0;
 std::atomic<uint32_t> atlasDrainDepth = { 0 };
 std::atomic<bool> atlasCacheActive = { false };
 std::atomic<bool> frameAtlasCacheDefault = { false };
+// Count of live BalloonBucMode instances (Meruru's animated-portrait field
+// conversations). While non-zero, the text-bitmap replay cache switches to a
+// cross-frame scope: the balloon's per-frame callback pump re-runs the slow EN
+// text-render path with identical text every frame, so persisting rendered
+// bitmaps across queue drains turns that per-frame cost into a memcpy replay.
+// Only ever raised by the BUC ctor/dtor hooks (installBucTextCacheScope).
+std::atomic<uint32_t> bucBalloonCount = { 0 };
+
+bool bucTextCacheActive() {
+  return bucBalloonCount.load(std::memory_order_acquire) != 0;
+}
+
+// ARLAND_MENU_STATS heartbeat: unconditional renderText call/time counters
+// (unlike deepMenu.renderTextCalls, which only counts profiled record scopes).
+// Read by the per-Present heartbeat in traceMenuPresent to localize per-frame
+// text-render cost outside menus (e.g. field-state slowdowns).
+std::atomic<uint64_t> renderTextHeartbeatCalls = { 0 };
+std::atomic<uint64_t> renderTextHeartbeatNanos = { 0 };
 std::atomic<uint64_t> pathCacheHits = { 0 };
 std::atomic<uint64_t> pathRealChecks = { 0 };
 std::atomic<uint64_t> atlasCacheHits = { 0 };
@@ -1853,7 +1875,10 @@ bool textBitmapCacheEnabled() {
     const char* value = std::getenv("ARLAND_TEXT_BITMAP_CACHE");
     return value && value[0] != '0';
   }();
-  return enabled;
+  // A live BUC balloon activates the cache regardless of the env switch; the
+  // drain-scoped clears are suppressed for its duration (see cachedQueueDrain)
+  // and the balloon dtor clears the cache when the last balloon goes away.
+  return enabled || bucTextCacheActive();
 }
 
 bool menuStatsEnabled() {
@@ -1885,7 +1910,7 @@ void cachedQueueDrain(void* manager) {
     atlasReads.clear();
     atlasCacheActive.store(true, std::memory_order_release);
   }
-  if (outermost && textBitmapCacheEnabled()) {
+  if (outermost && textBitmapCacheEnabled() && !bucTextCacheActive()) {
     std::lock_guard lock(renderBitmapMutex);
     renderBitmapCache.clear();
     renderBitmapCache.reserve(256);
@@ -2006,7 +2031,7 @@ void cachedQueueDrain(void* manager) {
         atlasReads.clear();
       }
     }
-    if (textBitmapCacheEnabled()) {
+    if (textBitmapCacheEnabled() && !bucTextCacheActive()) {
       std::lock_guard bitmapLock(renderBitmapMutex);
       renderBitmapCache.clear();
     }
@@ -2196,8 +2221,15 @@ void cachedQueueDrain(void* manager) {
 uintptr_t cachedRenderText(uintptr_t a, uintptr_t b,
                            uintptr_t c, uintptr_t d) {
   const bool profile = type19Depth && deepMenuStatsEnabled();
+  // The game allocators (gameAlloc/gameFree) are optional: without them a
+  // replay whose target buffer is too small falls back to a real render
+  // (capacity fallback below) instead of reallocating. The BUC scope renders
+  // the same text into the same output object every frame, so its replays
+  // never need to grow the buffer. Balloon renders can also run outside a
+  // queue drain, hence bucTextCacheActive() beside atlasCacheActive.
   const bool cache = textBitmapCacheEnabled() &&
-    atlasCacheActive.load(std::memory_order_acquire) && gameAlloc && gameFree &&
+    (atlasCacheActive.load(std::memory_order_acquire) ||
+     bucTextCacheActive()) &&
     a && b;
   uint64_t key = 0xcbf29ce484222325ULL;
   uint64_t exactKey = 0;
@@ -2244,7 +2276,8 @@ uintptr_t cachedRenderText(uintptr_t a, uintptr_t b,
     cacheKey.text.assign(reinterpret_cast<const char*>(b), length);
   }
 
-  const auto started = profile
+  const bool heartbeat = menuStatsEnabled();
+  const auto started = profile || heartbeat
     ? std::chrono::steady_clock::now()
     : std::chrono::steady_clock::time_point{};
   uintptr_t result = 0;
@@ -2269,7 +2302,8 @@ uintptr_t cachedRenderText(uintptr_t a, uintptr_t b,
         ? uint64_t(uint32_t(currentWidth)) * uint32_t(currentHeight) : 0;
       const auto& bitmap = found->second;
       uint64_t available = capacity;
-      if (output && (!pixelsAddress || available < bitmap.bytes.size()) &&
+      if (output && gameAlloc && gameFree &&
+          (!pixelsAddress || available < bitmap.bytes.size()) &&
           !bitmap.bytes.empty()) {
         void* replacement = gameAlloc(bitmap.bytes.size());
         if (replacement) {
@@ -2406,9 +2440,23 @@ uintptr_t cachedRenderText(uintptr_t a, uintptr_t b,
         std::memcpy(bitmap.bytes.data(),
           reinterpret_cast<const void*>(pixelsAddress), size_t(size));
         std::lock_guard lock(renderBitmapMutex);
+        // The BUC scope persists across frames, and the typewriter reveal
+        // inserts one entry per partial string; bound the growth. A reset re-
+        // renders the strings still on screen once, then they re-cache.
+        if (renderBitmapCache.size() >= 512)
+          renderBitmapCache.clear();
         renderBitmapCache.emplace(std::move(cacheKey), std::move(bitmap));
       }
     }
+  }
+
+  if (heartbeat && !renderTextDepth) {
+    const auto heartbeatElapsed =
+      std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::steady_clock::now() - started).count();
+    renderTextHeartbeatCalls.fetch_add(1, std::memory_order_relaxed);
+    renderTextHeartbeatNanos.fetch_add(
+      uint64_t(heartbeatElapsed), std::memory_order_relaxed);
   }
 
   if (profile) {
@@ -2864,6 +2912,103 @@ bool installTextBitmapAllocator(BYTE* base, const Game& game) {
   return true;
 }
 
+// Cross-frame text-bitmap cache scope for Meruru's animated-portrait field
+// conversations (BUC, "bust-up conversation"). The balloon's per-frame
+// callback pump re-runs the slow EN text-render path with identical text
+// every frame — the same CPU-side glyph/atlas cost the menu fix removes from
+// menu rebuilds, but paid continuously — which drops the field-map framerate
+// for the duration of the conversation. Hooking the BalloonBucMode ctor/dtor
+// raises bucBalloonCount while any balloon is alive, which activates the
+// text-bitmap replay cache (see textBitmapCacheEnabled) and suspends its
+// drain-scoped clears, so each unchanged string is replayed as a memcpy.
+// ARLAND_BUC_TEXT_CACHE=0 disables the scope for diagnosis.
+using BucBalloonCtorProc = uintptr_t (*)(uintptr_t, uintptr_t,
+                                         uintptr_t, uintptr_t);
+using BucBalloonDtorProc = uintptr_t (*)(uintptr_t, uintptr_t);
+BucBalloonCtorProc originalBucBalloonCtor = nullptr;
+BucBalloonDtorProc originalBucBalloonDtor = nullptr;
+uint64_t bucStatsHitsBase = 0;
+uint64_t bucStatsMissesBase = 0;
+
+uintptr_t scopedBucBalloonCtor(uintptr_t a, uintptr_t b,
+                               uintptr_t c, uintptr_t d) {
+  const uintptr_t result = originalBucBalloonCtor(a, b, c, d);
+  if (bucBalloonCount.fetch_add(1, std::memory_order_acq_rel) == 0 &&
+      menuStatsEnabled()) {
+    bucStatsHitsBase =
+      deepMenu.renderBitmapHits.load(std::memory_order_relaxed);
+    bucStatsMissesBase =
+      deepMenu.renderBitmapMisses.load(std::memory_order_relaxed);
+  }
+  return result;
+}
+
+uintptr_t scopedBucBalloonDtor(uintptr_t a, uintptr_t b) {
+  // Guarded decrement: a stray dtor call with no counted ctor (partial
+  // install, teardown ordering) must not wrap the counter.
+  uint32_t count = bucBalloonCount.load(std::memory_order_acquire);
+  while (count &&
+         !bucBalloonCount.compare_exchange_weak(count, count - 1,
+           std::memory_order_acq_rel)) { }
+  if (count == 1) {
+    if (menuStatsEnabled())
+      atfix::log("BUC balloon scope end hits=",
+        deepMenu.renderBitmapHits.load(std::memory_order_relaxed) -
+          bucStatsHitsBase,
+        " misses=",
+        deepMenu.renderBitmapMisses.load(std::memory_order_relaxed) -
+          bucStatsMissesBase);
+    std::lock_guard lock(renderBitmapMutex);
+    renderBitmapCache.clear();
+  }
+  return originalBucBalloonDtor(a, b);
+}
+
+bool installBucTextCacheScope(BYTE* base, const Game& game) {
+  if (game.atlasVariant != AtlasLaterArland)
+    return false;
+  static const bool enabled = [] {
+    const char* value = std::getenv("ARLAND_BUC_TEXT_CACHE");
+    return !value || value[0] != '0';
+  }();
+  if (!enabled)
+    return false;
+  // BalloonBucMode ctor/dtor per executable build; the multilingual RVAs were
+  // homologue-matched from the English build (prologues byte-identical, only
+  // the dtor's vtable-lea displacement differs).
+  const bool multilingual = game.exeBuild == BuildMultilingual;
+  auto* ctor = base + (multilingual ? 0x1d97a0 : 0x1e8c40);
+  auto* dtor = base + (multilingual ? 0x1d9890 : 0x1e8d30);
+  const std::array<BYTE, 16> ctorExpected = {
+    0x48, 0x89, 0x4c, 0x24, 0x08, 0x57, 0x48, 0x83,
+    0xec, 0x30, 0x48, 0xc7, 0x44, 0x24, 0x20, 0xfe,
+  };
+  // Includes the RIP-relative lea of the BalloonBucMode vtable (EN 0x75a758,
+  // multilingual 0x73d298), pinning the hook to the right class's destructor.
+  const std::array<BYTE, 24> dtorExpectedEn = {
+    0x40, 0x53, 0x48, 0x83, 0xec, 0x30, 0x48, 0xc7,
+    0x44, 0x24, 0x20, 0xfe, 0xff, 0xff, 0xff, 0x48,
+    0x8b, 0xd9, 0x48, 0x8d, 0x05, 0x0f, 0x1a, 0x57,
+  };
+  const std::array<BYTE, 24> dtorExpectedMulti = {
+    0x40, 0x53, 0x48, 0x83, 0xec, 0x30, 0x48, 0xc7,
+    0x44, 0x24, 0x20, 0xfe, 0xff, 0xff, 0xff, 0x48,
+    0x8b, 0xd9, 0x48, 0x8d, 0x05, 0xef, 0x39, 0x56,
+  };
+  if (!matches(ctor, ctorExpected) ||
+      !matches(dtor, multilingual ? dtorExpectedMulti : dtorExpectedEn))
+    return false;
+  // Dtor first: a stray dtor hook alone never decrements below zero, so the
+  // cache scope stays inert unless the ctor hook also installed.
+  if (!installMinHookDetour(dtor,
+      reinterpret_cast<void*>(&scopedBucBalloonDtor),
+      reinterpret_cast<void**>(&originalBucBalloonDtor)))
+    return false;
+  return installMinHookDetour(ctor,
+    reinterpret_cast<void*>(&scopedBucBalloonCtor),
+    reinterpret_cast<void**>(&originalBucBalloonCtor));
+}
+
 bool installShadowLayerTrace(BYTE* base, const Game& game) {
   if (!shadowLayerTraceEnabled() || game.atlasVariant != AtlasRorona ||
       game.exeBuild != BuildEnglish)
@@ -3172,6 +3317,10 @@ void detectAndInstallGameHooks() {
     gameBase = reinterpret_cast<BYTE*>(module);
     const bool textBitmapAllocatorInstalled =
       installTextBitmapAllocator(gameBase, game);
+    // The BUC scope replays through cachedRenderText, so it needs the atlas
+    // hooks; without them the ctor/dtor hooks would only count balloons.
+    const bool bucTextCacheInstalled = atlasInstalled
+      ? installBucTextCacheScope(gameBase, game) : false;
     const bool deepStatsInstalled = atlasInstalled
       ? installDeepMenuStats(gameBase, game) : false;
     const bool shadowLayerTraceInstalled =
@@ -3194,6 +3343,7 @@ void detectAndInstallGameHooks() {
       " frame_atlas_cache=", frameAtlasCacheEnabled(),
       " text_bitmap_cache=", textBitmapCacheEnabled(),
       " text_bitmap_allocator=", textBitmapAllocatorInstalled,
+      " buc_text_cache=", bucTextCacheInstalled,
       " stats=", menuStatsEnabled(),
       " deep_stats=", deepStatsInstalled,
       " shadow_layers=", shadowLayerTraceInstalled,
@@ -3524,16 +3674,33 @@ void battleShadowFrameTick() {
     return;
   const uintptr_t gameMode = g_battleGameMode.load(std::memory_order_acquire);
 
-  // Self-healing restore: once we've published (saved != 0), watch the battle
-  // game-mode. When it stops looking live for several consecutive frames, the
-  // battle is over — put the field helper back and stand down.
-  if (g_savedGlobalHelper.load(std::memory_order_acquire)) {
+  // Self-healing battle-end watchdog: while battle tracking is active (or a
+  // helper publish is outstanding), watch the battle game-mode. When it stops
+  // looking live for several consecutive frames, the battle is over — restore
+  // any published helper and stand the tracking down. This must run whether or
+  // not a helper was published: on Meruru nothing is published, and returning
+  // from battle to an already-loaded field never re-runs the field
+  // ShadowHelperInit call site, so without this watchdog g_battleActive (and
+  // the cinematic-state flag scanned from the freed battle game-mode) stays
+  // stuck for the rest of the field visit (observed: no BATTLE_END,
+  // BATTLE_MONITOR ticking through field exploration, cinematic=1 on field).
+  if (g_savedGlobalHelper.load(std::memory_order_acquire) ||
+      g_battleActive.load(std::memory_order_acquire)) {
     if (battleGameModeLive(gameMode)) {
       g_battleDeadFrames.store(0, std::memory_order_release);
-    } else if (g_battleDeadFrames.fetch_add(1, std::memory_order_acq_rel) >= 20) {
+      g_battleSeenLiveMode.store(gameMode, std::memory_order_release);
+    } else if ((g_savedGlobalHelper.load(std::memory_order_acquire) ||
+                (gameMode &&
+                 g_battleSeenLiveMode.load(std::memory_order_acquire) ==
+                   gameMode)) &&
+        g_battleDeadFrames.fetch_add(1, std::memory_order_acq_rel) >= 20) {
       restorePublishedHelper("gamemode_dead");
+      atfix::log("==== BATTLE_END ms=", GetTickCount64(),
+        " gamemode=", reinterpret_cast<void*>(gameMode), " ====");
       g_battleActive.store(false, std::memory_order_release);
       g_lastBattleStateVt.store(0, std::memory_order_release);
+      g_battleStateSlot.store(0, std::memory_order_release);
+      g_battleSeenLiveMode.store(0, std::memory_order_release);
       g_battleContainerFound.store(false, std::memory_order_release);
       g_battleRegistered.store(false, std::memory_order_release);
       g_battleDeadFrames.store(0, std::memory_order_release);
@@ -3597,6 +3764,42 @@ void traceMenuPresent(uint64_t durationMicros, uint64_t intervalMicros) {
   trackBattleStateTick();
   battleShadowFrameTick();
   cutinReregisterTick();
+  // ARLAND_MENU_STATS heartbeat: every 120 Presents, log how much time went
+  // into renderText and how the bitmap cache behaved, plus the mod's per-frame
+  // state flags. Localizes per-frame text-render cost outside menu drains
+  // (field-state slowdowns) and shows whether battle state is stuck after
+  // returning to the field. Quiet while all deltas are zero.
+  if (menuStatsEnabled()) {
+    static uint32_t heartbeatFrames = 0;
+    static uint64_t lastCalls = 0;
+    static uint64_t lastNanos = 0;
+    static uint64_t lastHits = 0;
+    static uint64_t lastMisses = 0;
+    if (++heartbeatFrames >= 120) {
+      heartbeatFrames = 0;
+      const uint64_t calls =
+        renderTextHeartbeatCalls.load(std::memory_order_relaxed);
+      const uint64_t nanos =
+        renderTextHeartbeatNanos.load(std::memory_order_relaxed);
+      const uint64_t hits =
+        deepMenu.renderBitmapHits.load(std::memory_order_relaxed);
+      const uint64_t misses =
+        deepMenu.renderBitmapMisses.load(std::memory_order_relaxed);
+      if (calls != lastCalls || hits != lastHits || misses != lastMisses) {
+        atfix::log("TEXT heartbeat frames=120 render_calls=", calls - lastCalls,
+          " render_us=", (nanos - lastNanos) / 1000,
+          " bitmap_hits=", hits - lastHits,
+          " bitmap_misses=", misses - lastMisses,
+          " buc_balloons=", bucBalloonCount.load(std::memory_order_acquire),
+          " battle_active=", g_battleActive.load(std::memory_order_acquire),
+          " cinematic=", atfix::arlandInCinematicBattle());
+        lastCalls = calls;
+        lastNanos = nanos;
+        lastHits = hits;
+        lastMisses = misses;
+      }
+    }
+  }
   // Manual correlation marker: press F7/F8/F9 while a cut-in is on screen. Uses
   // the currently-down bit (0x8000) with our own edge detection — Wine does not
   // reliably implement GetAsyncKeyState's "recently pressed" low bit. The ms

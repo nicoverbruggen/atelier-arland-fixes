@@ -17,6 +17,7 @@ else
     'src/main.cpp',
     'src/game.cpp',
     'src/config.cpp',
+    'src/crash_log.cpp',
     'src/menu_fix.cpp',
     'src/sync_fix.cpp',
     'vendor/minhook/src/hde/hde64.c',

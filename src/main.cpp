@@ -1,6 +1,7 @@
 // Derived from Philip Rebohle's atelier-sync-fix; see LICENSE (zlib).
 #include <iostream>
 
+#include "crash_log.h"
 #include "menu_fix.h"
 #include "sync_fix.h"
 #include "util.h"
@@ -49,6 +50,8 @@ D3D11Proc loadSystemD3D11() {
 
   if (d3d11Proc.D3D11CreateDevice)
     return d3d11Proc;
+
+  installCrashLogger();
 
   HMODULE libD3D11 = LoadLibraryExA("d3d11_proxy.dll", nullptr, LOAD_LIBRARY_SEARCH_APPLICATION_DIR);
 
