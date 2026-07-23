@@ -2,17 +2,21 @@
 
 ## Project scope
 
-This repository releases a 64-bit `d3d11.dll` and a 32-bit settings-launcher `msimg32.dll` for the English Steam releases of Atelier Rorona DX, Atelier Totori DX, and Atelier Meruru DX. Keep the released implementation Arland-specific. Atelier Ayesha support is under investigation but must remain disabled until its atlas-only path is validated. Do not add support code for newer Atelier games; direct those users to upstream `atelier-sync-fix` instead.
+This repository releases a 64-bit `d3d11.dll` and a 32-bit settings-launcher `msimg32.dll` for the Steam releases of Atelier Rorona DX, Atelier Totori DX, and Atelier Meruru DX, covering both the English and the multilingual (Japanese/Chinese) executables. Keep the released implementation Arland-specific. Atelier Ayesha support is under investigation but must remain disabled until its atlas-only path is validated. Do not add support code for newer Atelier games; direct those users to upstream `atelier-sync-fix` instead.
 
 The current tree contains:
 
 - D3D11 CPU shadow-copy synchronization;
 - coherent Map/Unmap handling with deferred shadow uploads;
 - successful `.PSSG` path-validation caching for all three Arland games;
-- a queue-scoped font-atlas read cache for all three games, extended to the complete menu-construction frame in Rorona;
+- a queue-scoped font-atlas read cache for all three games, extended to the complete menu-construction frame in Rorona, and extended across frames in Meruru while a conversation balloon is live (the conversation text-render cache);
 - old-Arland render-target and viewport/scissor correction;
-- old-Arland game-side 1440p/4K render-target and raster correction.
-- signature-gated launcher mode injection and an optional INI resolution override.
+- old-Arland game-side 1440p/4K render-target and raster correction;
+- signature-gated launcher mode injection and an optional INI resolution override;
+- optional MSAA and optional high-resolution shadow-map twins (`ShadowMultiplier`);
+- Rorona battle-shadow restoration, battle-state tracking with a battle-end watchdog, and the optional cut-in shadow/dim handling for Rorona and Meruru;
+- a per-game capability matrix (`src/game.cpp`) that centralizes feature availability and defaults;
+- crash post-mortem logging and log rotation.
 
 Consult `TODO.md` for work in progress and features under consideration.
 
@@ -21,7 +25,9 @@ Consult `TODO.md` for work in progress and features under consideration.
 - `src/` contains project C++ source, headers, and module-definition files.
 - `vendor/minhook/` contains the unmodified vendored MinHook dependency and its license.
 - `.github/workflows/build.yml` builds and publishes both Windows DLLs.
-- `README.md` is the user-facing overview and installation guide.
+- `README.md` is the user-facing overview and installation guide for the drop-in defaults.
+- `ADVANCED.md` documents the optional features and their `arland-fix.ini` configuration; user-facing configuration is documented exclusively through `arland-fix.ini` (environment switches are diagnostics and belong in `TECHNICAL.md` only).
+- `BUILDING.md` contains the build instructions.
 - `TECHNICAL.md` documents implementation details, evidence, and provenance.
 - `TODO.md` is the only roadmap and work-in-progress document.
 
@@ -69,3 +75,5 @@ Philip Rebohle created the original `atelier-sync-fix` synchronization implement
 Maintain these distinctions in source comments, `README.md`, `TECHNICAL.md`, and `LICENSE`. Do not imply that the menu investigation created the original synchronization technique.
 
 Documentation must describe the current repository state. Do not narrate it using a specific release or version number, and do not hard-wrap Markdown prose.
+
+`TECHNICAL.md` and the code must stay in sync: every shipped fix and feature has a section in `TECHNICAL.md` describing its mechanism, and any change that adds, removes, or alters a fix's behavior or defaults amends `TECHNICAL.md` in the same change. A fix that exists only in code is undocumented and incomplete.

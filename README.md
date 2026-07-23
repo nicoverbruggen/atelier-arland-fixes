@@ -2,21 +2,14 @@
 
 This mod significantly improves performance in the Steam releases of **Atelier Rorona DX, Atelier Totori DX, and Atelier Meruru DX**, in every supported language. It removes severe menu hitches, reduces costly D3D11 synchronization stalls, prevents text corruption caused by the synchronization optimization, and adds game-side 2560×1440 and 3840×2160 rendering support.
 
-The mod ships with a 64-bit `d3d11.dll` for the games and a 32-bit `msimg32.dll` for their shared settings launcher. The game DLL combines the synchronization fix required by the Arland ports with the Arland-specific menu fixes discovered during this project. The launcher DLL always exposes 1920×1080, 2560×1440, and 3840×2160 in both windowed and fullscreen mode despite DPI, desktop-resolution, and display-mode filtering. No separate `atelier-sync-fix` or `dinput8.dll` is required.
+The mod ships with a 64-bit `d3d11.dll` for the games and a 32-bit `msimg32.dll` for their shared settings launcher. The game DLL combines the synchronization fix required by the Arland ports with the Arland-specific menu fixes discovered during this project. The launcher DLL always exposes 1920×1080, 2560×1440, and 3840×2160 in both windowed and fullscreen mode despite DPI, desktop-resolution, and display-mode filtering. 
 
-For newer Atelier games, use the upstream [atelier-sync-fix](https://github.com/doitsujin/atelier-sync-fix) or an appropriate maintained fork instead. This project deliberately contains only Arland-specific code.
+> [!TIP]
+> No separate `atelier-sync-fix` or `dinput8.dll` is required. For newer Atelier games, use the upstream [atelier-sync-fix](https://github.com/doitsujin/atelier-sync-fix) or an appropriate maintained fork instead. This project deliberately contains only Arland-specific code.
 
-## Benefits
+## How it works
 
-- Much faster opening of text-heavy menus, including the worst-affected Status, Quest, Container, Basket, Assignment, and crafting screens.
-- Fewer pauses caused by the games repeatedly waiting for graphics work to finish.
-- Correct text rendering without the corruption produced by older synchronization fixes in these games.
-- Correct direct rendering at 2560×1440 and 3840×2160 instead of leaving internal render targets and raster state at 1920×1080.
-- Restored character and enemy shadows during battles in Atelier Rorona DX, which the port omitted entirely (Atelier Totori DX's are planned).
-- Smooth field framerate during Atelier Meruru DX's animated-portrait conversations, which collapsed on the English executable.
-- One installation covering the relevant performance fixes for the complete Arland trilogy, in all languages: both the English executable and the multilingual executable used for Japanese and Chinese are supported.
-
-Everything above works out of the box with default settings. Optional, off-by-default enhancements (higher-resolution shadows, restored cut-in shadows, cut-in brightness) are documented in [ADVANCED.md](ADVANCED.md).
+Everything above works out of the box with default settings by simply dropping `d3d11.dll` into your game folders. Optional, off-by-default enhancements (higher-resolution shadows, restored cut-in shadows, cut-in brightness) are documented in [ADVANCED.md](ADVANCED.md).
 
 The mod is intended for the Steam versions of the games. See [TECHNICAL.md](TECHNICAL.md) for implementation details and tested executable fingerprints.
 
