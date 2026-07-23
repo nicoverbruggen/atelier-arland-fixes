@@ -16,6 +16,7 @@
 #include <vector>
 
 #include "../vendor/minhook/include/MinHook.h"
+#include "font_hires.h"
 #include "game.h"
 #include "log.h"
 
@@ -55,6 +56,8 @@ namespace {
 using PathCheckProc = bool (*)(void*, void*);
 using QueueDrainProc = void (*)(void*);
 using RenderTextProc = uintptr_t (*)(
+  uintptr_t, uintptr_t, uintptr_t, uintptr_t);
+using SetTextProc = uintptr_t (*)(
   uintptr_t, uintptr_t, uintptr_t, uintptr_t);
 using AtlasLockProc = uintptr_t (*)(
   uintptr_t, uintptr_t, uintptr_t, uintptr_t);
@@ -153,6 +156,7 @@ constexpr Game games[] = {
 PathCheckProc originalPathCheck = nullptr;
 QueueDrainProc originalQueueDrain = nullptr;
 RenderTextProc originalRenderText = nullptr;
+SetTextProc originalSetText = nullptr;
 AtlasLockProc originalAtlasLock = nullptr;
 AtlasUnlockProc originalAtlasUnlock = nullptr;
 NodeInitProc originalNodeInit = nullptr;
@@ -2513,6 +2517,12 @@ uintptr_t cachedRenderText(uintptr_t a, uintptr_t b,
     ++renderTextDepth;
     result = originalRenderText(a, b, c, d);
     --renderTextDepth;
+    // High-resolution UI text PoC: replace the freshly-rendered low-res string
+    // bitmap with a higher-resolution re-render, keeping the engine's metrics.
+    // (Called unconditionally; it self-gates and one-shot-logs its state.)
+    if (a && b)
+      atfix::hiResTextRerender(a, reinterpret_cast<const char*>(b),
+        gameAlloc, gameFree);
     const ActiveRenderTrace completedRenderTrace = activeRenderTrace;
     activeRenderTrace = previousRenderTrace;
 
@@ -3060,19 +3070,90 @@ bool installDeepMenuStats(BYTE* base, const Game& game) {
     reinterpret_cast<void**>(&originalNodeInit));
 }
 
-bool installTextBitmapAllocator(BYTE* base, const Game& game) {
-  if (!textBitmapCacheEnabled() || game.atlasVariant != AtlasRorona ||
-      game.exeBuild != BuildEnglish)
+// Wraps the text consumer (renderText's caller, which builds the per-string
+// texture): after it returns, restore the output object's dims so the high-res
+// substitution renders at the original on-screen size (see font_hires.h).
+uintptr_t STDMETHODCALLTYPE tracedSetText(
+    uintptr_t a, uintptr_t b, uintptr_t c, uintptr_t d) {
+  const uintptr_t result = originalSetText(a, b, c, d);
+  atfix::hiResTextRestoreDims();
+  return result;
+}
+
+// Hook the text consumer (renderText's caller) for the high-resolution text
+// feature, so hiResTextRestoreDims runs after it. English builds only; the three
+// consumers are homologues with a byte-identical prologue (verified 2026-07-24).
+bool installHiResTextConsumer(BYTE* base, const Game& game) {
+  if (!atfix::hiResTextEnabled() || game.exeBuild != BuildEnglish)
     return false;
-  auto* allocate = base + 0x262e90;
-  auto* release = base + 0x262d60;
-  const std::array<BYTE, 10> allocateExpected = {
-    0xba, 0x10, 0x00, 0x00, 0x00, 0xe9, 0x36, 0xff, 0xff, 0xff,
+  uintptr_t consumerRva = 0;
+  switch (game.atlasVariant) {
+    case AtlasRorona:      consumerRva = 0x562bd0; break;
+    case AtlasTotori:      consumerRva = 0x4325a0; break;
+    case AtlasLaterArland: consumerRva = 0x512d80; break;   // Meruru
+    default: return false;
+  }
+  auto* consumer = base + consumerRva;
+  const std::array<BYTE, 16> consumerExpected = {
+    0x40, 0x53, 0x48, 0x83, 0xec, 0x60, 0x48, 0x8b,
+    0xd9, 0x48, 0x85, 0xd2, 0x75, 0x09, 0x8d, 0x42,
   };
-  const std::array<BYTE, 15> releaseExpected = {
-    0x48, 0x85, 0xc9, 0x74, 0x61, 0x53, 0x48, 0x83,
-    0xec, 0x20, 0x48, 0x8b, 0xd9, 0xe8, 0xae,
-  };
+  if (!matches(consumer, consumerExpected))
+    return false;
+  return installMinHookDetour(consumer, reinterpret_cast<void*>(&tracedSetText),
+    reinterpret_cast<void**>(&originalSetText));
+}
+
+bool installTextBitmapAllocator(BYTE* base, const Game& game) {
+  // Resolve the engine's aligned text-buffer allocator/free — the pair the
+  // renderText path uses for the output object's `+8` pixel buffer — so a
+  // feature can grow/replace that buffer and have the engine free it correctly.
+  // English-build-only (the RVAs are per-build); needed by the text-bitmap
+  // replay cache and by the high-resolution text substitution. Rorona's
+  // allocate is a `mov edx,0x10; jmp` thunk; Totori/Meruru inline the alignment
+  // so their allocate is a full function (same `void*(size_t)` signature).
+  if (game.exeBuild != BuildEnglish ||
+      (!textBitmapCacheEnabled() && !atfix::hiResTextEnabled()))
+    return false;
+
+  uintptr_t allocateRva = 0;
+  uintptr_t releaseRva = 0;
+  std::array<BYTE, 10> allocateExpected = {};
+  std::array<BYTE, 15> releaseExpected = {};
+  switch (game.atlasVariant) {
+    case AtlasRorona:
+      allocateRva = 0x262e90;
+      releaseRva = 0x262d60;
+      allocateExpected = {
+        0xba, 0x10, 0x00, 0x00, 0x00, 0xe9, 0x36, 0xff, 0xff, 0xff };
+      releaseExpected = {
+        0x48, 0x85, 0xc9, 0x74, 0x61, 0x53, 0x48, 0x83,
+        0xec, 0x20, 0x48, 0x8b, 0xd9, 0xe8, 0xae };
+      break;
+    case AtlasTotori:
+      allocateRva = 0x2bf6f0;
+      releaseRva = 0x2bf5f0;
+      allocateExpected = {
+        0x40, 0x53, 0x48, 0x83, 0xec, 0x20, 0x48, 0x85, 0xc9, 0xbb };
+      releaseExpected = {
+        0x48, 0x85, 0xc9, 0x74, 0x34, 0x53, 0x48, 0x83,
+        0xec, 0x20, 0x48, 0x8b, 0xd9, 0xe8, 0x1e };
+      break;
+    case AtlasLaterArland:   // Meruru
+      allocateRva = 0x21d220;
+      releaseRva = 0x21d180;
+      allocateExpected = {
+        0x40, 0x53, 0x48, 0x83, 0xec, 0x20, 0x48, 0x85, 0xc9, 0xbb };
+      releaseExpected = {
+        0x48, 0x85, 0xc9, 0x74, 0x34, 0x53, 0x48, 0x83,
+        0xec, 0x20, 0x48, 0x8b, 0xd9, 0xe8, 0xde };
+      break;
+    default:
+      return false;
+  }
+
+  BYTE* allocate = base + allocateRva;
+  BYTE* release = base + releaseRva;
   if (!matches(allocate, allocateExpected) ||
       !matches(release, releaseExpected))
     return false;
@@ -3576,6 +3657,7 @@ void detectAndInstallGameHooks() {
     gameBase = reinterpret_cast<BYTE*>(module);
     const bool textBitmapAllocatorInstalled =
       installTextBitmapAllocator(gameBase, game);
+    installHiResTextConsumer(gameBase, game);
     // The BUC scope replays through cachedRenderText, so it needs the atlas
     // hooks; without them the ctor/dtor hooks would only count balloons.
     const bool bucTextCacheInstalled = atlasInstalled
