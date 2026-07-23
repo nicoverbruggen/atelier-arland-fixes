@@ -41,6 +41,24 @@ Width=3840
 Height=2160
 ```
 
+## SMAA anti-aliasing
+
+SMAA (a post-process anti-aliasing pass) is **on by default**. It smooths edges
+across the whole scene — including the thin alpha-tested costume trim that MSAA
+cannot touch — at a low, constant cost, and is applied before the UI is drawn
+so the HUD and text stay crisp. Turn it off with:
+
+```ini
+[Rendering]
+SMAA=false
+```
+
+`ARLAND_SMAA` overrides the INI for a session. SMAA and MSAA can be combined
+(SMAA cleans up what MSAA's geometry-only multisampling leaves), or SMAA can be
+used alone as a much cheaper alternative to MSAA. Note: the very fine lace trim
+is sub-pixel alpha-test detail that no post-process (SMAA included) can fully
+resolve — only rendering at a higher internal resolution does.
+
 ## MSAA
 
 Multisample anti-aliasing is disabled by default. `MSAA` in the `[Rendering]`
@@ -55,6 +73,46 @@ If the GPU or selected format does not support the requested count, the mod
 falls back to a lower supported count. Use `0` or `1`, or remove the setting
 entirely, to disable MSAA. Higher sample counts increase GPU and video-memory
 cost.
+
+## Trim anti-aliasing (alpha-to-coverage)
+
+Thin costume trim — the frilled lace on sleeves, collars, and skirts, and the
+hair fringe — is drawn with a hard alpha-test cutout against a low-resolution
+1-bit-alpha texture, so its edges stay jagged even with MSAA (the aliasing is
+inside the texture, not on the model silhouette, which is all MSAA smooths).
+
+`TrimAntiAliasing` enables alpha-to-coverage for those character materials,
+which dithers the cutout edges into the multisample coverage mask:
+
+```ini
+[Rendering]
+MSAA=4
+TrimAntiAliasing=true
+```
+
+It only takes effect when MSAA is active (it works through the multisampled
+render target), and it is scoped to the character trim shaders alone — UI,
+fonts, and effects are untouched. The improvement is bounded by the source
+textures' 1-bit alpha, so expect noticeably smoother trim edges rather than a
+perfectly clean line. Off by default. `ARLAND_TRIM_A2C` overrides the INI.
+
+## Anisotropic filtering
+
+The games sample their textures with plain linear filtering, so surfaces seen at
+a shallow angle — floors, walls, the ground stretching into the distance — look
+blurry. `AnisotropicFiltering` upgrades that to anisotropic filtering, which
+keeps those oblique surfaces sharp:
+
+```ini
+[Rendering]
+AnisotropicFiltering=16
+```
+
+Accepted values are `2`, `4`, `8`, and `16` (the maximum-anisotropy level); any
+other value, or the setting removed, leaves the game's original filtering. The
+mod upgrades the game's texture samplers at creation, so all world and character
+textures benefit with no per-frame cost; shadow-comparison samplers are left
+untouched. Off by default. `ARLAND_ANISO` overrides the INI.
 
 ## Shadow resolution multiplier
 

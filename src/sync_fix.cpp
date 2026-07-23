@@ -17,6 +17,7 @@
 #include "util.h"
 #include "game.h"
 #include "config.h"
+#include "smaa.h"
 
 namespace atfix {
 
@@ -58,6 +59,8 @@ using PFN_ID3D11Device_CreateVertexShader = HRESULT (STDMETHODCALLTYPE *) (ID3D1
   const void*, SIZE_T, ID3D11ClassLinkage*, ID3D11VertexShader**);
 using PFN_ID3D11Device_CreatePixelShader = HRESULT (STDMETHODCALLTYPE *) (ID3D11Device*,
   const void*, SIZE_T, ID3D11ClassLinkage*, ID3D11PixelShader**);
+using PFN_ID3D11Device_CreateSamplerState = HRESULT (STDMETHODCALLTYPE *) (ID3D11Device*,
+  const D3D11_SAMPLER_DESC*, ID3D11SamplerState**);
 
 using PFN_ID3D11DeviceContext_ClearRenderTargetView = void (STDMETHODCALLTYPE *) (ID3D11DeviceContext*,
   ID3D11RenderTargetView*, const FLOAT[4]);
@@ -110,6 +113,7 @@ struct DeviceProcs {
   PFN_ID3D11Device_CreateTexture3D                      CreateTexture3D               = nullptr;
   PFN_ID3D11Device_CreateVertexShader                   CreateVertexShader            = nullptr;
   PFN_ID3D11Device_CreatePixelShader                    CreatePixelShader             = nullptr;
+  PFN_ID3D11Device_CreateSamplerState                   CreateSamplerState            = nullptr;
 };
 
 struct ContextProcs {
@@ -1580,6 +1584,72 @@ void resolveBoundMSAA(ID3D11DeviceContext* context) {
   host->Release();
 }
 
+// ---- pre-UI SMAA injection -------------------------------------------------
+// Run SMAA on the finished 3D scene, before the UI composites on top of it —
+// matching AGT's injection point, so the HUD/menus stay crisp. The boundary is
+// the frame's first bind of the main-size colour target WITHOUT depth (the UI
+// draws to the main render target with depth testing off; the scene rendered
+// to it with depth). Under MSAA the scene lives in the twin and is resolved to
+// this host by resolveBoundMSAA just before we get here, so either way the
+// host holds the finished single-sample scene. Once per frame; the latch is
+// reset at Present.
+std::atomic<bool> g_smaaDoneThisFrame{false};
+std::atomic<bool> g_smaaSceneSeen{false};
+
+bool smaaMainSizeColor(ID3D11RenderTargetView* rtv, ID3D11Texture2D** outTex) {
+  if (outTex) *outTex = nullptr;
+  if (!rtv)
+    return false;
+  ID3D11Resource* res = nullptr;
+  rtv->GetResource(&res);
+  bool match = false;
+  if (res) {
+    ID3D11Texture2D* tex = nullptr;
+    if (SUCCEEDED(res->QueryInterface(IID_PPV_ARGS(&tex)))) {
+      D3D11_TEXTURE2D_DESC d = {};
+      tex->GetDesc(&d);
+      const UINT w = g_mainRtWidth.load(std::memory_order_relaxed);
+      const UINT h = g_mainRtHeight.load(std::memory_order_relaxed);
+      match = w && d.Width == w && d.Height == h && d.SampleDesc.Count == 1;
+      if (match && outTex) { *outTex = tex; tex = nullptr; }
+      if (tex) tex->Release();
+    }
+    res->Release();
+  }
+  return match;
+}
+
+// Called at the top of OMSetRenderTargets with the INCOMING (pre-substitution)
+// binding. Detects the scene→UI boundary and runs pre-UI SMAA once per frame.
+void smaaSceneBoundary(ID3D11DeviceContext* context, UINT rtvCount,
+                       ID3D11RenderTargetView* const* rtvs,
+                       ID3D11DepthStencilView* dsv) {
+  if (!atfix::smaaEnabled() || !atfix::smaaPreUI() ||
+      rtvCount != 1 || !rtvs || !rtvs[0])
+    return;
+  if (dsv) {
+    // Main colour + depth = the scene pass. Remember we saw it this frame.
+    if (smaaMainSizeColor(rtvs[0], nullptr))
+      g_smaaSceneSeen.store(true, std::memory_order_relaxed);
+    return;
+  }
+  // Main colour without depth = UI start. SMAA the finished scene once.
+  if (!g_smaaSceneSeen.load(std::memory_order_relaxed) ||
+      g_smaaDoneThisFrame.load(std::memory_order_relaxed))
+    return;
+  ID3D11Texture2D* scene = nullptr;
+  if (smaaMainSizeColor(rtvs[0], &scene) && scene) {
+    g_smaaDoneThisFrame.store(true, std::memory_order_relaxed);
+    atfix::smaaApplySceneColor(context, scene);
+    scene->Release();
+  }
+}
+
+void smaaResetFrame() {
+  g_smaaDoneThisFrame.store(false, std::memory_order_relaxed);
+  g_smaaSceneSeen.store(false, std::memory_order_relaxed);
+}
+
 bool getOrCreateMSAAViews(ID3D11DeviceContext* context,
                          ID3D11RenderTargetView* hostRtv,
                          ID3D11DepthStencilView* hostDsv,
@@ -2296,70 +2366,6 @@ HRESULT STDMETHODCALLTYPE ID3D11Device_CreateVertexShader(
   return hr;
 }
 
-// ---- trim-aliasing probe (ARLAND_TRIM_PROBE) -------------------------------
-// Pure diagnostics for the thin-costume-trim aliasing investigation: classify
-// pixel shaders as alpha-tested (shader-side `discard` and/or a `g_alpha_ref`
-// cbuffer field, per the static PSSG parse) at creation, then at draw time log
-// once per classified shader whether it draws into the mod's MSAA twin, its
-// blend state, and its bound texture/cb — enough to confirm the alpha-test +
-// alpha-blend hypothesis and enumerate the character-shader population in one
-// session. No behaviour change; everything is gated off by default.
-bool trimProbeEnabled() {
-  static const bool enabled = [] {
-    const char* value = std::getenv("ARLAND_TRIM_PROBE");
-    return value && value[0] != '0';
-  }();
-  return enabled;
-}
-
-std::mutex g_alphaTestPsMutex;
-std::set<ID3D11PixelShader*> g_alphaTestPs;
-std::set<ID3D11PixelShader*> g_trimLoggedPs;
-
-// Walk a DXBC container: report whether the shader has a `discard` instruction
-// (SHEX/SHDR opcode token low 11 bits == 13) and/or a `g_alpha_ref` reflection
-// field (RDEF string). Bounds-checked; returns quietly on any malformed input.
-void classifyDxbc(const void* bytecode, size_t length,
-                  bool* hasDiscard, bool* hasAlphaRef) {
-  *hasDiscard = false;
-  *hasAlphaRef = false;
-  const auto* base = static_cast<const uint8_t*>(bytecode);
-  if (!base || length < 0x20 || std::memcmp(base, "DXBC", 4) != 0)
-    return;
-  uint32_t chunkCount = 0;
-  std::memcpy(&chunkCount, base + 0x1c, sizeof(chunkCount));
-  if (chunkCount > 32 || length < 0x20 + chunkCount * 4u)
-    return;
-  for (uint32_t i = 0; i < chunkCount; i++) {
-    uint32_t off = 0;
-    std::memcpy(&off, base + 0x20 + i * 4u, sizeof(off));
-    if (off + 8 > length)
-      continue;
-    char fourcc[4];
-    std::memcpy(fourcc, base + off, 4);
-    uint32_t size = 0;
-    std::memcpy(&size, base + off + 4, sizeof(size));
-    if (uint64_t(off) + 8 + size > length)
-      continue;
-    const uint8_t* body = base + off + 8;
-    if (!std::memcmp(fourcc, "RDEF", 4)) {
-      for (uint32_t j = 0; j + 11 <= size; j++)
-        if (!std::memcmp(body + j, "g_alpha_ref", 11)) { *hasAlphaRef = true; break; }
-    } else if (!std::memcmp(fourcc, "SHEX", 4) || !std::memcmp(fourcc, "SHDR", 4)) {
-      // Header is 2 dwords (version, dword-length); tokens follow.
-      for (uint32_t j = 8; j + 4 <= size; ) {
-        uint32_t tok = 0;
-        std::memcpy(&tok, body + j, sizeof(tok));
-        const uint32_t op = tok & 0x7ff;
-        const uint32_t len = (tok >> 24) & 0x7f;
-        if (op == 13) { *hasDiscard = true; break; }   // discard
-        if (len == 0) break;
-        j += len * 4u;
-      }
-    }
-  }
-}
-
 HRESULT STDMETHODCALLTYPE ID3D11Device_CreatePixelShader(
         ID3D11Device*             pDevice,
   const void*                     pShaderBytecode,
@@ -2367,77 +2373,50 @@ HRESULT STDMETHODCALLTYPE ID3D11Device_CreatePixelShader(
         ID3D11ClassLinkage*       pClassLinkage,
         ID3D11PixelShader**       ppPixelShader) {
   auto procs = getDeviceProcs(pDevice);
-  const HRESULT hr = procs->CreatePixelShader(pDevice, pShaderBytecode,
+  return procs->CreatePixelShader(pDevice, pShaderBytecode,
     BytecodeLength, pClassLinkage, ppPixelShader);
-  if (trimProbeEnabled() && SUCCEEDED(hr) && ppPixelShader && *ppPixelShader) {
-    bool discard = false, alphaRef = false;
-    classifyDxbc(pShaderBytecode, BytecodeLength, &discard, &alphaRef);
-    if (discard || alphaRef) {
-      std::lock_guard lock(g_alphaTestPsMutex);
-      g_alphaTestPs.insert(*ppPixelShader);
-      log("TRIM_PS classified ps=", *ppPixelShader,
-        " discard=", discard, " alpha_ref=", alphaRef,
-        " bytes=", std::dec, uint32_t(BytecodeLength));
-    }
-  }
-  return hr;
 }
 
-// Draw-time classification for the trim probe: if the bound pixel shader is an
-// alpha-test shader, log (once per shader) the blend state, whether the draw
-// lands on the mod's MSAA twin, and the bound texture — the signatures that
-// distinguish "needs alpha-to-coverage" from "pure alpha-blend".
-void trimProbeDraw(ID3D11DeviceContext* pContext, UINT indexCount) {
-  ID3D11PixelShader* ps = nullptr;
-  pContext->PSGetShader(&ps, nullptr, nullptr);
-  if (!ps)
-    return;
-  bool classified;
-  bool firstSighting;
-  {
-    std::lock_guard lock(g_alphaTestPsMutex);
-    classified = g_alphaTestPs.count(ps) != 0;
-    firstSighting = classified && g_trimLoggedPs.insert(ps).second;
+// Anisotropic filtering. Opt-in: `[Rendering] AnisotropicFiltering` accepts a
+// maximum-anisotropy value (2/4/8/16); any other value or absent = off.
+// ARLAND_ANISO overrides. Applied by upgrading the game's basic linear samplers
+// at creation, so all world/character/ground textures get sharper filtering at
+// oblique angles with no per-draw cost. Comparison/minimum/maximum filters
+// (shadow PCF etc.) are left untouched.
+UINT anisotropyLevel() {
+  static const UINT level = []() -> UINT {
+    unsigned long v = 0;
+    char value[16] = {};
+    const DWORD len = GetEnvironmentVariableA("ARLAND_ANISO", value, sizeof(value));
+    if (len && len < sizeof(value))
+      v = std::strtoul(value, nullptr, 10);
+    else
+      v = GetPrivateProfileIntA("Rendering", "AnisotropicFiltering", 0,
+        configPath() ? configPath() : "");
+    if (v == 2 || v == 4 || v == 8 || v == 16)
+      return UINT(v);
+    return 0;
+  }();
+  return level;
+}
+
+HRESULT STDMETHODCALLTYPE ID3D11Device_CreateSamplerState(
+        ID3D11Device*             pDevice,
+  const D3D11_SAMPLER_DESC*       pDesc,
+        ID3D11SamplerState**      ppSamplerState) {
+  auto procs = getDeviceProcs(pDevice);
+  const UINT aniso = anisotropyLevel();
+  D3D11_SAMPLER_DESC desc;
+  // Upgrade only the basic point/linear filters (enum 0x00..0x15) to
+  // anisotropic; leave anisotropic (0x55) and comparison/min/max (>= 0x80,
+  // e.g. shadow PCF) alone.
+  if (aniso && pDesc && pDesc->Filter <= D3D11_FILTER_MIN_MAG_MIP_LINEAR) {
+    desc = *pDesc;
+    desc.Filter = D3D11_FILTER_ANISOTROPIC;
+    desc.MaxAnisotropy = aniso;
+    pDesc = &desc;
   }
-  if (firstSighting) {
-    void* host = nullptr;
-    UINT hostSize = sizeof(host);
-    const bool msaaTwin = SUCCEEDED(pContext->GetPrivateData(
-      IID_MSAABoundHost, &hostSize, &host)) && host;
-    ID3D11BlendState* blend = nullptr;
-    FLOAT factor[4] = {};
-    UINT sampleMask = 0;
-    pContext->OMGetBlendState(&blend, factor, &sampleMask);
-    D3D11_BLEND_DESC bd = {};
-    if (blend) blend->GetDesc(&bd);
-    ID3D11ShaderResourceView* srv = nullptr;
-    pContext->PSGetShaderResources(0, 1, &srv);
-    D3D11_TEXTURE2D_DESC td = {};
-    bool haveTex = false;
-    if (srv) {
-      ID3D11Resource* res = nullptr;
-      srv->GetResource(&res);
-      if (res) {
-        ID3D11Texture2D* tex = nullptr;
-        if (SUCCEEDED(res->QueryInterface(IID_PPV_ARGS(&tex)))) {
-          tex->GetDesc(&td); haveTex = true; tex->Release();
-        }
-        res->Release();
-      }
-    }
-    log("TRIM_DRAW ps=", ps, " indices=", std::dec, indexCount,
-      " msaa_twin=", msaaTwin,
-      " blend_enable=", bd.RenderTarget[0].BlendEnable,
-      " a2c=", bd.AlphaToCoverageEnable,
-      " src=", bd.RenderTarget[0].SrcBlend,
-      " dst=", bd.RenderTarget[0].DestBlend,
-      " tex=", haveTex ? int(td.Width) : -1, "x",
-      haveTex ? int(td.Height) : -1,
-      " fmt=", haveTex ? int(td.Format) : -1);
-    if (srv) srv->Release();
-    if (blend) blend->Release();
-  }
-  ps->Release();
+  return procs->CreateSamplerState(pDevice, pDesc, ppSamplerState);
 }
 
 HRESULT STDMETHODCALLTYPE ID3D11Device_CreateDeferredContext(
@@ -3209,6 +3188,7 @@ void STDMETHODCALLTYPE ID3D11DeviceContext_OMSetRenderTargets(
   auto procs = getContextProcs(pContext);
   updateRtvShadowResources(pContext);
   resolveBoundMSAA(pContext);
+  smaaSceneBoundary(pContext, RTVCount, ppRTVs, pDSV);
   getRasterState(pContext)->dirty.store(true, std::memory_order_release);
 
   // Shadow-res twin: redirect the depth-only caster pass onto the enlarged
@@ -3735,8 +3715,6 @@ void STDMETHODCALLTYPE ID3D11DeviceContext_Draw(
   updateViewportScissor(pContext);
   gateHoldAtDraw(pContext);
   traceResolutionDraw(pContext, "draw", VertexCount, 1);
-  if (trimProbeEnabled())
-    trimProbeDraw(pContext, VertexCount);
 
   // Carry dialogue-snapshot identity through the three-vertex blur passes so
   // the later four-vertex composite can be distinguished from the raw copy.
@@ -3781,8 +3759,6 @@ void STDMETHODCALLTYPE ID3D11DeviceContext_DrawIndexed(
   updateViewportScissor(pContext);
   gateHoldAtDraw(pContext);
   traceResolutionDraw(pContext, "indexed", IndexCount, 1);
-  if (trimProbeEnabled())
-    trimProbeDraw(pContext, IndexCount);
 
   // The 48-byte 1920x1080 quad is shared by other cutscene layers. Keep the
   // game's original buffer bound everywhere except the corrected dialogue
@@ -3833,7 +3809,8 @@ void STDMETHODCALLTYPE ID3D11DeviceContext_DrawIndexed(
     if (view) view->Release();
   }
   cutinBlobCaptureDraw(pContext, IndexCount);
-  procs->DrawIndexed(pContext, IndexCount, StartIndexLocation, BaseVertexLocation);
+  procs->DrawIndexed(pContext, IndexCount, StartIndexLocation,
+    BaseVertexLocation);
 }
 
 void STDMETHODCALLTYPE ID3D11DeviceContext_DrawInstanced(
@@ -4079,6 +4056,8 @@ void hookDevice(ID3D11Device* pDevice) {
   HOOK_PROC(ID3D11Device, pDevice, procs, 6,  CreateTexture3D);
   HOOK_PROC(ID3D11Device, pDevice, procs, 12, CreateVertexShader);
   HOOK_PROC(ID3D11Device, pDevice, procs, 15, CreatePixelShader);
+  if (anisotropyLevel())
+    HOOK_PROC(ID3D11Device, pDevice, procs, 23, CreateSamplerState);
 
   g_installedHooks |= HOOK_DEVICE;
 }

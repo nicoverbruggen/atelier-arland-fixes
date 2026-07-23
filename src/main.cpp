@@ -3,6 +3,7 @@
 
 #include "crash_log.h"
 #include "menu_fix.h"
+#include "smaa.h"
 #include "sync_fix.h"
 #include "util.h"
 
@@ -104,6 +105,11 @@ bool menuTransitionTraceEnabled() {
     arland::battleShadowRestoreActive();
 }
 
+// Present must be hooked whenever the transition trace OR SMAA needs it.
+bool presentHookNeeded() {
+  return menuTransitionTraceEnabled() || atfix::smaaEnabled();
+}
+
 HRESULT STDMETHODCALLTYPE tracedPresent(
     IDXGISwapChain* swapChain, UINT syncInterval, UINT flags) {
   const auto started = std::chrono::steady_clock::now();
@@ -112,7 +118,9 @@ HRESULT STDMETHODCALLTYPE tracedPresent(
   const int64_t previous = previousPresentNanos.exchange(
     startedNanos, std::memory_order_relaxed);
   atfix::cutinDrawContactBlobs(swapChain);
+  atfix::smaaApply(swapChain);        // Present-time path (only if pre-UI off)
   const HRESULT result = originalPresent(swapChain, syncInterval, flags);
+  atfix::smaaResetFrame();            // arm the pre-UI SMAA latch for next frame
   const auto finished = std::chrono::steady_clock::now();
   const uint64_t durationMicros = uint64_t(
     std::chrono::duration_cast<std::chrono::microseconds>(
@@ -125,7 +133,7 @@ HRESULT STDMETHODCALLTYPE tracedPresent(
 }
 
 void hookSwapChain(IDXGISwapChain* swapChain) {
-  if (!swapChain || !menuTransitionTraceEnabled())
+  if (!swapChain || !presentHookNeeded())
     return;
   std::lock_guard lock(presentHookMutex);
   if (originalPresent)
@@ -159,7 +167,7 @@ HRESULT STDMETHODCALLTYPE tracedCreateSwapChain(
 }
 
 void hookFactoryForSwapChain(ID3D11Device* device) {
-  if (!device || !menuTransitionTraceEnabled())
+  if (!device || !presentHookNeeded())
     return;
   IDXGIDevice* dxgiDevice = nullptr;
   IDXGIAdapter* adapter = nullptr;

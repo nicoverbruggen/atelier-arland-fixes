@@ -49,3 +49,6 @@ subject to the following restrictions:
 
 The bundled MinHook dependency is distributed under its own BSD-style license; see vendor/minhook/LICENSE.txt.
 MinHook repository: https://github.com/TsudaKageyu/minhook
+
+The bundled SMAA reference shader and its precomputed AreaTex/SearchTex lookup textures (Jorge Jimenez, Jose I. Echevarria, Belen Masia, Fernando Navarro, Diego Gutierrez) are distributed under the MIT License; see vendor/smaa/LICENSE.txt.
+SMAA repository: https://github.com/iryoku/smaa

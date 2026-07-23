@@ -14,6 +14,8 @@ bool applyResolutionOverride(DXGI_SWAP_CHAIN_DESC* pDesc);
 bool arlandConfigBool(const char* section, const char* key, bool def);
 void traceTransitionD3DFrame(uint64_t intervalMicros);
 void cutinDrawContactBlobs(IDXGISwapChain* swapChain);
+/* lives in sync_fix.cpp: reset the per-frame pre-UI SMAA latch (call at Present). */
+void smaaResetFrame();
 
 /* lives in main.cpp */
 extern Log log;
