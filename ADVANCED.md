@@ -46,7 +46,10 @@ Height=2160
 SMAA (a post-process anti-aliasing pass) is **on by default**. It smooths edges
 across the whole scene — including the thin alpha-tested costume trim that MSAA
 cannot touch — at a low, constant cost, and is applied before the UI is drawn
-so the HUD and text stay crisp. Turn it off with:
+so the HUD and text stay crisp. (Atelier Totori DX composites its scene and UI
+into one render target with no separable pre-UI point, so there SMAA runs as a
+full-frame pass at present time instead and also lightly affects the UI.) Turn
+it off with:
 
 ```ini
 [Rendering]

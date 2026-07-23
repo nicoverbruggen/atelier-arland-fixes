@@ -30,6 +30,7 @@
 #include "../vendor/smaa/AreaTex.h"      // areaTexBytes, AREATEX_WIDTH/HEIGHT
 #include "../vendor/smaa/SearchTex.h"    // searchTexBytes, SEARCHTEX_WIDTH/HEIGHT
 #include "config.h"
+#include "game.h"
 #include "log.h"
 
 namespace atfix {
@@ -497,7 +498,13 @@ bool smaaRun(ID3D11Device* dev, ID3D11DeviceContext* ctx,
 bool smaaPreUI() {
   static const bool on = [] {
     const char* v = std::getenv("ARLAND_SMAA_PREUI");
-    return !v || v[0] != '0';   // default on: match AGT, spare the UI
+    if (v)
+      return v[0] != '0';   // explicit override wins in both directions
+    // Totori composites the scene and UI into a single render target and never
+    // rebinds it without depth at UI time, so the pre-UI scene→UI boundary is
+    // undetectable there; fall back to the present-time full-frame pass. Rorona
+    // and Meruru expose the boundary and keep the crisp pre-UI injection.
+    return currentTitle() != Title::Totori;   // default on except Totori
   }();
   return on;
 }
