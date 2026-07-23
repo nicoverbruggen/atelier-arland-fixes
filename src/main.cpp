@@ -7,6 +7,8 @@
 #include "sync_fix.h"
 #include "util.h"
 
+#include <psapi.h>
+
 #include <array>
 #include <atomic>
 #include <chrono>
@@ -117,9 +119,45 @@ HRESULT STDMETHODCALLTYPE tracedPresent(
     started.time_since_epoch()).count();
   const int64_t previous = previousPresentNanos.exchange(
     startedNanos, std::memory_order_relaxed);
+  // Passive crash probe: record process memory every ~10s so the runaway-
+  // allocation hang in dense battles (the KTGL sound reclaim-starvation leak —
+  // see the crash analysis in TECHNICAL.md) leaves a trail in arland-fix.log
+  // even though it hangs rather than throwing an exception the post-mortem could
+  // catch. Negligible cost; the trend before a hang is the diagnostic value.
+  {
+    static std::atomic<int64_t> lastMemNanos{0};
+    int64_t prevMem = lastMemNanos.load(std::memory_order_relaxed);
+    if (startedNanos - prevMem >= 10'000'000'000LL &&
+        lastMemNanos.compare_exchange_strong(prevMem, startedNanos,
+          std::memory_order_relaxed)) {
+      PROCESS_MEMORY_COUNTERS pmc = {};
+      if (K32GetProcessMemoryInfo(GetCurrentProcess(), &pmc, sizeof(pmc)))
+        log("MEM working-set=", std::dec,
+          static_cast<unsigned>(pmc.WorkingSetSize >> 20u),
+          "MB peak=", static_cast<unsigned>(pmc.PeakWorkingSetSize >> 20u),
+          "MB commit=", static_cast<unsigned>(pmc.PagefileUsage >> 20u), "MB");
+    }
+  }
   atfix::cutinDrawContactBlobs(swapChain);
   atfix::smaaApply(swapChain);        // Present-time path (only if pre-UI off)
   const HRESULT result = originalPresent(swapChain, syncInterval, flags);
+  // Record a lost device once — the post-mortem a present-time hang/TDR leaves.
+  // Kept as a passive diagnostic: it names the fault when a transition-teardown
+  // race removes the device (see the crash analysis in TECHNICAL.md).
+  if (result == DXGI_ERROR_DEVICE_REMOVED || result == DXGI_ERROR_DEVICE_RESET) {
+    static std::atomic<bool> loggedLoss{false};
+    if (!loggedLoss.exchange(true, std::memory_order_relaxed)) {
+      HRESULT reason = result;
+      ID3D11Device* device = nullptr;
+      if (SUCCEEDED(swapChain->GetDevice(IID_PPV_ARGS(&device))) && device) {
+        reason = device->GetDeviceRemovedReason();
+        device->Release();
+      }
+      log("Present device lost: result=0x", std::hex,
+        static_cast<uint32_t>(result), " reason=0x",
+        static_cast<uint32_t>(reason), std::dec);
+    }
+  }
   atfix::smaaResetFrame();            // arm the pre-UI SMAA latch for next frame
   const auto finished = std::chrono::steady_clock::now();
   const uint64_t durationMicros = uint64_t(
