@@ -20,6 +20,7 @@
 #include "game.h"
 #include "log.h"
 #include "mem.h"   // readableRange + tryRead (guarded game-memory reads)
+#include "hook_util.h"   // Game, atlas/build enums, matches, installDetour
 
 namespace atfix {
 extern Log log;
@@ -108,36 +109,21 @@ using BtlCharaCtorProc = uintptr_t (*)(
   uintptr_t, uintptr_t, uintptr_t, uintptr_t);
 using ShadowScenePassProc = uintptr_t (*)(uintptr_t);
 
-struct Game {
-  const char* executable;
-  DWORD textSize;
-  uintptr_t pathCheckRva;
-  BYTE pushedRegister;
-  uintptr_t queueDrainRva;
-  uintptr_t renderTextRva;
-  uintptr_t atlasLockRva;
-  uintptr_t atlasUnlockRva;
-  uint8_t atlasVariant;
-  uint8_t exeBuild;
-};
-
-enum : uint8_t {
-  AtlasNone,
-  AtlasRorona,
-  AtlasTotori,
-  AtlasLaterArland,
-};
-
-// Each game ships two executables: the English build (launcher Language=2) and
-// the multilingual build (Japanese and both Chinese locales). They are separate
-// compiles with distinct RVAs; the multilingual entries below were located by
-// static homologue matching against the English build and every hooked prologue
-// byte-verified in the multilingual binary (REPORT §31). Hooks whose RVAs are
-// only known for the English build stay gated on BuildEnglish.
-enum : uint8_t {
-  BuildEnglish,
-  BuildMultilingual,
-};
+// The per-game descriptor (Game), the atlas/build enums, the prologue-match
+// helper and the detour installers live in hook_util.h now, shared with
+// battle_shadow_restore.cpp. This TU's code is in the global anonymous namespace,
+// so pull them in for unqualified use (they are declared in namespace atfix).
+using atfix::Game;
+using atfix::AtlasNone;
+using atfix::AtlasRorona;
+using atfix::AtlasTotori;
+using atfix::AtlasLaterArland;
+using atfix::BuildEnglish;
+using atfix::BuildMultilingual;
+using atfix::matches;
+using atfix::writeAbsoluteJump;
+using atfix::installDetour;
+using atfix::installMinHookDetour;
 
 constexpr Game games[] = {
   { "A11R_x64_Release_en.exe", 0x709a9c, 0x12cc70, 0x57,
@@ -2769,55 +2755,8 @@ uintptr_t cachedAtlasUnlock(uintptr_t texture, uintptr_t a,
   return originalAtlasUnlock(texture, a, b, c);
 }
 
-void writeAbsoluteJump(BYTE* destination, const void* target) {
-  destination[0] = 0xff;
-  destination[1] = 0x25;
-  std::memset(destination + 2, 0, 4);
-  const uintptr_t address = reinterpret_cast<uintptr_t>(target);
-  std::memcpy(destination + 6, &address, sizeof(address));
-}
-
-bool installDetour(BYTE* target, const void* replacement,
-                   size_t patchSize, void** original) {
-  if (patchSize < 14)
-    return false;
-  auto* trampoline = static_cast<BYTE*>(VirtualAlloc(
-    nullptr, patchSize + 14, MEM_COMMIT | MEM_RESERVE,
-    PAGE_EXECUTE_READWRITE));
-  if (!trampoline)
-    return false;
-  std::memcpy(trampoline, target, patchSize);
-  writeAbsoluteJump(trampoline + patchSize, target + patchSize);
-  FlushInstructionCache(GetCurrentProcess(), trampoline, patchSize + 14);
-  *original = trampoline;
-
-  DWORD oldProtection = 0;
-  if (!VirtualProtect(target, patchSize, PAGE_EXECUTE_READWRITE, &oldProtection)) {
-    VirtualFree(trampoline, 0, MEM_RELEASE);
-    *original = nullptr;
-    return false;
-  }
-  writeAbsoluteJump(target, replacement);
-  std::memset(target + 14, 0x90, patchSize - 14);
-  FlushInstructionCache(GetCurrentProcess(), target, patchSize);
-  DWORD ignored = 0;
-  VirtualProtect(target, patchSize, oldProtection, &ignored);
-  return true;
-}
-
-template <size_t N>
-bool matches(const BYTE* target, const std::array<BYTE, N>& expected) {
-  return !std::memcmp(target, expected.data(), expected.size());
-}
-
-bool installMinHookDetour(BYTE* target, const void* replacement,
-                          void** original) {
-  const MH_STATUS created = MH_CreateHook(
-    target, const_cast<void*>(replacement), original);
-  if (created != MH_OK)
-    return false;
-  return MH_EnableHook(target) == MH_OK;
-}
+// writeAbsoluteJump / installDetour / matches / installMinHookDetour live in
+// hook_util.h/.cpp now (shared with battle_shadow_restore.cpp).
 
 bool installAtlasCache(BYTE* base, const Game& game) {
   if (!atlasCacheEnabled() || game.atlasVariant == AtlasNone)
@@ -3612,6 +3551,49 @@ bool installMeruruBattleStateHook(BYTE* base, const Game& game) {
     reinterpret_cast<void**>(&originalShadowHelperInit));
 }
 
+// Battle-shadow-restore installation: pick the per-game battle address/state
+// tables, then install the caster-registration, shadow-trace, cut-in and
+// battle-state hooks. Bundled so the menu hook dispatcher has a single battle
+// entry point (the battle subsystem otherwise lives in battle_shadow_restore.cpp).
+void installBattleShadowRestore(BYTE* base, const Game& game) {
+  if (game.atlasVariant == AtlasRorona) {
+    g_battleAddrs = game.exeBuild == BuildMultilingual
+      ? &kRoronaAddrsMulti : &kRoronaAddrsEn;
+    g_battleStates = game.exeBuild == BuildMultilingual
+      ? kBattleStatesMulti : kBattleStatesEn;
+    g_battleStateCount = game.exeBuild == BuildMultilingual
+      ? std::size(kBattleStatesMulti) : std::size(kBattleStatesEn);
+  } else if (game.atlasVariant == AtlasLaterArland) {
+    g_battleAddrs = game.exeBuild == BuildMultilingual
+      ? &kMeruruAddrsMulti : &kMeruruAddrsEn;
+    g_battleStates = game.exeBuild == BuildMultilingual
+      ? kBattleStatesMeruruMulti : kBattleStatesMeruruEn;
+    g_battleStateCount = game.exeBuild == BuildMultilingual
+      ? std::size(kBattleStatesMeruruMulti) : std::size(kBattleStatesMeruruEn);
+  } else if (game.atlasVariant == AtlasTotori &&
+             game.exeBuild == BuildEnglish) {
+    g_battleAddrs = &kTotoriAddrsEn;
+    g_battleStates = kBattleStatesTotoriEn;
+    g_battleStateCount = std::size(kBattleStatesTotoriEn);
+  }
+  const bool shadowLayerTraceInstalled = installShadowLayerTrace(base, game);
+  const bool shadowConstructorTraceInstalled =
+    installShadowConstructorTrace(base, game);
+  const bool shadowMappingTraceInstalled = installShadowMappingTrace(base, game);
+  const bool battleStateInstalled = installMeruruBattleStateHook(base, game);
+  if (game.atlasVariant == AtlasLaterArland || game.atlasVariant == AtlasTotori)
+    atfix::log("Battle-state hook installed=", battleStateInstalled);
+  if (g_battleAddrs && g_battleAddrs->hideAllRva)
+    atfix::log("Tactical caster-clear hooks installed=",
+      installTacticalSceneHooks(base, game));
+  const bool cutinFlagTraceInstalled = installCutinFlagTrace(base, game);
+  if (cutinFlagTraceEnabled())
+    atfix::log("Cutin flag trace installed=", cutinFlagTraceInstalled);
+  atfix::log("Battle-shadow hooks shadow_layers=", shadowLayerTraceInstalled,
+    " shadow_constructors=", shadowConstructorTraceInstalled,
+    " shadow_mapping=", shadowMappingTraceInstalled);
+}
+
 void detectAndInstallGameHooks() {
   HMODULE module = GetModuleHandleW(nullptr);
   char imagePath[MAX_PATH] = {};
@@ -3624,31 +3606,6 @@ void detectAndInstallGameHooks() {
     supportedGame = true;
     frameAtlasCacheDefault.store(
       game.atlasVariant == AtlasRorona, std::memory_order_relaxed);
-    if (game.atlasVariant == AtlasRorona) {
-      g_battleAddrs = game.exeBuild == BuildMultilingual
-        ? &kRoronaAddrsMulti : &kRoronaAddrsEn;
-      g_battleStates = game.exeBuild == BuildMultilingual
-        ? kBattleStatesMulti : kBattleStatesEn;
-      g_battleStateCount = game.exeBuild == BuildMultilingual
-        ? std::size(kBattleStatesMulti) : std::size(kBattleStatesEn);
-    } else if (game.atlasVariant == AtlasLaterArland) {
-      // Meruru: battle-state tracking only (cut-in gate/dim support); no
-      // caster restoration — Meruru registers battle casters natively.
-      g_battleAddrs = game.exeBuild == BuildMultilingual
-        ? &kMeruruAddrsMulti : &kMeruruAddrsEn;
-      g_battleStates = game.exeBuild == BuildMultilingual
-        ? kBattleStatesMeruruMulti : kBattleStatesMeruruEn;
-      g_battleStateCount = game.exeBuild == BuildMultilingual
-        ? std::size(kBattleStatesMeruruMulti) : std::size(kBattleStatesMeruruEn);
-    } else if (game.atlasVariant == AtlasTotori &&
-               game.exeBuild == BuildEnglish) {
-      // Totori (EN): battle-state tracking only, like Meruru — fighting
-      // shadows are natively healthy; the tracking drives the cut-in
-      // gate/dim patches. Multilingual addresses not yet matched.
-      g_battleAddrs = &kTotoriAddrsEn;
-      g_battleStates = kBattleStatesTotoriEn;
-      g_battleStateCount = std::size(kBattleStatesTotoriEn);
-    }
     atfix::log("Recognized menu-fix executable ", game.executable,
       game.exeBuild == BuildMultilingual ? " (multilingual build)"
                                          : " (English build)");
@@ -3676,24 +3633,7 @@ void detectAndInstallGameHooks() {
       ? installBucTextCacheScope(gameBase, game) : false;
     const bool deepStatsInstalled = atlasInstalled
       ? installDeepMenuStats(gameBase, game) : false;
-    const bool shadowLayerTraceInstalled =
-      installShadowLayerTrace(gameBase, game);
-    const bool shadowConstructorTraceInstalled =
-      installShadowConstructorTrace(gameBase, game);
-    const bool shadowMappingTraceInstalled =
-      installShadowMappingTrace(gameBase, game);
-    const bool battleStateInstalled =
-      installMeruruBattleStateHook(gameBase, game);
-    if (game.atlasVariant == AtlasLaterArland ||
-        game.atlasVariant == AtlasTotori)
-      atfix::log("Battle-state hook installed=", battleStateInstalled);
-    if (g_battleAddrs && g_battleAddrs->hideAllRva)
-      atfix::log("Tactical caster-clear hooks installed=",
-        installTacticalSceneHooks(gameBase, game));
-    const bool cutinFlagTraceInstalled =
-      installCutinFlagTrace(gameBase, game);
-    if (cutinFlagTraceEnabled())
-      atfix::log("Cutin flag trace installed=", cutinFlagTraceInstalled);
+    installBattleShadowRestore(gameBase, game);
     atfix::log("Menu hooks pssg=", pathInstalled,
       " atlas=", atlasInstalled,
       " frame_atlas_cache=", frameAtlasCacheEnabled(),
@@ -3701,10 +3641,7 @@ void detectAndInstallGameHooks() {
       " text_bitmap_allocator=", textBitmapAllocatorInstalled,
       " buc_text_cache=", bucTextCacheInstalled,
       " stats=", menuStatsEnabled(),
-      " deep_stats=", deepStatsInstalled,
-      " shadow_layers=", shadowLayerTraceInstalled,
-      " shadow_constructors=", shadowConstructorTraceInstalled,
-      " shadow_mapping=", shadowMappingTraceInstalled);
+      " deep_stats=", deepStatsInstalled);
     return;
   }
 }
@@ -4147,6 +4084,16 @@ void battleShadowFrameTick() {
   }
 }
 
+// Per-frame battle tick, bundled so the Present hook (traceMenuPresent) has a
+// single battle entry point. The battle subsystem otherwise lives in
+// battle_shadow_restore.cpp.
+void battleFrameTick() {
+  sceneIdentityTick();
+  trackBattleStateTick();
+  battleShadowFrameTick();
+  cutinReregisterTick();
+}
+
 namespace arland {
 
 bool initializeGameHooks() {
@@ -4168,10 +4115,7 @@ bool battleShadowRestoreActive() {
 }
 
 void traceMenuPresent(uint64_t durationMicros, uint64_t intervalMicros) {
-  sceneIdentityTick();
-  trackBattleStateTick();
-  battleShadowFrameTick();
-  cutinReregisterTick();
+  battleFrameTick();
   // ARLAND_MENU_STATS heartbeat: every 120 Presents, log how much time went
   // into renderText and how the bitmap cache behaved, plus the mod's per-frame
   // state flags. Localizes per-frame text-render cost outside menu drains
