@@ -18,8 +18,6 @@ The current tree contains:
 - a per-game capability matrix (`src/game.cpp`) that centralizes feature availability and defaults;
 - crash post-mortem logging and log rotation.
 
-Consult `TODO.md` for work in progress and features under consideration.
-
 ## Repository layout
 
 - `src/` contains project C++ source, headers, and module-definition files.
@@ -29,7 +27,6 @@ Consult `TODO.md` for work in progress and features under consideration.
 - `ADVANCED.md` documents the optional features and their `arland-fix.ini` configuration; user-facing configuration is documented exclusively through `arland-fix.ini` (environment switches are diagnostics and belong in `TECHNICAL.md` only).
 - `BUILDING.md` contains the build instructions.
 - `TECHNICAL.md` documents implementation details, evidence, and provenance.
-- `TODO.md` is the only roadmap and work-in-progress document.
 
 Keep the root minimal. Build output belongs below ignored `builds/` and must not be committed.
 
