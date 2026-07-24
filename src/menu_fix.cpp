@@ -1504,7 +1504,15 @@ uintptr_t cachedAtlasUnlock(uintptr_t texture, uintptr_t a,
   if (!realCandidateAtlasLocks.empty() &&
       realCandidateAtlasLocks.back() == texture) {
     realCandidateAtlasLocks.pop_back();
-  } else if (frameAtlasCacheEnabled() && texture) {
+  } else if (texture) {
+    // Any lock that is not one of our cached/candidate reads may be a WRITE: the
+    // glyph atlas is a single mutable, demand-paged 512x512 texture, so the game
+    // rasterizes fresh glyph pages into it mid-frame. Drop the read snapshot on
+    // every such unlock, NOT only when the whole-frame cache is on. Otherwise, in
+    // the queue-scoped mode (Totori), a glyph paged in after the snapshot -- an
+    // uncommon kanji such as the one in a shop's buy menu -- is served from the
+    // stale copy and blits blank. (This is the Totori/Rorona missing-kanji bug;
+    // sync_fix already excludes this same atlas from its CPU shadow copies.)
     std::lock_guard lock(atlasMutex);
     atlasReads.erase(texture);
   }
