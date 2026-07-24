@@ -36,6 +36,7 @@ else
     'src/font_hires.cpp',
     'src/menu_fix.cpp',
     'src/sync_fix.cpp',
+    'src/battle_shadows.cpp',
     'vendor/minhook/src/hde/hde64.c',
     'vendor/minhook/src/hook.c',
     'vendor/minhook/src/buffer.c',
