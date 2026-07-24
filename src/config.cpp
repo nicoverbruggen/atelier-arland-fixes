@@ -141,11 +141,12 @@ bool renderResolution(UINT* width, UINT* height) {
 }
 
 bool configuredResolution(UINT* width, UINT* height) {
-  // Backwards-compatible single override still used by the current pipeline for
-  // both the swap chain and the main render target. It resolves to the display
-  // (backbuffer) size; the render/display split and the supersampling downscale
-  // that consume renderResolution() land in a later step, so a lone RenderWidth
-  // cannot create a render/backbuffer size mismatch before the downscale exists.
+  // Backwards-compatible single override, resolving to the display (backbuffer)
+  // size. The render/display split is live: the swap chain follows this, while
+  // the main render target and everything the engine derives from it follow
+  // renderResolution(), and supersample.cpp downscales one into the other at
+  // present. With no render resolution configured the two are equal and this is
+  // the pre-split behaviour.
   return displayResolution(width, height);
 }
 

@@ -32,6 +32,7 @@
 #include "config.h"
 #include "game.h"
 #include "log.h"
+#include "supersample.h"
 
 namespace atfix {
 
@@ -513,8 +514,12 @@ void smaaApply(IDXGISwapChain* swapChain) {
   // Present-time (full-frame) path — used only when pre-UI injection is off.
   if (!smaaEnabled() || smaaPreUI() || !swapChain || g_broken)
     return;
-  ID3D11Texture2D* back = nullptr;
-  if (FAILED(swapChain->GetBuffer(0, IID_PPV_ARGS(&back))) || !back)
+  // Under supersampling the finished frame is in the render-resolution target,
+  // not the backbuffer; antialias it there, before the downscale.
+  ID3D11Texture2D* back = ssaaAcquireColor();
+  if (!back && FAILED(swapChain->GetBuffer(0, IID_PPV_ARGS(&back))))
+    return;
+  if (!back)
     return;
   ID3D11Device* dev = nullptr;
   back->GetDevice(&dev);

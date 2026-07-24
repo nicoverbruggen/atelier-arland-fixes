@@ -18,6 +18,7 @@
 #include "game.h"
 #include "config.h"
 #include "smaa.h"
+#include "supersample.h"
 #include "sync_internal.h"
 #include "d3d11_procs.h"
 
@@ -701,12 +702,24 @@ void traceResolutionCopy(const char* operation,
 bool applyResolutionOverride(DXGI_SWAP_CHAIN_DESC* pDesc) {
   if (!pDesc)
     return false;
+  // Remember the size the game itself asked for whenever ANY resolution is
+  // configured, not only when the swap chain is rewritten: supersampling with
+  // no display override leaves the chain alone but still needs the main-target
+  // detection in CreateTexture2D to recognize the game's own size. With nothing
+  // configured this stays zero and that detection keeps its old, narrower
+  // signal, so an unconfigured install behaves exactly as before.
+  UINT renderWidth = 0;
+  UINT renderHeight = 0;
+  if (renderResolution(&renderWidth, &renderHeight)) {
+    g_originalSwapWidth.store(
+      pDesc->BufferDesc.Width, std::memory_order_relaxed);
+    g_originalSwapHeight.store(
+      pDesc->BufferDesc.Height, std::memory_order_relaxed);
+  }
   UINT width = 0;
   UINT height = 0;
-  if (!configuredResolution(&width, &height))
+  if (!displayResolution(&width, &height))
     return false;
-  g_originalSwapWidth.store(pDesc->BufferDesc.Width, std::memory_order_relaxed);
-  g_originalSwapHeight.store(pDesc->BufferDesc.Height, std::memory_order_relaxed);
   pDesc->BufferDesc.Width = width;
   pDesc->BufferDesc.Height = height;
   pDesc->BufferDesc.RefreshRate.Numerator = 0;
@@ -1766,6 +1779,10 @@ HRESULT STDMETHODCALLTYPE ID3D11Device_CreateTexture2D(
       // The trilogy creates its main depth target before the hard-coded
       // 1920x1080 auxiliary targets. Record 1080p too so MSAA can identify
       // the main scene, but only resize later targets for higher resolutions.
+      // This is the RENDER resolution, not the display one: everything the
+      // engine draws follows the main target, and supersampling downscales the
+      // finished frame into the (smaller) backbuffer at Present. With no render
+      // resolution configured the two are the same and this is the old path.
       const UINT originalWidth =
         g_originalSwapWidth.load(std::memory_order_relaxed);
       const UINT originalHeight =
@@ -1778,7 +1795,7 @@ HRESULT STDMETHODCALLTYPE ID3D11Device_CreateTexture2D(
       if (matchesOriginalSwap || knownMainShape) {
         UINT overrideWidth = 0;
         UINT overrideHeight = 0;
-        if (configuredResolution(&overrideWidth, &overrideHeight)) {
+        if (renderResolution(&overrideWidth, &overrideHeight)) {
           desc.Width = overrideWidth;
           desc.Height = overrideHeight;
           changed = true;
@@ -1790,14 +1807,28 @@ HRESULT STDMETHODCALLTYPE ID3D11Device_CreateTexture2D(
         log("Detected main render size ", std::dec, mainWidth, "x", mainHeight);
       }
     } else if (mainWidth > 1920 && mainHeight > 1080 && !pData) {
+      // Auxiliary targets follow the main one. Two sizes count as "full": the
+      // hard-coded 1080p the renderers ask for regardless of settings, and the
+      // size the game itself asked the swap chain for, which under
+      // supersampling is smaller than the main target and must be scaled up
+      // with it. When no render resolution is configured the game's own size is
+      // not recorded at all and only the 1080p rule applies, as before.
+      const UINT gameWidth = g_originalSwapWidth.load(std::memory_order_relaxed);
+      const UINT gameHeight = g_originalSwapHeight.load(std::memory_order_relaxed);
+      const bool gameSized = gameWidth && gameHeight &&
+        (gameWidth != mainWidth || gameHeight != mainHeight) &&
+        desc.Width == gameWidth && desc.Height == gameHeight;
+      const bool gameHalfSized = gameWidth && gameHeight &&
+        (gameWidth != mainWidth || gameHeight != mainHeight) &&
+        desc.Width == gameWidth / 2 && desc.Height == gameHeight / 2;
       const bool fullSizeTarget =
         (desc.BindFlags & (D3D11_BIND_RENDER_TARGET | D3D11_BIND_DEPTH_STENCIL)) &&
-        desc.Width == 1920 && desc.Height == 1080;
+        ((desc.Width == 1920 && desc.Height == 1080) || gameSized);
       const bool halfSizeBlurTarget =
         (desc.BindFlags & D3D11_BIND_RENDER_TARGET) &&
         (desc.BindFlags & D3D11_BIND_SHADER_RESOURCE) &&
         desc.Format == DXGI_FORMAT_B8G8R8A8_TYPELESS &&
-        desc.Width == 960 && desc.Height == 540 &&
+        ((desc.Width == 960 && desc.Height == 540) || gameHalfSized) &&
         desc.MipLevels == 1 && desc.ArraySize == 1 &&
         desc.SampleDesc.Count == 1;
       if (fullSizeTarget || halfSizeBlurTarget) {
@@ -1914,6 +1945,29 @@ HRESULT STDMETHODCALLTYPE ID3D11Device_CreateTexture2D(
   return hr;
 }
 
+// Supersampling: these games bind the swap-chain backbuffer itself as their
+// colour render target, so a view the engine asks for over the backbuffer is
+// created over the mod's render-resolution target instead. Redirecting at view
+// creation rather than at bind time means the binds, the clears, the MSAA twin
+// and the pre-UI SMAA boundary all follow with no further interception, and the
+// real backbuffer is touched only by the downscale at Present.
+//
+// A view desc naming a different format than the backbuffer's is declined
+// rather than guessed at: the frame then renders into the backbuffer as it does
+// today, which is a lower resolution but never a wrong one.
+HRESULT STDMETHODCALLTYPE ID3D11Device_CreateRenderTargetView(
+        ID3D11Device*                         pDevice,
+        ID3D11Resource*                       pResource,
+  const D3D11_RENDER_TARGET_VIEW_DESC*        pDesc,
+        ID3D11RenderTargetView**              ppRTView) {
+  auto procs = getDeviceProcs(pDevice);
+  ID3D11Texture2D* substitute = ssaaRedirectRenderTargetView(pResource, pDesc);
+  const HRESULT hr = procs->CreateRenderTargetView(
+    pDevice, substitute ? substitute : pResource, pDesc, ppRTView);
+  if (substitute) substitute->Release();
+  return hr;
+}
+
 void STDMETHODCALLTYPE ID3D11DeviceContext_RSSetViewports(
         ID3D11DeviceContext* pContext,
         UINT                 NumViewports,
@@ -1953,18 +2007,36 @@ void updateViewportScissor(ID3D11DeviceContext* pContext) {
   D3D11_RECT scissor = { };
   pContext->RSGetViewports(&viewportCount, &viewport);
   pContext->RSGetScissorRects(&scissorCount, &scissor);
+  // Alongside the hard-coded 1080p viewport the renderers submit, the game's
+  // own requested size counts as full-screen: under supersampling the engine
+  // still sizes its main pass from its own settings while the target it draws
+  // into is larger. Recorded only when a render resolution is configured, so
+  // without one this is the 1080p-only rule it has always been.
+  const UINT gameWidth = g_originalSwapWidth.load(std::memory_order_relaxed);
+  const UINT gameHeight = g_originalSwapHeight.load(std::memory_order_relaxed);
+  const bool splitRender = gameWidth && gameHeight &&
+    (gameWidth != g_mainRtWidth.load(std::memory_order_relaxed) ||
+     gameHeight != g_mainRtHeight.load(std::memory_order_relaxed));
   const bool fullSizeViewport = viewportCount == 1 &&
     viewport.TopLeftX == 0.0f && viewport.TopLeftY == 0.0f &&
-    viewport.Width == 1920.0f && viewport.Height == 1080.0f;
+    ((viewport.Width == 1920.0f && viewport.Height == 1080.0f) ||
+     (splitRender && viewport.Width == float(gameWidth) &&
+      viewport.Height == float(gameHeight)));
   const bool halfSizeViewport = viewportCount == 1 &&
     viewport.TopLeftX == 0.0f && viewport.TopLeftY == 0.0f &&
-    viewport.Width == 960.0f && viewport.Height == 540.0f;
+    ((viewport.Width == 960.0f && viewport.Height == 540.0f) ||
+     (splitRender && viewport.Width == float(gameWidth / 2) &&
+      viewport.Height == float(gameHeight / 2)));
   const bool fullSizeScissor = scissorCount == 1 &&
     scissor.left == 0 && scissor.top == 0 &&
-    scissor.right == 1920 && scissor.bottom == 1080;
+    ((scissor.right == 1920 && scissor.bottom == 1080) ||
+     (splitRender && scissor.right == LONG(gameWidth) &&
+      scissor.bottom == LONG(gameHeight)));
   const bool halfSizeScissor = scissorCount == 1 &&
     scissor.left == 0 && scissor.top == 0 &&
-    scissor.right == 960 && scissor.bottom == 540;
+    ((scissor.right == 960 && scissor.bottom == 540) ||
+     (splitRender && scissor.right == LONG(gameWidth / 2) &&
+      scissor.bottom == LONG(gameHeight / 2)));
   // The engine sizes the shadow caster pass viewport from its own texture
   // metadata (still 1024 when the map is enlarged D3D-side). MinDepth/MaxDepth
   // (the caster's 0.5..1.0 depth remap, §8) are preserved by only rewriting
@@ -2352,11 +2424,19 @@ void STDMETHODCALLTYPE ID3D11DeviceContext_CopySubresourceRegion(
   D3D11_BOX scaledBox = { };
   const UINT mainWidth = g_mainRtWidth.load(std::memory_order_relaxed);
   const UINT mainHeight = g_mainRtHeight.load(std::memory_order_relaxed);
+  // The source box is hard-coded 1080p; under a render/display split the game
+  // may instead ask for its own configured size. Either way it is expanded to
+  // the main target both ends actually live in.
+  const UINT gameWidth = g_originalSwapWidth.load(std::memory_order_relaxed);
+  const UINT gameHeight = g_originalSwapHeight.load(std::memory_order_relaxed);
+  const bool gameSizedBox = gameWidth && gameHeight &&
+    (gameWidth != mainWidth || gameHeight != mainHeight) && pSrcBox &&
+    pSrcBox->right == gameWidth && pSrcBox->bottom == gameHeight;
   if (mainWidth > 1920 && mainHeight > 1080 && pSrcBox &&
       DstSubresource == 0 && SrcSubresource == 0 &&
       DstX == 0 && DstY == 0 && DstZ == 0 &&
       pSrcBox->left == 0 && pSrcBox->top == 0 && pSrcBox->front == 0 &&
-      pSrcBox->right == 1920 && pSrcBox->bottom == 1080 &&
+      ((pSrcBox->right == 1920 && pSrcBox->bottom == 1080) || gameSizedBox) &&
       pSrcBox->back == 1) {
     D3D11_TEXTURE2D_DESC dstDesc = { };
     D3D11_TEXTURE2D_DESC srcDesc = { };
@@ -3369,6 +3449,8 @@ void hookDevice(ID3D11Device* pDevice) {
   HOOK_PROC(ID3D11Device, pDevice, procs, 15, CreatePixelShader);
   if (anisotropyLevel())
     HOOK_PROC(ID3D11Device, pDevice, procs, 23, CreateSamplerState);
+  if (ssaaRequested())
+    HOOK_PROC(ID3D11Device, pDevice, procs, 9, CreateRenderTargetView);
 
   g_installedHooks |= HOOK_DEVICE;
 }

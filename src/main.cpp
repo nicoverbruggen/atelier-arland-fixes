@@ -5,6 +5,7 @@
 #include "crash_log.h"
 #include "menu_fix.h"
 #include "smaa.h"
+#include "supersample.h"
 #include "sync_fix.h"
 #include "util.h"
 #include "window_title.h"
@@ -109,10 +110,11 @@ bool menuTransitionTraceEnabled() {
     arland::battleShadowRestoreActive();
 }
 
-// Present must be hooked whenever the transition trace OR SMAA needs it.
+// Present must be hooked whenever the transition trace, SMAA or the
+// supersampling downscale needs it.
 bool presentHookNeeded() {
   return menuTransitionTraceEnabled() || atfix::smaaEnabled() ||
-    atfix::presentTraceEnabled();
+    atfix::presentTraceEnabled() || atfix::ssaaRequested();
 }
 
 HRESULT STDMETHODCALLTYPE tracedPresent(
@@ -144,6 +146,7 @@ HRESULT STDMETHODCALLTYPE tracedPresent(
   atfix::notePresentBackbuffer(swapChain);   // ARLAND_PRESENT_TRACE diagnostic
   atfix::cutinDrawContactBlobs(swapChain);
   atfix::smaaApply(swapChain);        // Present-time path (only if pre-UI off)
+  atfix::ssaaDownscale(swapChain);    // supersampling: render res -> backbuffer
   const HRESULT result = originalPresent(swapChain, syncInterval, flags);
   // Record a lost device once — the post-mortem a present-time hang/TDR leaves.
   // Kept as a passive diagnostic: it names the fault when a transition-teardown
@@ -201,10 +204,19 @@ void hookSwapChain(IDXGISwapChain* swapChain) {
 HRESULT STDMETHODCALLTYPE tracedCreateSwapChain(
     IDXGIFactory* factory, IUnknown* device,
     DXGI_SWAP_CHAIN_DESC* desc, IDXGISwapChain** swapChain) {
+  // The trilogy reaches the swap chain both ways: D3D11CreateDeviceAndSwapChain
+  // in some configurations, and D3D11CreateDevice followed by this factory call
+  // in others. The resolution override has to apply on either route, or the
+  // internal targets get resized while the backbuffer keeps the size the game
+  // asked for.
+  if (desc)
+    atfix::applyResolutionOverride(desc);
   const HRESULT result = originalCreateSwapChain(
     factory, device, desc, swapChain);
-  if (SUCCEEDED(result) && swapChain && *swapChain)
+  if (SUCCEEDED(result) && swapChain && *swapChain) {
+    atfix::ssaaNoteSwapChain(*swapChain);
     hookSwapChain(*swapChain);
+  }
   return result;
 }
 
@@ -351,8 +363,12 @@ DLLEXPORT HRESULT __stdcall D3D11CreateDeviceAndSwapChain(
   if (arland::initializeGameHooks()) {
     atfix::hookDevice(device);
     atfix::hookContext(context);
-    if (ppSwapChain && *ppSwapChain)
+    if (ppSwapChain && *ppSwapChain) {
+      // Before the game can create a view over the backbuffer, so supersampling
+      // owns every one of them but the downscale's own.
+      atfix::ssaaNoteSwapChain(*ppSwapChain);
       atfix::hookSwapChain(*ppSwapChain);
+    }
   }
 
   if (ppDevice) {

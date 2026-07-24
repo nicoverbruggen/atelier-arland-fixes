@@ -43,6 +43,7 @@ else
     'src/config.cpp',
     'src/crash_log.cpp',
     'src/smaa.cpp',
+    'src/supersample.cpp',
     'src/font_hires.cpp',
     'src/menu_fix.cpp',
     'src/battle_shadow_restore.cpp',

@@ -44,6 +44,7 @@ These are optional improvements that are off by default and documented in [ADVAN
 | Enhancement                                  | Rorona | Totori | Meruru |
 | -------------------------------------------- | :----: | :----: | :----: |
 | MSAA                                         | ✓      | ✓      | ✓      |
+| Supersampling (render high, present low)     | ✓      | ✓      | ✓      |
 | Shadow multiplier                            | ✓      | ✓      | ✓      |
 | Anisotropic filtering                        | ✓      | ✓      | ✓      |
 | Restored battle cut-in shadows               | ✓      | ✓      | ✓      |
@@ -69,7 +70,7 @@ When the multilingual build runs in Japanese on a non-UTF-8 system locale (commo
 
 ### Advanced options
 
-On first launch, the mod creates `arland-fix.ini` beside the DLLs with everything optional disabled. MSAA, higher-resolution shadow maps, battle shadows, restored cut-in shadows, cut-in brightness, a direct resolution override, a suggested best-experience configuration, and troubleshooting are documented in [ADVANCED.md](ADVANCED.md). The drop-in installation never enables the optional features.
+On first launch, the mod creates `arland-fix.ini` beside the DLLs with everything optional disabled. MSAA, supersampling, higher-resolution shadow maps, battle shadows, restored cut-in shadows, cut-in brightness, the resolution settings, a suggested best-experience configuration, and troubleshooting are documented in [ADVANCED.md](ADVANCED.md). The drop-in installation never enables the optional features.
 
 ## Build
 

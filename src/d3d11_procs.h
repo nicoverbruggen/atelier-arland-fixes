@@ -29,6 +29,8 @@ using PFN_ID3D11Device_CreatePixelShader = HRESULT (STDMETHODCALLTYPE *) (ID3D11
   const void*, SIZE_T, ID3D11ClassLinkage*, ID3D11PixelShader**);
 using PFN_ID3D11Device_CreateSamplerState = HRESULT (STDMETHODCALLTYPE *) (ID3D11Device*,
   const D3D11_SAMPLER_DESC*, ID3D11SamplerState**);
+using PFN_ID3D11Device_CreateRenderTargetView = HRESULT (STDMETHODCALLTYPE *) (ID3D11Device*,
+  ID3D11Resource*, const D3D11_RENDER_TARGET_VIEW_DESC*, ID3D11RenderTargetView**);
 
 using PFN_ID3D11DeviceContext_ClearRenderTargetView = void (STDMETHODCALLTYPE *) (ID3D11DeviceContext*,
   ID3D11RenderTargetView*, const FLOAT[4]);
@@ -82,6 +84,7 @@ struct DeviceProcs {
   PFN_ID3D11Device_CreateVertexShader                   CreateVertexShader            = nullptr;
   PFN_ID3D11Device_CreatePixelShader                    CreatePixelShader             = nullptr;
   PFN_ID3D11Device_CreateSamplerState                   CreateSamplerState            = nullptr;
+  PFN_ID3D11Device_CreateRenderTargetView               CreateRenderTargetView        = nullptr;
 };
 
 struct ContextProcs {

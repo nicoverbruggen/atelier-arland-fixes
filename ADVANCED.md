@@ -24,22 +24,62 @@ The same `arland-fix.ini` file used on Windows configures the mod under Wine
 or Proton. Runtime messages are written to `arland-fix.log` in the game
 directory.
 
-## Direct resolution override
+## Resolution
 
 The launcher DLL always exposes 1920×1080, 2560×1440, and 3840×2160 in both
 launcher states even when DPI or display-mode enumeration would normally hide
 them. Keeping 1920×1080 visible is intentional for Steam Deck and other
 lower-resolution handhelds, where a high-DPI desktop can otherwise prevent the
 launcher from exposing 1080p; it also supports higher-resolution rendering for
-downsampling and normal docked use. As a launcher-independent fallback,
-`arland-fix.ini` can also override the resolution used by the game. Both
-values must be present; blank values leave the launcher's selection unchanged:
+downsampling and normal docked use.
+
+Independently of the launcher, `arland-fix.ini` sets two resolutions:
 
 ```ini
 [Rendering]
-Width=3840
-Height=2160
+DisplayWidth=2560
+DisplayHeight=1440
+RenderWidth=3840
+RenderHeight=2160
 ```
+
+`DisplayWidth`/`DisplayHeight` size the window and what reaches the screen — use
+your monitor's resolution. Leave both blank to keep whatever the launcher
+selected.
+
+`RenderWidth`/`RenderHeight` size everything the game actually draws. Leave both
+blank and the game renders at the display resolution, exactly as before. Setting
+them higher turns on supersampling, below.
+
+Each pair is all-or-nothing: if either half is blank or out of range, that pair
+is ignored.
+
+### Supersampling
+
+When the render resolution is larger than the display resolution, the whole
+frame — scene *and* UI — is rendered at that larger size and downscaled once,
+just before it reaches the screen.
+
+Unlike MSAA and SMAA, which smooth edges after the fact, this resolves detail
+that is genuinely finer than a display pixel: the thin alpha-tested costume trim
+no post-process can fully recover comes back, and menus and text sharpen along
+with the scene. The whole pipeline follows the render resolution, so the
+background blur and depth-of-field stay internally consistent.
+
+It is the most expensive option in this file, and cost scales with pixels drawn:
+3840×2160 into a 2560×1440 window is 2.25× the pixels of 1440p, and 4× if the
+window is 1080p. Exact integer ratios (a 1080p window rendering at 4K) resolve
+with a true box filter and are the sharpest; other ratios use a bilinear
+resolve. Because supersampling already anti-aliases geometry, there is little
+reason to combine it with MSAA — that multiplies the cost of an already larger
+render target — so prefer raising the render resolution over stacking the two.
+
+### Deprecated: `Width` / `Height`
+
+`Width`/`Height` are the old names for the display resolution and are
+**deprecated**. They are still honoured when `DisplayWidth`/`DisplayHeight` are
+blank, so existing configurations keep working, but new ones should use
+`DisplayWidth`/`DisplayHeight`. If both pairs are set, the `Display` pair wins.
 
 ## SMAA anti-aliasing
 
@@ -193,8 +233,10 @@ designed for:
 Font=replaced
 SMAA=true
 MSAA=4
-Width=
-Height=
+DisplayWidth=
+DisplayHeight=
+RenderWidth=
+RenderHeight=
 ShadowMultiplier=2
 AnisotropicFiltering=16
 
@@ -203,6 +245,12 @@ BattleShadows=true
 BattleCutInShadows=true
 BattleCutInDimming=false
 ```
+
+Supersampling is left blank here because it costs more than everything else in
+this file combined. On hardware with real headroom it is the single biggest
+image-quality win available: set `DisplayWidth`/`DisplayHeight` to your monitor
+and `RenderWidth`/`RenderHeight` one step higher, and drop `MSAA` back to `1`
+rather than paying for both.
 
 Raise `MSAA` to `8` and `ShadowMultiplier` to `4` on strong hardware. (The
 high-resolution UI font, SMAA, and the restored fighting battle shadows
