@@ -808,6 +808,83 @@ bool smaaMainSizeColor(ID3D11RenderTargetView* rtv, ID3D11Texture2D** outTex) {
   return match;
 }
 
+// ---- present-path probe (ARLAND_PRESENT_TRACE) ----------------------------
+// One-shot diagnostic that answers how the finished frame reaches the swap-
+// chain backbuffer, which decides where supersampling inserts its downscale.
+// It reports the backbuffer resource and size at Present, whether the main-size
+// colour target the scene/UI composite into IS that backbuffer (Scenario A: the
+// game renders straight into the backbuffer, no transfer) or a separate texture
+// (Scenario B: something copies it in), and any copy whose destination is the
+// backbuffer. Needs a resolution override active so g_mainRt is populated. Gated
+// so normal builds are unaffected. Backbuffer pointers are only compared for
+// identity, never dereferenced, so holding a released COM pointer value is safe.
+bool presentTraceEnabled() {
+  static const bool enabled = [] {
+    const char* value = std::getenv("ARLAND_PRESENT_TRACE");
+    return value && value[0] != '0';
+  }();
+  return enabled;
+}
+
+std::atomic<void*> g_traceBackbuffer{nullptr};
+
+void notePresentBackbuffer(IDXGISwapChain* swapChain) {
+  if (!presentTraceEnabled() || !swapChain)
+    return;
+  ID3D11Texture2D* backbuffer = nullptr;
+  if (FAILED(swapChain->GetBuffer(0, IID_PPV_ARGS(&backbuffer))) || !backbuffer)
+    return;
+  void* previous = g_traceBackbuffer.exchange(
+    backbuffer, std::memory_order_relaxed);
+  if (previous != static_cast<void*>(backbuffer)) {
+    D3D11_TEXTURE2D_DESC d = { };
+    backbuffer->GetDesc(&d);
+    log("PRESENTTRACE backbuffer=", static_cast<void*>(backbuffer),
+        " size=", std::dec, d.Width, "x", d.Height,
+        " format=", d.Format,
+        " mainRt=", g_mainRtWidth.load(std::memory_order_relaxed), "x",
+        g_mainRtHeight.load(std::memory_order_relaxed));
+  }
+  backbuffer->Release();
+}
+
+bool isTraceBackbuffer(ID3D11Resource* resource) {
+  if (!presentTraceEnabled() || !resource)
+    return false;
+  void* backbuffer = g_traceBackbuffer.load(std::memory_order_relaxed);
+  if (!backbuffer)
+    return false;
+  ID3D11Texture2D* tex = nullptr;
+  if (FAILED(resource->QueryInterface(IID_PPV_ARGS(&tex))) || !tex)
+    return false;
+  const bool match = static_cast<void*>(tex) == backbuffer;
+  tex->Release();
+  return match;
+}
+
+// Called from OMSetRenderTargets with the incoming binding. The depth-less
+// main-size colour bind is where the finished scene lives just before the UI
+// draws; comparing that target to the backbuffer is the decisive A-vs-B signal.
+void presentTraceRenderTargets(UINT rtvCount,
+                               ID3D11RenderTargetView* const* rtvs,
+                               ID3D11DepthStencilView* dsv) {
+  if (!presentTraceEnabled() || dsv || rtvCount != 1 || !rtvs || !rtvs[0])
+    return;
+  ID3D11Texture2D* tex = nullptr;
+  if (!smaaMainSizeColor(rtvs[0], &tex) || !tex)
+    return;
+  static std::atomic<uint32_t> logged{0};
+  if (logged.fetch_add(1, std::memory_order_relaxed) < 4) {
+    const void* backbuffer = g_traceBackbuffer.load(std::memory_order_relaxed);
+    log("PRESENTTRACE main-size colour target=", static_cast<void*>(tex),
+        " backbuffer=", backbuffer, " is_backbuffer=",
+        static_cast<void*>(tex) == backbuffer
+          ? "YES (scenario A: direct render)"
+          : "no (scenario B: copied in)");
+  }
+  tex->Release();
+}
+
 // Called at the top of OMSetRenderTargets with the INCOMING (pre-substitution)
 // binding. Detects the scene→UI boundary and runs pre-UI SMAA once per frame.
 void smaaSceneBoundary(ID3D11DeviceContext* context, UINT rtvCount,
@@ -2163,6 +2240,16 @@ void STDMETHODCALLTYPE ID3D11DeviceContext_CopyResource(
   auto procs = getContextProcs(pContext);
 
   traceResolutionCopy("resource", pContext, pDstResource, pSrcResource);
+  if (isTraceBackbuffer(pDstResource)) {
+    static std::atomic<uint32_t> n{0};
+    if (n.fetch_add(1, std::memory_order_relaxed) < 4) {
+      D3D11_TEXTURE2D_DESC s = { };
+      const bool haveSrc = texture2DDesc(pSrcResource, &s);
+      log("PRESENTTRACE copy-into-backbuffer op=resource src=", pSrcResource,
+          " src_size=", std::dec, haveSrc ? s.Width : 0, "x",
+          haveSrc ? s.Height : 0, " (scenario B transfer)");
+    }
+  }
 
   resolveIfMSAA(pContext, pSrcResource);
 
@@ -2227,6 +2314,18 @@ void STDMETHODCALLTYPE ID3D11DeviceContext_CopySubresourceRegion(
   const D3D11_BOX*                pSrcBox) {
   TransitionTimer transitionTimer(g_transitionCopy);
   auto procs = getContextProcs(pContext);
+
+  if (isTraceBackbuffer(pDstResource)) {
+    static std::atomic<uint32_t> n{0};
+    if (n.fetch_add(1, std::memory_order_relaxed) < 4) {
+      D3D11_TEXTURE2D_DESC s = { };
+      const bool haveSrc = texture2DDesc(pSrcResource, &s);
+      log("PRESENTTRACE copy-into-backbuffer op=subresource src=", pSrcResource,
+          " src_size=", std::dec, haveSrc ? s.Width : 0, "x",
+          haveSrc ? s.Height : 0, " dstXY=", DstX, ",", DstY,
+          " (scenario B transfer)");
+    }
+  }
 
   D3D11_BOX scaledBox = { };
   const UINT mainWidth = g_mainRtWidth.load(std::memory_order_relaxed);
@@ -2378,6 +2477,7 @@ void STDMETHODCALLTYPE ID3D11DeviceContext_OMSetRenderTargets(
   updateRtvShadowResources(pContext);
   resolveBoundMSAA(pContext);
   smaaSceneBoundary(pContext, RTVCount, ppRTVs, pDSV);
+  presentTraceRenderTargets(RTVCount, ppRTVs, pDSV);
   getRasterState(pContext)->dirty.store(true, std::memory_order_release);
 
   // Shadow-res twin: redirect the depth-only caster pass onto the enlarged

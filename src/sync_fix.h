@@ -16,6 +16,12 @@ void traceTransitionD3DFrame(uint64_t intervalMicros);
 void cutinDrawContactBlobs(IDXGISwapChain* swapChain);
 /* lives in sync_fix.cpp: reset the per-frame pre-UI SMAA latch (call at Present). */
 void smaaResetFrame();
+/* lives in sync_fix.cpp: ARLAND_PRESENT_TRACE diagnostic. notePresentBackbuffer
+   captures the swap-chain backbuffer at Present; the probe then reports whether
+   the game composites the frame directly into it (Scenario A) or into a separate
+   texture copied in (Scenario B), which decides how supersampling downscales. */
+bool presentTraceEnabled();
+void notePresentBackbuffer(IDXGISwapChain* swapChain);
 
 /* lives in main.cpp */
 extern Log log;

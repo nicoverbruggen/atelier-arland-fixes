@@ -65,6 +65,8 @@ All performance and text-correctness fixes are enabled automatically. No configu
 
 The mod works under Wine and Proton; the required launch options are documented in [ADVANCED.md](ADVANCED.md).
 
+When the multilingual build runs in Japanese on a non-UTF-8 system locale (common under Wine and Proton), its title bar would otherwise show mojibake, and the engine's ANSI window cannot display Japanese on such a locale at all. In that case the mod substitutes a readable romanized title, for example `Rorona no Atelier ~Arland no Renkinjutsushi~ DX`. The Chinese and English builds, and correctly configured Japanese or UTF-8 locales, are unaffected.
+
 ### Advanced options
 
 On first launch, the mod creates `arland-fix.ini` beside the DLLs with everything optional disabled. MSAA, higher-resolution shadow maps, battle shadows, restored cut-in shadows, cut-in brightness, a direct resolution override, a suggested best-experience configuration, and troubleshooting are documented in [ADVANCED.md](ADVANCED.md). The drop-in installation never enables the optional features.

@@ -15,6 +15,7 @@
 
 - **Fixed the field-map slowdown during Atelier Meruru DX's animated-portrait conversations**. The conversation balloon re-ran the executable's slow text-render path continuously, collapsing the framerate for the duration of the conversation; the mod now caches the rendered text across frames while a conversation balloon is on screen, so unchanged text costs a copy instead of a re-render.
 - **Fixed a frame-rate drop after battles in Atelier Meruru DX**: the mod's battle-state tracking (used by the cut-in features) did not disengage when returning from battle to an already-loaded field map and kept scanning stale battle data every frame. Battle exit is now detected reliably in all three games.
+- **Fixed the garbled window title on the Japanese executable under a non-Japanese locale**. The multilingual build passes a UTF-8 title to the ANSI window API; a non-UTF-8 system codepage (such as 1252, the usual case under Wine and Proton) decodes those bytes with the wrong table, so the title bar shows mojibake. The game's window is ANSI-classed, so the real Japanese cannot be shown on such a codepage at all (it collapses to `?` characters), so the mod instead substitutes a readable romanized title such as `Rorona no Atelier ~Arland no Renkinjutsushi~ DX`. Applied only when the game language is Japanese and the system codepage is neither Japanese (932) nor UTF-8 (65001), where the original title already renders; the Chinese and English builds are left untouched.
 
 ## v0.4
 

@@ -7,6 +7,7 @@
 #include "smaa.h"
 #include "sync_fix.h"
 #include "util.h"
+#include "window_title.h"
 
 #include <psapi.h>
 
@@ -110,7 +111,8 @@ bool menuTransitionTraceEnabled() {
 
 // Present must be hooked whenever the transition trace OR SMAA needs it.
 bool presentHookNeeded() {
-  return menuTransitionTraceEnabled() || atfix::smaaEnabled();
+  return menuTransitionTraceEnabled() || atfix::smaaEnabled() ||
+    atfix::presentTraceEnabled();
 }
 
 HRESULT STDMETHODCALLTYPE tracedPresent(
@@ -139,6 +141,7 @@ HRESULT STDMETHODCALLTYPE tracedPresent(
           "MB commit=", static_cast<unsigned>(pmc.PagefileUsage >> 20u), "MB");
     }
   }
+  atfix::notePresentBackbuffer(swapChain);   // ARLAND_PRESENT_TRACE diagnostic
   atfix::cutinDrawContactBlobs(swapChain);
   atfix::smaaApply(swapChain);        // Present-time path (only if pre-UI off)
   const HRESULT result = originalPresent(swapChain, syncInterval, flags);
@@ -371,6 +374,7 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved) {
   switch (fdwReason) {
     case DLL_PROCESS_ATTACH:
       MH_Initialize();
+      atfix::installWindowTitleFix();  // hook ANSI title APIs before the game's window is created
       break;
 
     case DLL_PROCESS_DETACH:

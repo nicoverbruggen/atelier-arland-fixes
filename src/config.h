@@ -18,7 +18,19 @@ bool arlandConfigBool(const char* section, const char* key, bool def);
 // [Rendering] ShadowMultiplier (2/4/8) opts in. See ARLAND_SHADOW_MULTIPLIER.
 unsigned int shadowMapResolution();
 
-// [Rendering] Width/Height override, if both are present and in range.
+// Display (backbuffer / present) resolution: [Rendering] DisplayWidth/Height,
+// falling back to the legacy Width/Height keys. False when unset, meaning the
+// swap chain keeps the size the game itself requested (the old launcher's res).
+bool displayResolution(unsigned int* width, unsigned int* height);
+
+// Internal render resolution: [Rendering] RenderWidth/Height, falling back to
+// the display resolution. When larger than display the whole frame is
+// supersampled down to the display size at present.
+bool renderResolution(unsigned int* width, unsigned int* height);
+
+// Backwards-compatible single override used by the current pipeline; resolves
+// to the display (backbuffer) resolution. Prefer displayResolution/
+// renderResolution in new code.
 bool configuredResolution(unsigned int* width, unsigned int* height);
 
 // Requested MSAA sample count (1/2/4/8) from ARLAND_MSAA or [Rendering] MSAA.

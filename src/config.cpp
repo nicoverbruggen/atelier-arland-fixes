@@ -30,8 +30,14 @@ const char* configPath() {
     if (result[0] &&
         GetFileAttributesA(result.data()) == INVALID_FILE_ATTRIBUTES) {
       WritePrivateProfileStringA("Rendering", "MSAA", "1", result.data());
-      WritePrivateProfileStringA("Rendering", "Width", "", result.data());
-      WritePrivateProfileStringA("Rendering", "Height", "", result.data());
+      // Display = backbuffer / panel resolution (blank uses the game's own,
+      // i.e. the old launcher's, resolution). Render = internal render target
+      // (blank equals Display). A Render larger than Display supersamples the
+      // whole frame down to Display at present.
+      WritePrivateProfileStringA("Rendering", "DisplayWidth", "", result.data());
+      WritePrivateProfileStringA("Rendering", "DisplayHeight", "", result.data());
+      WritePrivateProfileStringA("Rendering", "RenderWidth", "", result.data());
+      WritePrivateProfileStringA("Rendering", "RenderHeight", "", result.data());
       WritePrivateProfileStringA("Rendering", "ShadowMultiplier", "1", result.data());
       WritePrivateProfileStringA("Battle", "BattleShadows", "true", result.data());
       // The cut-in keys (BattleCutInShadows / BattleCutInDimming) are seeded
@@ -95,15 +101,18 @@ UINT shadowMapResolution() {
   return resolution;
 }
 
-bool configuredResolution(UINT* width, UINT* height) {
+// Read a [Rendering] resolution pair under the given key names. Returns false
+// unless both parse and land in a sane range (640x360 .. 16384x16384).
+static bool readResPair(const char* widthKey, const char* heightKey,
+                        UINT* width, UINT* height) {
   const char* path = configPath();
   if (!path)
     return false;
   char widthValue[16] = { };
   char heightValue[16] = { };
-  GetPrivateProfileStringA("Rendering", "Width", "", widthValue,
+  GetPrivateProfileStringA("Rendering", widthKey, "", widthValue,
     sizeof(widthValue), path);
-  GetPrivateProfileStringA("Rendering", "Height", "", heightValue,
+  GetPrivateProfileStringA("Rendering", heightKey, "", heightValue,
     sizeof(heightValue), path);
   const unsigned long parsedWidth = std::strtoul(widthValue, nullptr, 10);
   const unsigned long parsedHeight = std::strtoul(heightValue, nullptr, 10);
@@ -113,6 +122,31 @@ bool configuredResolution(UINT* width, UINT* height) {
   *width = static_cast<UINT>(parsedWidth);
   *height = static_cast<UINT>(parsedHeight);
   return true;
+}
+
+bool displayResolution(UINT* width, UINT* height) {
+  // New DisplayWidth/Height, falling back to the legacy Width/Height keys.
+  // Blank on both means the caller leaves the swap chain at the size the game
+  // itself requested (the old launcher's resolution).
+  return readResPair("DisplayWidth", "DisplayHeight", width, height) ||
+         readResPair("Width", "Height", width, height);
+}
+
+bool renderResolution(UINT* width, UINT* height) {
+  // The internal render size: RenderWidth/Height, falling back to the display
+  // resolution. When larger than display, the frame is supersampled down at
+  // present.
+  return readResPair("RenderWidth", "RenderHeight", width, height) ||
+         displayResolution(width, height);
+}
+
+bool configuredResolution(UINT* width, UINT* height) {
+  // Backwards-compatible single override still used by the current pipeline for
+  // both the swap chain and the main render target. It resolves to the display
+  // (backbuffer) size; the render/display split and the supersampling downscale
+  // that consume renderResolution() land in a later step, so a lone RenderWidth
+  // cannot create a render/backbuffer size mismatch before the downscale exists.
+  return displayResolution(width, height);
 }
 
 UIFontMode uiFontMode() {
