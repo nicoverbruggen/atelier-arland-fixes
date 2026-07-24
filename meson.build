@@ -29,6 +29,10 @@ else
     output : 'embedded_font_np.cpp',
     command : [py, embed_font, '@INPUT@', '@OUTPUT@', 'kEmbeddedFontNationalPark'])
 
+  # DXGI interface GUIDs (IID_IDXGIFactory, IID_IDXGIDevice). MSVC needs
+  # dxguid.lib explicitly; MinGW happens to resolve them elsewhere.
+  dxguid_dep = cpp.find_library('dxguid')
+
   sources = files(
     'src/main.cpp',
     'src/game.cpp',
@@ -53,6 +57,7 @@ else
     name_prefix : '',
     vs_module_defs : 'src/d3d11.def',
     include_directories : include_directories('src'),  # so generated fonts find embedded_font.h
+    dependencies : dxguid_dep,
     cpp_args : common_cpp_args,
     link_args : common_link_args + (cpp.get_id() == 'gcc' ? ['-Wl,--file-alignment=4096'] : []),
     install : true)
