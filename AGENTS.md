@@ -13,15 +13,18 @@ The current tree contains:
 - old-Arland render-target and viewport/scissor correction;
 - old-Arland game-side 1440p/4K render-target and raster correction;
 - signature-gated launcher mode injection and an optional INI resolution override;
-- optional MSAA and optional high-resolution shadow-map twins (`ShadowMultiplier`);
-- Rorona battle-shadow restoration, battle-state tracking with a battle-end watchdog, and the optional cut-in shadow/dim handling for Rorona and Meruru;
+- optional MSAA, optional high-resolution shadow-map twins (`ShadowMultiplier`), and optional anisotropic filtering;
+- SMAA anti-aliasing applied before UI composition (present-time full-frame on Totori);
+- high-resolution UI text rendered from bundled scalable fonts, on the English builds;
+- Rorona battle-shadow restoration, battle-state tracking with a battle-end watchdog, and the optional cut-in shadow/dim handling (Rorona, Meruru, and Totori EN), all in `src/battle_shadow_restore.cpp`;
 - a per-game capability matrix (`src/game.cpp`) that centralizes feature availability and defaults;
 - crash post-mortem logging and log rotation.
 
 ## Repository layout
 
-- `src/` contains project C++ source, headers, and module-definition files.
-- `vendor/minhook/` contains the unmodified vendored MinHook dependency and its license.
+- `src/` contains the project C++ source and headers, split by concern. The 64-bit game DLL: the D3D11 proxy layer is `sync_fix.cpp`, with the cut-in shadow feature carved into `battle_shadows.cpp` behind `sync_internal.h` (proxy vtable dispatch types in `d3d11_procs.h`); the executable-specific menu hooks are `menu_fix.cpp`, with the battle-shadow-restore subsystem carved into `battle_shadow_restore.cpp` behind `menu_internal.h`, both sharing the MinHook install helpers and per-game `Game` descriptor in `hook_util.{h,cpp}`; then the per-game capability matrix (`game.cpp`), `arland-fix.ini` config (`config.cpp`), SMAA post-process (`smaa.cpp`), high-resolution UI text (`font_hires.cpp`), crash logging (`crash_log.cpp`), guarded game-memory reads (`mem.h`), and the DLL entry points (`main.cpp`). The 32-bit settings-launcher DLL is `launcher_proxy.cpp`. `.def` files export the DLL symbols.
+- `vendor/minhook/` contains the unmodified vendored MinHook dependency and its license; `vendor/stb/` holds stb_truetype; `vendor/font/` holds the bundled OFL replacement fonts (`.ttf`).
+- `scripts/embed_font.py` compiles the vendored fonts into the DLL at build time; the generated sources live under the build directory and are not committed.
 - `.github/workflows/build.yml` builds and publishes both Windows DLLs.
 - `README.md` is the user-facing overview and installation guide for the drop-in defaults.
 - `ADVANCED.md` documents the optional features and their `arland-fix.ini` configuration; user-facing configuration is documented exclusively through `arland-fix.ini` (environment switches are diagnostics and belong in `TECHNICAL.md` only).

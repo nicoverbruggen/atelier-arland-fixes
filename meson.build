@@ -35,6 +35,7 @@ else
     'src/smaa.cpp',
     'src/font_hires.cpp',
     'src/menu_fix.cpp',
+    'src/battle_shadow_restore.cpp',
     'src/sync_fix.cpp',
     'src/battle_shadows.cpp',
     'src/hook_util.cpp',
