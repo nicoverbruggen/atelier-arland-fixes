@@ -2391,8 +2391,30 @@ void cachedQueueDrain(void* manager) {
   }
 }
 
+// Display-only English typo corrections, applied at render time. Only the pointer
+// handed to the renderer (and the cache/re-render derived from it) changes — the
+// game's own string data is untouched — so a fix shows in every UI-font mode.
+// Gated per game so a match can't fire on another title's text. Extend this table
+// as typos are found. Exact-match; if a target turns out to be embedded in a
+// larger string, switch that entry to a substring rewrite.
+struct TextFix { atfix::Title title; const char* wrong; const char* right; };
+const TextFix kTextFixes[] = {
+  { atfix::Title::Totori, "Synth Cateogry", "Synth Category" },
+};
+uintptr_t fixupText(uintptr_t b) {
+  if (!b)
+    return b;
+  const char* s = reinterpret_cast<const char*>(b);
+  const atfix::Title t = atfix::currentTitle();
+  for (const TextFix& f : kTextFixes)
+    if (f.title == t && std::strcmp(s, f.wrong) == 0)
+      return reinterpret_cast<uintptr_t>(f.right);
+  return b;
+}
+
 uintptr_t cachedRenderText(uintptr_t a, uintptr_t b,
                            uintptr_t c, uintptr_t d) {
+  b = fixupText(b);   // display-only typo corrections, before caching/rendering
   const bool profile = type19Depth && deepMenuStatsEnabled();
   // The game allocators (gameAlloc/gameFree) are optional: without them a
   // replay whose target buffer is too small falls back to a real render
