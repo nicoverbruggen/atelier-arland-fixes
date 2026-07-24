@@ -30,7 +30,9 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: d3d11
-          path: build64/d3d11.dll
+          path: |
+            build64/d3d11.dll
+            build64/arland-config.exe
 
   check-defaults:
     runs-on: ubuntu-latest
@@ -89,7 +91,7 @@ jobs:
           cp -r licenses dist/atelier-fix/LICENSES
           cd dist
           zip -r "../arland-fix-${GITHUB_REF_NAME}.zip" \
-            d3d11.dll msimg32.dll arland-fix.ini atelier-fix
+            d3d11.dll msimg32.dll arland-fix.ini arland-config.exe atelier-fix
       - name: Publish tagged release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -109,6 +111,7 @@ jobs:
           - `d3d11.dll` — the mod itself
           - `msimg32.dll` — adds 1440p and 4K to the game's settings launcher
           - `arland-fix.ini` — optional settings, documented inline
+          - `arland-config.exe` — optional settings editor; run it from the game folder
 
           The archive also contains an `atelier-fix` folder with the documentation and the licences for the embedded fonts. Nothing reads it at runtime, so keep it or delete it as you prefer.
 
