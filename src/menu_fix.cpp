@@ -193,8 +193,18 @@ struct RenderTextKeyHash {
 };
 
 struct RenderTextBitmap {
-  int32_t width = 0;
+  int32_t width = 0;             // dims as cached: post-substitution (doubled)
   int32_t height = 0;
+  // Dims BEFORE the high-resolution substitution doubled them, or the same as
+  // width/height when nothing was substituted. A replay writes the doubled dims
+  // back (the consumer needs them to build its texture) and performs no
+  // substitution, so it must arm the restore itself with these or the engine's
+  // auto-size widgets lay the string out at fraction * doubled = twice its size.
+  int32_t restoreWidth = 0;
+  int32_t restoreHeight = 0;
+  // The pixel buffer these bytes were captured from. A replay into the same
+  // buffer already has the capacity for them, whatever the (restored) dims say.
+  uintptr_t pixels = 0;
   std::array<uint32_t, 4> metrics = {};
   uintptr_t result = 0;
   std::vector<uint8_t> bytes;
@@ -1229,6 +1239,14 @@ uintptr_t cachedRenderText(uintptr_t a, uintptr_t b,
         ? uint64_t(uint32_t(currentWidth)) * uint32_t(currentHeight) : 0;
       const auto& bitmap = found->second;
       uint64_t available = capacity;
+      // The dims now read as the restored (pre-substitution) ones while the
+      // buffer is still the doubled one the substitution installed, so capacity
+      // computed from the dims understates it. When the buffer is the very one
+      // these bytes came from, it holds them by construction; without this every
+      // replay would take the reallocate path.
+      if (pixelsAddress && bitmap.pixels == pixelsAddress &&
+          available < bitmap.bytes.size())
+        available = bitmap.bytes.size();
       if (output && gameAlloc && gameFree &&
           (!pixelsAddress || available < bitmap.bytes.size()) &&
           !bitmap.bytes.empty()) {
@@ -1252,6 +1270,8 @@ uintptr_t cachedRenderText(uintptr_t a, uintptr_t b,
           sizeof(bitmap.metrics));
         const uint32_t ready = 1;
         std::memcpy(output + 0x20, &ready, sizeof(ready));
+        atfix::hiResTextStashRestore(output, bitmap.restoreWidth,
+          bitmap.restoreHeight);
         result = bitmap.result;
         replayed = true;
         deepMenu.renderBitmapHits.fetch_add(1, std::memory_order_relaxed);
@@ -1365,6 +1385,18 @@ uintptr_t cachedRenderText(uintptr_t a, uintptr_t b,
         std::memcpy(bitmap.metrics.data(), output + 0x10,
           sizeof(bitmap.metrics));
       }
+      // What a restore would put back, captured before it runs. Absent a
+      // substitution the cached dims are already the originals.
+      int pendingWidth = 0;
+      int pendingHeight = 0;
+      if (atfix::hiResTextPendingDims(&pendingWidth, &pendingHeight)) {
+        bitmap.restoreWidth = int32_t(pendingWidth);
+        bitmap.restoreHeight = int32_t(pendingHeight);
+      } else {
+        bitmap.restoreWidth = bitmap.width;
+        bitmap.restoreHeight = bitmap.height;
+      }
+      bitmap.pixels = pixelsAddress;
       const uint64_t size = bitmap.width > 0 && bitmap.height > 0
         ? uint64_t(uint32_t(bitmap.width)) * uint32_t(bitmap.height) : 0;
       if (pixelsAddress && size && size <= 16 * 1024 * 1024) {

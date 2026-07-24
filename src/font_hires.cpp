@@ -748,6 +748,23 @@ bool hiResTextRerender(uintptr_t renderer, const char* utf8,
     renderer, alloc, free);
 }
 
+bool hiResTextPendingDims(int* width, int* height) {
+  if (!g_restoreOutput)
+    return false;
+  if (width) *width = g_restoreWidth;
+  if (height) *height = g_restoreHeight;
+  return true;
+}
+
+void hiResTextStashRestore(void* output, int width, int height) {
+  if (!output || width <= 0 || height <= 0)
+    return;
+  auto* bytes = static_cast<BYTE*>(output);
+  g_restoreOutput = bytes;
+  g_restoreWidth = width;
+  g_restoreHeight = height;
+}
+
 void hiResTextRestoreDims() {
   if (!g_restoreOutput)
     return;

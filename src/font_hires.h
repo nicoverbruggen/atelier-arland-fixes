@@ -43,4 +43,16 @@ bool hiResTextRerender(uintptr_t renderer, const char* utf8,
 // identical while the texture stays high-resolution.
 void hiResTextRestoreDims();
 
+// Read the dims the pending restore would write back, without consuming it.
+// False when no substitution is pending. Lets a caller that CACHES the finished
+// output object record the pre-substitution dims alongside the doubled ones.
+bool hiResTextPendingDims(int* width, int* height);
+
+// Arm the restore stash directly, for a caller that reproduces a previously
+// substituted output object without going through hiResTextRerender (the
+// text-bitmap replay cache). Such a replay writes back the doubled dims but
+// performs no substitution, so without this nothing restores them and the
+// engine's auto-size widgets lay the string out at twice its size.
+void hiResTextStashRestore(void* output, int width, int height);
+
 }  // namespace atfix
