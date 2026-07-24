@@ -1507,7 +1507,23 @@ uintptr_t cachedAtlasLock(uintptr_t texture, uintptr_t output,
   if (candidate && menuStatsEnabled())
     atlasRealReads.fetch_add(1, std::memory_order_relaxed);
   const uintptr_t pitch = originalAtlasLock(texture, output, level, face);
-  if (candidate && pitch && pitch <= 16384) {
+  // Snapshot only from a READ lock. The 4th argument is the middleware's access
+  // MODE, not a cube face: 0 maps a staging copy of the texture for reading,
+  // while non-zero maps the texture itself for CPU WRITING (mode 3 is a
+  // WRITE_DISCARD of its dynamic resource). Snapshotting a write mapping copies
+  // a freshly discarded — i.e. uninitialized — buffer, and the read that follows
+  // is then served that garbage: sampling one byte in four of it at a fixed row
+  // stride is what produced the striped glyph. The first candidate lock of each
+  // atlas is a mode-3 write, so the poisoning happened at snapshot birth, which
+  // is why exactly one glyph per surface was wrong and why it was a glyph being
+  // rasterized for the first time (a rare kanji; Latin is long since resident).
+  //
+  // Serving BOTH modes from an existing snapshot stays correct and keeps the
+  // cache's whole value: writer and reader name the same middleware object
+  // (verified at runtime), so the snapshot is a coherent CPU-side stand-in for
+  // the rasterize-then-read-back round trip the engine performs per glyph.
+  const bool isReadLock = uint32_t(face) == 0;
+  if (candidate && isReadLock && pitch && pitch <= 16384) {
     const void* mapped = *reinterpret_cast<void* const*>(output);
     const size_t size = size_t(pitch) * height;
     if (mapped && size <= 8 * 1024 * 1024) {
