@@ -36,8 +36,8 @@ const char* configPath() {
       WritePrivateProfileStringA("Battle", "BattleShadows", "true", result.data());
       // The cut-in keys (BattleCutInShadows / BattleCutInDimming) are seeded
       // lazily by featureEnabled() using their per-game matrix defaults, so they
-      // stay correct when those defaults change (currently OnByDefault on every
-      // supported game now that the cut-in shadow glitch is fixed); not written
+      // stay correct when those defaults change (currently OptIn / off on every
+      // supported game, since the cut-in restorations ship opt-in); not written
       // eagerly here.
     }
     return result;
@@ -137,6 +137,28 @@ UIFontMode uiFontMode() {
     return UIFontMode::Replaced;     // the default (embedded Cuprum, see font_hires)
   }();
   return mode;
+}
+
+EmbeddedFont embeddedFontChoice() {
+  static const EmbeddedFont font = []() -> EmbeddedFont {
+    char value[24] = { };
+    if (const char* env = std::getenv("ARLAND_FONT_NAME")) {
+      std::strncpy(value, env, sizeof(value) - 1);
+    } else if (const char* path = configPath()) {
+      GetPrivateProfileStringA("Rendering", "FontName", "\x01", value,
+        sizeof(value), path);
+      if (value[0] == '\x01') {                    // absent: seed the default
+        WritePrivateProfileStringA("Rendering", "FontName", "NationalPark", path);
+        std::strncpy(value, "NationalPark", sizeof(value) - 1);
+      }
+    } else {
+      std::strncpy(value, "NationalPark", sizeof(value) - 1);
+    }
+    if (!_strnicmp(value, "cuprum", 6))
+      return EmbeddedFont::Cuprum;
+    return EmbeddedFont::NationalPark;     // the default
+  }();
+  return font;
 }
 
 bool verboseLogging() {

@@ -38,4 +38,11 @@ bool verboseLogging();
 enum class UIFontMode { Default, Upscaled, Replaced };
 UIFontMode uiFontMode();
 
+// Which bundled replacement font "replaced" mode uses when no loose
+// arland-hires-font.ttf overrides it: [Rendering] FontName -- "NationalPark"
+// (the DEFAULT) or "Cuprum". Both are OFL and compiled into the DLL.
+// ARLAND_FONT_NAME overrides the ini key.
+enum class EmbeddedFont { NationalPark, Cuprum };
+EmbeddedFont embeddedFontChoice();
+
 }  // namespace atfix

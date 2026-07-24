@@ -73,4 +73,6 @@ Maintain these distinctions in source comments, `README.md`, `TECHNICAL.md`, and
 
 Documentation must describe the current repository state. Do not narrate it using a specific release or version number, and do not hard-wrap Markdown prose.
 
+Avoid overusing em-dashes in source comments and documentation. Prefer commas, parentheses, or separate sentences; occasional correct use is fine, but do not lean on them.
+
 `TECHNICAL.md` and the code must stay in sync: every shipped fix and feature has a section in `TECHNICAL.md` describing its mechanism, and any change that adds, removes, or alters a fix's behavior or defaults amends `TECHNICAL.md` in the same change. A fix that exists only in code is undocumented and incomplete.

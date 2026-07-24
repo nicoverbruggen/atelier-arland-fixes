@@ -69,20 +69,23 @@ constexpr Support X = Support::OnByDefault;
 // The capability matrix. Rows are Rorona / Totori / Meruru, columns follow the
 // Feature enum. KEEP IN SYNC with the "Feature support by game" table in
 // README.md. Notes: FrameAtlasCache is Rorona-only; BattleShadows (mod-side
-// caster restoration) is OnByDefault only on Rorona — Meruru and Totori cast
+// caster restoration) is OnByDefault only on Rorona; Meruru and Totori cast
 // them natively (Totori confirmed healthy by the 2026-07-23 probe). CutInShadows
-// and CutInDimHold are OnByDefault on all three games: the cut-in
-// character-juggling stray-shadow glitch was fixed (2026-07-23 — the settle-
-// gated reception hold plus the force-expiry per-actor hide; validated in
-// Rorona, Meruru, and Totori). Totori's cut-in support (battle-state tracking +
+// and CutInDimHold ship OptIn (default off) on all three games; enable them via
+// [Battle] BattleCutInShadows / BattleCutInDimming (the latter is the inverse
+// key, see the descriptor). The cut-in character-juggling stray-shadow glitch was
+// fixed on 2026-07-23 (the settle-gated reception hold plus the force-expiry
+// per-actor hide; validated in Rorona, Meruru, and Totori), but the cut-in
+// restorations ship opt-in pending wider playtest. Totori's cut-in support
+// (battle-state tracking +
 // the shared gate/dim patches) is English-build only so far; its multilingual
 // build has no battle-state RVAs yet, so its cut-in cells resolve to Unsupported
 // there via the Totori-EN-only address-pack gating in menu_fix.cpp.
 constexpr Support kMatrix[3][static_cast<int>(Feature::Count)] = {
   //           Sync Menu Atls Frme Res  MSAA ShMl Bat  CutS CutD
-  /* Rorona */ { X,   X,   X,   X,   X,   O,   O,   X,   X,   X },
-  /* Totori */ { X,   X,   X,   U,   X,   O,   O,   U,   X,   X },
-  /* Meruru */ { X,   X,   X,   U,   X,   O,   O,   U,   X,   X },
+  /* Rorona */ { X,   X,   X,   X,   X,   O,   O,   X,   O,   O },
+  /* Totori */ { X,   X,   X,   U,   X,   O,   O,   U,   O,   O },
+  /* Meruru */ { X,   X,   X,   U,   X,   O,   O,   U,   O,   O },
 };
 
 int titleRow(Title t) {

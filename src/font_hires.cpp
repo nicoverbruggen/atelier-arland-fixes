@@ -6,7 +6,8 @@
 // read crisply. Two modes, selected by [Rendering] Font (see config.cpp):
 //
 //   "replaced" (the default) — re-render the string from a bundled scalable font
-//     (Cuprum 500, embedded; overridable with a loose arland-hires-font.ttf) via a
+//     (National Park by default or Cuprum, both embedded and chosen by
+//     [Rendering] FontName; a loose arland-hires-font.ttf overrides both) via a
 //     glyph-atlas cache. renderReplaced() replicates the engine's layout (split on
 //     '\n', stack by lineHeight, left-aligned, fixed cap-box baseline). If the font
 //     lacks a glyph the string needs (e.g. the game's custom button-prompt icons),
@@ -341,17 +342,22 @@ bool loadFontFile() {
   return true;
 }
 
-// Prefer a user override beside the DLL; otherwise use the font compiled into the
-// DLL (Cuprum 500) so "replaced" mode needs no loose .ttf. The embedded array has
-// program lifetime, so stbtt can point straight at it without a copy.
+// Prefer a user override beside the DLL; otherwise use one of the fonts compiled
+// into the DLL ([Rendering] FontName -- National Park by default, or Cuprum) so
+// "replaced" mode needs no loose .ttf. The embedded arrays have program lifetime,
+// so stbtt can point straight at them without a copy.
 bool loadFont() {
   if (loadFontFile())
     return true;
-  if (!stbtt_InitFont(&g_font, kEmbeddedFont,
-        stbtt_GetFontOffsetForIndex(kEmbeddedFont, 0)))
+  const bool cuprum = embeddedFontChoice() == EmbeddedFont::Cuprum;
+  const unsigned char* data = cuprum ? kEmbeddedFontCuprum
+                                     : kEmbeddedFontNationalPark;
+  const unsigned int size = cuprum ? kEmbeddedFontCuprumSize
+                                   : kEmbeddedFontNationalParkSize;
+  if (!stbtt_InitFont(&g_font, data, stbtt_GetFontOffsetForIndex(data, 0)))
     return false;
-  log("HiResText: using embedded font (", std::dec, kEmbeddedFontSize,
-    " bytes)");
+  log("HiResText: using embedded font ", cuprum ? "Cuprum" : "NationalPark",
+    " (", std::dec, size, " bytes)");
   return true;
 }
 void ensureInit() {

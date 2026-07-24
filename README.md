@@ -31,13 +31,11 @@ These are on by default.
 | Higher resolution rendering                  | ✓      | ✓      | ✓      |
 | SMAA anti-aliasing                            | ✓      | ✓      | ✓      |
 | Restored battle shadows while fighting       | ✓      | ⏳     | —      |
-| Restored battle cut-in shadows               | ✓      | ✓      | ✓      |
-| Cut-in scene kept at full brightness         | ✓      | ✓      | ✓      |
 | Conversation slowdown fix                    | —      | —      | ✓      |
 
 ✓ fixed, enabled by default · ⏳ planned · — not needed (no defect in that game)
 
-SMAA anti-aliasing is on by default and smooths edges across the whole scene at low cost; it can be turned off in `arland-fix.ini`. The cut-in shadow and brightness restorations can also be turned off there if you prefer the vanilla darkened, shadowless close-ups; see [ADVANCED.md](ADVANCED.md).
+SMAA anti-aliasing is on by default and smooths edges across the whole scene at low cost; it can be turned off in `arland-fix.ini`. The battle cut-in shadow and brightness restorations are off by default; enable them in `arland-fix.ini` if you prefer restored shadows and full-brightness close-ups over the vanilla darkened, shadowless ones (see [ADVANCED.md](ADVANCED.md)).
 
 ### Advanced graphics tweaks
 
@@ -48,6 +46,8 @@ These are optional improvements that are off by default and documented in [ADVAN
 | MSAA                                         | ✓      | ✓      | ✓      |
 | Shadow multiplier                            | ✓      | ✓      | ✓      |
 | Anisotropic filtering                        | ✓      | ✓      | ✓      |
+| Restored battle cut-in shadows               | ✓      | ✓      | ✓      |
+| Cut-in scene kept at full brightness         | ✓      | ✓      | ✓      |
 
 Rare crashes have been observed during long sessions with the advanced graphics tweaks enabled at their highest settings; no individual feature has been confirmed as the cause. If you hit instability, lower or disable them — crashes append a report to `arland-fix.log` that helps pinpoint the cause.
 
@@ -77,7 +77,7 @@ Build instructions for Windows and Linux are in [BUILDING.md](BUILDING.md).
 
 Philip Rebohle created the original [`atelier-sync-fix`](https://github.com/doitsujin/atelier-sync-fix) CPU shadow-copy implementation. TellowKrinkle's [`atelier-sync-fix` fork](https://github.com/TellowKrinkle/atelier-sync-fix) later added Map/Unmap shadow coherence for Ayesha and the old-Arland render-target and viewport/scissor correction ported here; this project replaces the fork's single-map/immediate-upload implementation with per-resource tracking and deferred uploads suitable for the Arland workload. Yuri Hime's [Atelier Graphics Tweak](https://steamcommunity.com/app/1152300/discussions/0/3345546664208090238/) and the earlier [Rorona community investigation](https://steamcommunity.com/app/936160/discussions/0/1742227264210806751/?ctp=2) identified the broader font-atlas transfer problem; AGT used an experimental upload-suppression approach that is not included here.
 
-The bundled SMAA anti-aliasing is by Jorge Jimenez, Jose I. Echevarria, Belen Masia, Fernando Navarro, and Diego Gutierrez ([SMAA](https://github.com/iryoku/smaa), MIT), vendored unchanged; AGT shipped the same SMAA for these games. The high-resolution UI text is rasterized with [stb_truetype](https://github.com/nothings/stb) by Sean Barrett (public domain), and its bundled replacement typeface is [Cuprum](https://fonts.google.com/specimen/Cuprum) (SIL Open Font License). [MinHook](https://github.com/TsudaKageyu/minhook) is by Tsuda Kageyu and contributors.
+The bundled SMAA anti-aliasing is by Jorge Jimenez, Jose I. Echevarria, Belen Masia, Fernando Navarro, and Diego Gutierrez ([SMAA](https://github.com/iryoku/smaa), MIT), vendored unchanged; AGT shipped the same SMAA for these games. The high-resolution UI text is rasterized with [stb_truetype](https://github.com/nothings/stb) by Sean Barrett (public domain), and its bundled replacement typefaces are [National Park](https://nationalparktypeface.com/) (the default) and [Cuprum](https://fonts.google.com/specimen/Cuprum), both under the SIL Open Font License. [MinHook](https://github.com/TsudaKageyu/minhook) is by Tsuda Kageyu and contributors.
 
 See [TECHNICAL.md](TECHNICAL.md) for the full implementation details and provenance.
 

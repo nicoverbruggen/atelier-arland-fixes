@@ -73,18 +73,33 @@ default**:
 Font=replaced
 ```
 
-- **`replaced`** (default) — re-render each string from a scalable font (Cuprum,
-  embedded in the DLL) at full resolution, keeping the game's own layout. Glyphs
-  the font lacks — such as the custom controller-button icons — fall back to
-  `upscaled` automatically, so nothing is left pixelated or missing.
+- **`replaced`** (default) — re-render each string from a scalable font embedded
+  in the DLL, at full resolution, keeping the game's own layout. Glyphs the font
+  lacks — such as the custom controller-button icons — fall back to `upscaled`
+  automatically, so nothing is left pixelated or missing.
 - **`upscaled`** — keep the original baked glyphs but smooth them (the exact
   original look, just sharper).
 - **`default`** (or `off`) — the untouched original bitmap font.
 
-To supply your own replacement font, drop a `arland-hires-font.ttf` next to the
-DLL; it overrides the embedded one. `ARLAND_UIFONT` overrides the mode for a
-session (`ARLAND_UIFONT=upscaled`, etc.). English versions only — the Japanese
-and Chinese builds are unaffected.
+`replaced` mode ships with two bundled fonts; `FontName` in the `[Rendering]`
+section chooses between them, defaulting to **National Park**:
+
+```ini
+[Rendering]
+FontName=NationalPark
+```
+
+- **`NationalPark`** (default) — [National Park](https://nationalparktypeface.com/)
+  Medium.
+- **`Cuprum`** — [Cuprum](https://fonts.google.com/specimen/Cuprum), the font used
+  through the earlier previews.
+
+Both are embedded in the DLL, so nothing extra is installed. To supply your own
+replacement font instead, drop a `arland-hires-font.ttf` next to the DLL; it
+overrides whichever bundled font `FontName` selects. `ARLAND_UIFONT` overrides the
+mode for a session (`ARLAND_UIFONT=upscaled`, etc.) and `ARLAND_FONT_NAME` the
+bundled font. English versions only — the Japanese and Chinese builds are
+unaffected.
 
 ## MSAA
 
@@ -157,10 +172,9 @@ BattleShadows=true
 ## Battle cut-in shadows and brightness
 
 During the battle action cut-ins (the close-up attack cameras), the games show
-no ground shadows on any platform and dim the scene. The mod restores the
-shadows and keeps the close-up at full brightness in all three games, **on by
-default**. Both are controlled from the `[Battle]` section if you prefer the
-vanilla look:
+no ground shadows on any platform and dim the scene. The mod can restore the
+shadows and keep the close-up at full brightness in all three games. Both are
+**off by default**; enable them from the `[Battle]` section:
 
 ```ini
 [Battle]
@@ -168,12 +182,12 @@ BattleCutInShadows=true
 BattleCutInDimming=false
 ```
 
-`BattleCutInShadows` (default `true`) restores the ground shadows during
-cut-ins; set it to `false` for the vanilla shadowless close-up.
+`BattleCutInShadows` (default `false`) restores the ground shadows during
+cut-ins; set it to `true` to enable them.
 
-`BattleCutInDimming` (default `false`) controls the original close-up dimming;
-set it to `true` to restore the vanilla darkened cut-in. The two options are
-independent and apply to all three games.
+`BattleCutInDimming` (default `true`) keeps the original close-up dimming; set it
+to `false` to hold the cut-in at full brightness. The two options are independent
+and apply to all three games.
 
 ## Suggested "best experience" configuration
 
@@ -197,9 +211,11 @@ BattleCutInDimming=false
 ```
 
 Raise `MSAA` to `8` and `ShadowMultiplier` to `4` on strong hardware. (The
-high-resolution UI font, SMAA, and the battle shadow and cut-in restorations are
-all on by default; they are listed here only for completeness. `AnisotropicFiltering`
-is off by default and costs nothing per frame, so it is worth enabling.)
+high-resolution UI font, SMAA, and the restored fighting battle shadows
+(`BattleShadows`) are on by default and listed here only for completeness. The
+cut-in restorations (`BattleCutInShadows` and `BattleCutInDimming`) and
+`AnisotropicFiltering` are off by default; they cost little, so they are worth
+enabling.)
 
 ## Logs and crash reports
 
