@@ -81,36 +81,29 @@ render target — so prefer raising the render resolution over stacking the two.
 blank, so existing configurations keep working, but new ones should use
 `DisplayWidth`/`DisplayHeight`. If both pairs are set, the `Display` pair wins.
 
-## Field-map stutter at high refresh rates
+## Frame rate cap
 
-Standing on a step or ledge on the field map, the character can buzz vertically.
-It is steady up to roughly 115 fps and appears above that, so it shows up on
-120 Hz and 144 Hz displays and not on 60 Hz ones.
-
-The cause is a constant that was only ever correct at 60 fps: the games discard
-any frame in which the character moves less than a fixed distance, reverting the
-position and skipping the ground-snap that would re-seat it. Resting on a
-surface, the only motion is a single frame of gravity — which at 60 fps clears
-that distance in two frames, but at 144 fps takes twelve, longer than the brief
-grace period the character's footing is held for. Footing is lost, the character
-falls until it has picked up enough speed for one frame to clear the distance,
-lands, and the cycle repeats.
+Above roughly 115 fps the field-map character buzzes vertically when standing on
+a step or ledge — so this shows on 120 Hz and 144 Hz displays and not on 60 Hz
+ones. The games discard any frame in which the character moves less than a fixed
+distance, a constant that is only correct at 60 fps; at rest the only movement is
+a single frame of gravity, which at high frame rates never covers that distance
+before the character's footing times out, so it falls and lands repeatedly.
 
 ```ini
 [Gameplay]
 MaxEngineFps=100
 ```
 
-The mod therefore holds the frame rate just below where the problem appears.
-100 is the default and also the maximum: a higher ceiling would run straight back
-into the bug, so values above 100 are clamped. Set `0` to remove the cap
-entirely, and lower it if you prefer.
+The mod holds the frame rate just below where that begins. 100 is both the
+default and the maximum — a higher ceiling runs straight back into the problem,
+so larger values are clamped. Set `0` to remove the cap, or lower it if you
+prefer.
 
-This keeps the benefit of well above 60 fps, and because it changes nothing
-inside the game it also covers any other frame-rate assumption the engine may
-hold that has not been found. Note that it turns vsync off while pacing: a
-ceiling that is not a divisor of your display's refresh rate cannot be held with
-vsync on.
+This keeps well above 60 fps, and since it changes nothing inside the game it
+also covers any other 60 fps assumption the engine may hold that has not been
+found. Note that pacing turns vsync off: a ceiling that is not a divisor of your
+display's refresh rate cannot be held with vsync on.
 
 ## SMAA anti-aliasing
 
@@ -271,6 +264,9 @@ RenderHeight=
 ShadowMultiplier=2
 AnisotropicFiltering=16
 
+[Gameplay]
+MaxEngineFps=100
+
 [Battle]
 BattleShadows=true
 BattleCutInShadows=true
@@ -289,6 +285,23 @@ high-resolution UI font, SMAA, and the restored fighting battle shadows
 cut-in restorations (`BattleCutInShadows` and `BattleCutInDimming`) and
 `AnisotropicFiltering` are off by default; they cost little, so they are worth
 enabling.)
+
+## Diagnostic switches
+
+These are environment variables, not INI keys: they are for narrowing down a
+problem for a bug report, and none of them change how the game plays.
+
+| Variable | Effect |
+| --- | --- |
+| `ARLAND_VERBOSE_LOG=1` | Extra logging, same as `[Diagnostics] VerboseLogging`. |
+| `ARLAND_MENU_STATS=1` | Per-drain menu timings and cache hit rates. |
+| `ARLAND_FIELD_TRACE=1` | Logs the field-map character's state around each loss of footing. |
+| `ARLAND_PRESENT_INTERVAL=0` | Forces vsync off (`1`, `2`, `3` present every Nth refresh). Useful with an external frame limiter. |
+| `ARLAND_RESOLUTION_TRACE=1` | Traces the resolution override's effect on render targets. |
+| `ARLAND_PRESENT_TRACE=1` | Reports how the finished frame reaches the screen. Needs a display resolution set. |
+
+Most INI options also have an `ARLAND_`-prefixed override for a single session;
+those are noted alongside each option above.
 
 ## Logs and crash reports
 
