@@ -101,28 +101,6 @@ falls back to a lower supported count. Use `0` or `1`, or remove the setting
 entirely, to disable MSAA. Higher sample counts increase GPU and video-memory
 cost.
 
-## Trim anti-aliasing (alpha-to-coverage)
-
-Thin costume trim — the frilled lace on sleeves, collars, and skirts, and the
-hair fringe — is drawn with a hard alpha-test cutout against a low-resolution
-1-bit-alpha texture, so its edges stay jagged even with MSAA (the aliasing is
-inside the texture, not on the model silhouette, which is all MSAA smooths).
-
-`TrimAntiAliasing` enables alpha-to-coverage for those character materials,
-which dithers the cutout edges into the multisample coverage mask:
-
-```ini
-[Rendering]
-MSAA=4
-TrimAntiAliasing=true
-```
-
-It only takes effect when MSAA is active (it works through the multisampled
-render target), and it is scoped to the character trim shaders alone — UI,
-fonts, and effects are untouched. The improvement is bounded by the source
-textures' 1-bit alpha, so expect noticeably smoother trim edges rather than a
-perfectly clean line. Off by default. `ARLAND_TRIM_A2C` overrides the INI.
-
 ## Anisotropic filtering
 
 The games sample their textures with plain linear filtering, so surfaces seen at
@@ -204,10 +182,13 @@ designed for:
 
 ```ini
 [Rendering]
+Font=replaced
+SMAA=true
 MSAA=4
 Width=
 Height=
 ShadowMultiplier=2
+AnisotropicFiltering=16
 
 [Battle]
 BattleShadows=true
@@ -215,9 +196,10 @@ BattleCutInShadows=true
 BattleCutInDimming=false
 ```
 
-Raise `MSAA` to `8` and `ShadowMultiplier` to `4` on strong hardware. (Battle
-shadows and the cut-in restorations are on by default; they are listed here
-only for completeness.)
+Raise `MSAA` to `8` and `ShadowMultiplier` to `4` on strong hardware. (The
+high-resolution UI font, SMAA, and the battle shadow and cut-in restorations are
+all on by default; they are listed here only for completeness. `AnisotropicFiltering`
+is off by default and costs nothing per frame, so it is worth enabling.)
 
 ## Logs and crash reports
 

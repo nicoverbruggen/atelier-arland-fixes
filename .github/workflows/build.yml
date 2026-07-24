@@ -45,5 +45,5 @@ jobs:
             gh release edit "${GITHUB_REF_NAME}" --notes-file release-notes.md $PRERELEASE
             gh release upload "${GITHUB_REF_NAME}" build64/d3d11.dll build32/msimg32.dll --clobber
           else
-            gh release create "${GITHUB_REF_NAME}" build64/d3d11.dll build32/msimg32.dll --verify-tag --notes-file release-notes.md --title "Atelier Arland Fixes ${GITHUB_REF_NAME}" $PRERELEASE
+            gh release create "${GITHUB_REF_NAME}" build64/d3d11.dll build32/msimg32.dll --verify-tag --notes-file release-notes.md --title "${GITHUB_REF_NAME}" $PRERELEASE
           fi
