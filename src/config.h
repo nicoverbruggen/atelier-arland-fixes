@@ -33,6 +33,12 @@ bool renderResolution(unsigned int* width, unsigned int* height);
 // renderResolution in new code.
 bool configuredResolution(unsigned int* width, unsigned int* height);
 
+// Borderless windowed mode: [Rendering] Borderless. Runs the game as an
+// undecorated window filling its monitor instead of taking exclusive control of
+// the display -- instant alt-tab, and friendlier to compositors and multi-
+// monitor setups under Wine and Proton. Off by default.
+bool borderlessWindow();
+
 // Requested MSAA sample count (1/2/4/8) from ARLAND_MSAA or [Rendering] MSAA.
 unsigned int msaaSamples();
 
@@ -51,7 +57,7 @@ bool verboseLogging();
 enum class UIFontMode { Original, Upscaled, Replaced };
 UIFontMode uiFontMode();
 
-// Frame-rate ceiling: [Gameplay] MaxEngineFps, default 100. 0 disables it.
+// Frame-rate ceiling: [Engine] MaxFps, default 100. 0 disables it.
 //
 // The games discard any frame in which the field-map character moves less than
 // a fixed distance, a constant that is only correct at 60 fps. Above roughly
@@ -60,6 +66,6 @@ UIFontMode uiFontMode();
 // vertical buzz. Holding the frame rate below that avoids it without modifying
 // the game, and also covers any other frame-rate assumption the engine may hold
 // that has not been found. Clamped to 30..100 when enabled.
-unsigned int maxEngineFps();
+unsigned int maxFps();
 
 }  // namespace atfix

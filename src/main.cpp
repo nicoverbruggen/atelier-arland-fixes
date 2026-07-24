@@ -8,6 +8,7 @@
 #include "supersample.h"
 #include "sync_fix.h"
 #include "util.h"
+#include "window_mode.h"
 #include "window_title.h"
 
 #include <psapi.h>
@@ -117,7 +118,7 @@ bool frameLimitActive();   // defined below, beside the pacing it gates
 bool presentHookNeeded() {
   return menuTransitionTraceEnabled() || atfix::smaaEnabled() ||
     atfix::presentTraceEnabled() || atfix::ssaaRequested() ||
-    frameLimitActive();
+    frameLimitActive() || atfix::borderlessWindow();
 }
 
 // Replace the game's present interval for a session: 0 turns vsync off so an
@@ -135,7 +136,7 @@ UINT presentInterval(UINT gameInterval) {
   return frameLimitActive() ? 0u : gameInterval;
 }
 
-// Hold each frame to [Gameplay] MaxEngineFps.
+// Hold each frame to [Engine] MaxFps.
 //
 // The field-map character loses its footing above roughly 115 fps because the
 // engine discards frames in which it moves less than a fixed distance — a
@@ -148,14 +149,14 @@ UINT presentInterval(UINT gameInterval) {
 // refresh boundaries and the frame time would swing between two values, which is
 // exactly the input the bug is sensitive to.
 bool frameLimitActive() {
-  static const bool active = atfix::maxEngineFps() != 0;
+  static const bool active = atfix::maxFps() != 0;
   return active;
 }
 
 void paceFrame() {
   if (!frameLimitActive())
     return;
-  static const int64_t period = 1'000'000'000LL / atfix::maxEngineFps();
+  static const int64_t period = 1'000'000'000LL / atfix::maxFps();
   static int64_t nextFrame = 0;
   const auto nowNanos = [] {
     return std::chrono::duration_cast<std::chrono::nanoseconds>(
@@ -209,6 +210,7 @@ HRESULT STDMETHODCALLTYPE tracedPresent(
           "MB commit=", static_cast<unsigned>(pmc.PagefileUsage >> 20u), "MB");
     }
   }
+  atfix::maintainBorderlessWindow();   // re-applies only if the game restyled
   atfix::notePresentBackbuffer(swapChain);   // ARLAND_PRESENT_TRACE diagnostic
   atfix::cutinDrawContactBlobs(swapChain);
   atfix::smaaApply(swapChain);        // Present-time path (only if pre-UI off)
@@ -277,12 +279,15 @@ HRESULT STDMETHODCALLTYPE tracedCreateSwapChain(
   // in others. The resolution override has to apply on either route, or the
   // internal targets get resized while the backbuffer keeps the size the game
   // asked for.
-  if (desc)
+  if (desc) {
     atfix::applyResolutionOverride(desc);
+    atfix::prepareBorderlessSwapChain(desc);
+  }
   const HRESULT result = originalCreateSwapChain(
     factory, device, desc, swapChain);
   if (SUCCEEDED(result) && swapChain && *swapChain) {
     atfix::ssaaNoteSwapChain(*swapChain);
+    atfix::applyBorderlessWindow(*swapChain);
     hookSwapChain(*swapChain);
   }
   return result;
@@ -417,7 +422,9 @@ DLLEXPORT HRESULT __stdcall D3D11CreateDeviceAndSwapChain(
   DXGI_SWAP_CHAIN_DESC swapChainDesc = { };
   if (pSwapChainDesc && arland::initializeGameHooks()) {
     swapChainDesc = *pSwapChainDesc;
-    if (atfix::applyResolutionOverride(&swapChainDesc))
+    const bool resized = atfix::applyResolutionOverride(&swapChainDesc);
+    atfix::prepareBorderlessSwapChain(&swapChainDesc);
+    if (resized || atfix::borderlessWindow())
       pSwapChainDesc = &swapChainDesc;
   }
 
@@ -435,6 +442,7 @@ DLLEXPORT HRESULT __stdcall D3D11CreateDeviceAndSwapChain(
       // Before the game can create a view over the backbuffer, so supersampling
       // owns every one of them but the downscale's own.
       atfix::ssaaNoteSwapChain(*ppSwapChain);
+      atfix::applyBorderlessWindow(*ppSwapChain);
       atfix::hookSwapChain(*ppSwapChain);
     }
   }

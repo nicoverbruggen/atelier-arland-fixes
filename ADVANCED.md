@@ -45,7 +45,10 @@ RenderHeight=2160
 
 `DisplayWidth`/`DisplayHeight` size the window and what reaches the screen — use
 your monitor's resolution. Leave both blank to keep whatever the launcher
-selected.
+selected. Setting them above your monitor's resolution gains nothing (the extra
+pixels are scaled away again), so a larger value is clamped to the display and
+noted in the log; rendering higher than the screen is what `RenderWidth`/
+`RenderHeight` is for.
 
 `RenderWidth`/`RenderHeight` size everything the game actually draws. Leave both
 blank and the game renders at the display resolution, exactly as before. Setting
@@ -81,6 +84,31 @@ render target — so prefer raising the render resolution over stacking the two.
 blank, so existing configurations keep working, but new ones should use
 `DisplayWidth`/`DisplayHeight`. If both pairs are set, the `Display` pair wins.
 
+## Borderless windowed mode
+
+The games offer only a plain window with a title bar, or exclusive fullscreen.
+Exclusive fullscreen takes control of the display, which makes alt-tabbing slow
+and interacts badly with compositors and multi-monitor setups under Wine and
+Proton.
+
+```ini
+[Rendering]
+Borderless=true
+```
+
+The game then runs as a window with its decorations removed, sized to fill the
+monitor it is on — it looks like fullscreen, alt-tabs instantly, and leaves the
+display mode alone. The game's own `FullScreen` setting in
+`ArlandDX_Settings.ini` is ignored while this is on — leave it at whatever it
+is. The mod forces the swap chain windowed, takes alt-enter away from DXGI, and
+refuses display-mode changes, so nothing can hand the screen back to exclusive
+fullscreen behind it. Off by default. `ARLAND_BORDERLESS`
+overrides the INI for a session.
+
+Use it with `DisplayWidth`/`DisplayHeight` set to your monitor's resolution.
+The window is sized to the monitor either way, so a smaller backbuffer is simply
+scaled up to fill it.
+
 ## Frame rate cap
 
 Above roughly 115 fps the field-map character buzzes vertically when standing on
@@ -91,14 +119,15 @@ a single frame of gravity, which at high frame rates never covers that distance
 before the character's footing times out, so it falls and lands repeatedly.
 
 ```ini
-[Gameplay]
-MaxEngineFps=100
+[Engine]
+MaxFps=100
 ```
 
 The mod holds the frame rate just below where that begins. 100 is both the
 default and the maximum — a higher ceiling runs straight back into the problem,
-so larger values are clamped. Set `0` to remove the cap, or lower it if you
-prefer.
+so larger values are clamped. Lower it if you prefer. Setting it to `0` removes
+the cap entirely, which is **not recommended**: above roughly 115 fps the
+field-map stutter returns.
 
 This keeps well above 60 fps, and since it changes nothing inside the game it
 also covers any other 60 fps assumption the engine may hold that has not been
@@ -265,8 +294,8 @@ RenderHeight=
 ShadowMultiplier=2
 AnisotropicFiltering=16
 
-[Gameplay]
-MaxEngineFps=100
+[Engine]
+MaxFps=100
 
 [Battle]
 BattleShadows=true

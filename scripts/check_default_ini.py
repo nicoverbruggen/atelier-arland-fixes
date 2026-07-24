@@ -19,7 +19,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-SECTIONS = ("Rendering", "Battle", "Gameplay", "Diagnostics")
+SECTIONS = ("Rendering", "Battle", "Engine", "Diagnostics")
 
 # Read through readResPair with the key names as parameters, so they never
 # appear beside a section literal. Deprecated in favour of DisplayWidth/Height

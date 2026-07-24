@@ -3,6 +3,7 @@
 #include <windows.h>
 
 #include <array>
+#include <atomic>
 #include <cstdlib>
 #include <cstring>
 
@@ -124,12 +125,60 @@ static bool readResPair(const char* widthKey, const char* heightKey,
   return true;
 }
 
+// The largest mode the display reports. Presenting larger than the panel gains
+// nothing -- the extra pixels are scaled away again -- so a display resolution
+// above this is a misunderstanding of what the key does; RenderWidth/Height is
+// how you render higher than you present. Enumerated once; falls back to the
+// current desktop size if enumeration fails.
+static bool displayMaximum(UINT* width, UINT* height) {
+  struct Maximum { UINT width; UINT height; };
+  static const Maximum maximum = [] {
+    Maximum best { 0, 0 };
+    DEVMODEA mode = { };
+    mode.dmSize = sizeof(mode);
+    for (DWORD i = 0; EnumDisplaySettingsA(nullptr, i, &mode); ++i) {
+      if (uint64_t(mode.dmPelsWidth) * mode.dmPelsHeight >
+          uint64_t(best.width) * best.height)
+        best = { mode.dmPelsWidth, mode.dmPelsHeight };
+    }
+    if (!best.width || !best.height) {
+      const int screenWidth = GetSystemMetrics(SM_CXSCREEN);
+      const int screenHeight = GetSystemMetrics(SM_CYSCREEN);
+      if (screenWidth > 0 && screenHeight > 0)
+        best = { UINT(screenWidth), UINT(screenHeight) };
+    }
+    return best;
+  }();
+  if (!maximum.width || !maximum.height)
+    return false;
+  *width = maximum.width;
+  *height = maximum.height;
+  return true;
+}
+
 bool displayResolution(UINT* width, UINT* height) {
   // New DisplayWidth/Height, falling back to the legacy Width/Height keys.
   // Blank on both means the caller leaves the swap chain at the size the game
   // itself requested (the old launcher's resolution).
-  return readResPair("DisplayWidth", "DisplayHeight", width, height) ||
-         readResPair("Width", "Height", width, height);
+  if (!readResPair("DisplayWidth", "DisplayHeight", width, height) &&
+      !readResPair("Width", "Height", width, height))
+    return false;
+
+  UINT maxWidth = 0;
+  UINT maxHeight = 0;
+  if (displayMaximum(&maxWidth, &maxHeight) &&
+      (*width > maxWidth || *height > maxHeight)) {
+    static std::atomic<bool> warned { false };
+    if (!warned.exchange(true))
+      log("Display resolution ", std::dec, *width, "x", *height,
+        " exceeds the display's ", maxWidth, "x", maxHeight,
+        "; using the display's instead. To render at a higher resolution than"
+        " the screen, set RenderWidth/RenderHeight -- that is supersampling,"
+        " and it is downscaled to the display resolution at present.");
+    *width = maxWidth;
+    *height = maxHeight;
+  }
+  return true;
 }
 
 bool renderResolution(UINT* width, UINT* height) {
@@ -184,18 +233,18 @@ bool verboseLogging() {
   return on;
 }
 
-UINT maxEngineFps() {
+UINT maxFps() {
   static const UINT fps = [] {
     unsigned long requested = 100;
     char value[16] = { };
-    if (GetEnvironmentVariableA("ARLAND_MAX_ENGINE_FPS", value, sizeof(value))) {
+    if (GetEnvironmentVariableA("ARLAND_MAX_FPS", value, sizeof(value))) {
       requested = std::strtoul(value, nullptr, 10);
     } else if (const char* path = configPath()) {
       char iniValue[16] = { };
-      GetPrivateProfileStringA("Gameplay", "MaxEngineFps", "\x01", iniValue,
+      GetPrivateProfileStringA("Engine", "MaxFps", "\x01", iniValue,
         sizeof(iniValue), path);
       if (iniValue[0] == '\x01')            // absent: seed it for discovery
-        WritePrivateProfileStringA("Gameplay", "MaxEngineFps", "100", path);
+        WritePrivateProfileStringA("Engine", "MaxFps", "100", path);
       else
         requested = std::strtoul(iniValue, nullptr, 10);
     }
@@ -206,13 +255,23 @@ UINT maxEngineFps() {
     if (requested < 30)
       return 30u;
     if (requested > 100) {
-      log("MaxEngineFps ", std::dec, requested,
+      log("MaxFps ", std::dec, requested,
         " exceeds the safe ceiling; using 100 (set 0 to remove the cap)");
       return 100u;
     }
     return static_cast<UINT>(requested);
   }();
   return fps;
+}
+
+bool borderlessWindow() {
+  static const bool enabled = [] {
+    const char* env = std::getenv("ARLAND_BORDERLESS");
+    if (env)
+      return env[0] != '0';
+    return arlandConfigBool("Rendering", "Borderless", false);
+  }();
+  return enabled;
 }
 
 UINT msaaSamples() {

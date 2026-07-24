@@ -20,7 +20,7 @@ namespace atfix {
 // grounded flag is held for. The flag drops, the character falls until velocity
 // has built enough for a frame to clear the threshold, lands, and repeats.
 //
-// The fix users get is the frame-rate cap in main.cpp ([Gameplay] MaxEngineFps),
+// The fix users get is the frame-rate cap in main.cpp ([Engine] MaxFps),
 // which keeps the rate below where this begins without touching the game.
 //
 // Nothing here is enabled by default. ARLAND_FIELD_TRACE=1 logs the controller

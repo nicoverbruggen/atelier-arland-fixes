@@ -85,6 +85,29 @@ const ResItem kBaseItems[] = {
 };
 const int kBaseCount = 5;
 
+// The largest mode the display reports. The base resolution is what gets
+// presented, so offering more than the panel has is offering a worse picture:
+// the extra pixels are only scaled away again. Rendering higher than the screen
+// is what the supersampling multiplier below is for.
+void displayMaximum(unsigned* w, unsigned* h) {
+  *w = 0;
+  *h = 0;
+  DEVMODEW mode = { };
+  mode.dmSize = sizeof(mode);
+  for (DWORD i = 0; EnumDisplaySettingsW(nullptr, i, &mode); ++i) {
+    if ((unsigned long long)mode.dmPelsWidth * mode.dmPelsHeight >
+        (unsigned long long)*w * *h) {
+      *w = mode.dmPelsWidth;
+      *h = mode.dmPelsHeight;
+    }
+  }
+  if (!*w || !*h) {
+    const int cx = GetSystemMetrics(SM_CXSCREEN);
+    const int cy = GetSystemMetrics(SM_CYSCREEN);
+    if (cx > 0 && cy > 0) { *w = (unsigned)cx; *h = (unsigned)cy; }
+  }
+}
+
 // Supersampling per-axis multipliers. Index 0 is "Off" (no supersampling);
 // its 1.0 factor is never applied because Off writes the Render keys blank.
 struct MultItem { const wchar_t* label; double mult; };
@@ -466,7 +489,13 @@ void createControls(HWND w) {
 
   mkLabel(w, L"Base resolution:", L, 66, 140, 18);
   g_hBase = mkCombo(w, F, 62, 200, IDC_BASE);
+  unsigned maxW = 0, maxH = 0;
+  displayMaximum(&maxW, &maxH);
   for (int i = 0; i < kBaseCount; ++i) {
+    // Skip anything the display cannot actually show. Auto (0x0) always stays.
+    if (maxW && maxH && kBaseItems[i].w &&
+        (kBaseItems[i].w > maxW || kBaseItems[i].h > maxH))
+      continue;
     int idx = (int)SendMessageW(g_hBase, CB_ADDSTRING, 0, (LPARAM)kBaseItems[i].label);
     SendMessageW(g_hBase, CB_SETITEMDATA, idx,
       packRes(kBaseItems[i].w, kBaseItems[i].h));

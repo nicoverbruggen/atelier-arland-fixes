@@ -9,7 +9,7 @@ The mod ships with a 64-bit `d3d11.dll` for the games and a 32-bit `msimg32.dll`
 
 ## How it works
 
-Everything above works out of the box with default settings by simply dropping `d3d11.dll` into your game folders. Optional, off-by-default enhancements (MSAA, higher-resolution shadows) are documented in [ADVANCED.md](ADVANCED.md).
+Everything above works out of the box with default settings by simply dropping `d3d11.dll` into your game folders. Optional, off-by-default enhancements (supersampling, MSAA, higher-resolution shadows, anisotropic filtering, borderless windowed mode) are documented in [ADVANCED.md](ADVANCED.md).
 
 The mod is intended for the Steam versions of the games. See [TECHNICAL.md](TECHNICAL.md) for implementation details and tested executable fingerprints.
 
@@ -29,13 +29,19 @@ These are on by default.
 | Frame sync fix                               | ✓      | ✓      | ✓      |
 | Text-corruption fix                          | ✓      | ✓      | ✓      |
 | Higher resolution rendering                  | ✓      | ✓      | ✓      |
+| High-resolution UI text                      | ✓      | ✓      | ✓      |
 | SMAA anti-aliasing                            | ✓      | ✓      | ✓      |
-| Restored battle shadows while fighting       | ✓      | ⏳     | —      |
+| Default frame-rate cap (to avoid bugs)       | ✓      | ✓      | ✓      |
+| Restored battle shadows while fighting       | ✓      | —      | —      |
 | Conversation slowdown fix                    | —      | —      | ✓      |
 
-✓ fixed, enabled by default · ⏳ planned · — not needed (no defect in that game)
+✓ fixed, enabled by default · — not needed (no defect in that game)
 
-SMAA anti-aliasing is on by default and smooths edges across the whole scene at low cost; it can be turned off in `arland-fix.ini`. The battle cut-in shadow and brightness restorations are off by default; enable them in `arland-fix.ini` if you prefer restored shadows and full-brightness close-ups over the vanilla darkened, shadowless ones (see [ADVANCED.md](ADVANCED.md)).
+SMAA anti-aliasing and the high-resolution UI text are on by default; both can be turned off in `arland-fix.ini`. The UI text is re-rendered from a bundled scalable font on the English executables, and smoothed from the original bitmap font on the Japanese and Chinese ones.
+
+The frame rate is capped at 100 by default. Above roughly 115 fps the field-map character loses its footing on steps and visibly buzzes — a constant in the games that is only correct at 60 fps — so the cap keeps well above 60 while staying clear of it. Raise or remove it with `MaxFps` (see [ADVANCED.md](ADVANCED.md)).
+
+The battle cut-in shadow and brightness restorations are off by default; enable them in `arland-fix.ini` if you prefer restored shadows and full-brightness close-ups over the vanilla darkened, shadowless ones.
 
 ### Advanced graphics tweaks
 
@@ -43,10 +49,11 @@ These are optional improvements that are off by default and documented in [ADVAN
 
 | Enhancement                                  | Rorona | Totori | Meruru |
 | -------------------------------------------- | :----: | :----: | :----: |
+| Supersampling (internal render resolution)   | ✓      | ✓      | ✓      |
 | MSAA                                         | ✓      | ✓      | ✓      |
-| Supersampling (render high, present low)     | ✓      | ✓      | ✓      |
-| Shadow multiplier                            | ✓      | ✓      | ✓      |
 | Anisotropic filtering                        | ✓      | ✓      | ✓      |
+| Shadow multiplier                            | ✓      | ✓      | ✓      |
+| Borderless windowed mode                     | ✓      | ✓      | ✓      |
 | Restored battle cut-in shadows               | ✓      | ✓      | ✓      |
 | Cut-in scene kept at full brightness         | ✓      | ✓      | ✓      |
 
@@ -57,8 +64,6 @@ Rare crashes have been observed during long sessions with the advanced graphics 
 1. Open the game's installation directory from Steam by selecting **Manage → Browse local files**.
 2. Copy `d3d11.dll`, `msimg32.dll` and `arland-fix.ini` into that directory, beside the game executables and `ArlandDXEnv.exe`. If you are updating an existing install, keep the `arland-fix.ini` you already have — the bundled one is only the defaults.
 3. Launch the game normally through Steam.
-
-Remove older copies of this mod's `dinput8.dll` and `winmm.dll`, and do not install another `d3d11.dll` wrapper alongside it. The game loads `d3d11.dll`; the settings launcher loads `msimg32.dll` and makes 1920×1080, 2560×1440, and 3840×2160 available.
 
 All performance and text-correctness fixes are enabled automatically. No configuration is required.
 
