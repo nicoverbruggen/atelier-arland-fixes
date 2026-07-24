@@ -70,17 +70,15 @@ The expected outputs are `builds/release-x64/d3d11.dll` and `builds/release-x86/
 
 ## Configuration options
 
-`default.ini` ships in the release archive and repeats defaults that really live
-in `src/config.cpp` (and `src/game.cpp`'s feature table). When you add, rename,
-remove or re-default an option, update `default.ini` and `ADVANCED.md` in the
-same change.
+`default.ini` ships in the release archive and repeats defaults that really live in `src/config.cpp` (and `src/game.cpp`'s feature table). When you add, rename, remove or re-default an option, update `default.ini` and `ADVANCED.md` in the same change.
 
-`scripts/check_default_ini.py` enforces this and runs in CI: it checks that every
-option the code reads is documented, that nothing documented is unread, and that
-the literal defaults agree. If an option is deliberately undocumented (the
-deprecated `Width`/`Height`) or its default cannot be read from a single call
-site (the per-game cut-in keys), add it to the allowlists at the top of that
-script rather than dropping the check.
+`scripts/check_default_ini.py` enforces this and runs in CI: it checks that every option the code reads is documented, that nothing documented is unread, and that the literal defaults agree. If an option is deliberately undocumented (the deprecated `Width`/`Height`) or its default cannot be read from a single call site (the per-game cut-in keys), add it to the allowlists at the top of that script rather than dropping the check.
+
+## Documentation style
+
+Do not hard-wrap markdown. Write one line per paragraph and let the editor or viewer wrap it; the same applies to markdown embedded elsewhere, such as the release notes generated in `.github/workflows/build.yml`. Line breaks stay meaningful only where they already are: fenced code blocks, tables, list items (one line each), headings and blockquotes.
+
+Hard-wrapped prose makes diffs noisy — a reworded sentence reflows every line after it — and the wrap width never matches everyone's editor anyway. INI and source comments are the exception: keep wrapping those to the surrounding code width.
 
 ## Attribution and documentation
 

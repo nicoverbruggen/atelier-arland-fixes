@@ -30,24 +30,48 @@ enum : int {
   IDC_SHADOW,
   IDC_ANISO,
   IDC_SMAA,
+  IDC_PRESET,
+  IDC_TABS,
+  IDC_WINMODE,
+  IDC_LANG,
   IDC_BSHADOW,
   IDC_BCUTINSHADOW,
   IDC_BCUTINDIM,
+  IDC_MAXFPS,
   IDC_VERBOSE,
-  IDC_PATH,
-  IDC_BROWSE,
   IDC_SAVE,
   IDC_CLOSE,
 };
 
 // Absolute path to the arland-fix.ini we edit. Resolved at startup, changeable
 // via Browse.
-char g_iniPath[MAX_PATH] = {};
+char g_iniPath[MAX_PATH] = {};        // arland-fix.ini, beside this exe
+char g_settingsPath[MAX_PATH] = {};   // ArlandDX_Settings.ini, same folder
+const wchar_t* g_gameName = nullptr;  // null when no game was recognised
+
+// The executables the mod supports, matched in the folder this tool sits in.
+// Both the English and the multilingual build of each game are recognised: the
+// settings file and the resolution keys are the same either way.
+struct GameExe { const char* exe; const wchar_t* name; };
+const GameExe kGameExes[] = {
+  { "A11R_x64_Release_en.exe", L"Atelier Rorona DX" },
+  { "A11R_x64_Release.exe",    L"Atelier Rorona DX" },
+  { "A12V_x64_Release_en.exe", L"Atelier Totori DX" },
+  { "A12V_x64_Release.exe",    L"Atelier Totori DX" },
+  { "A13V_x64_Release_EN.exe", L"Atelier Meruru DX" },
+  { "A13V_x64_Release.exe",    L"Atelier Meruru DX" },
+};
+const int kGameExeCount = 6;
 
 // Handles to the controls we read from and write to.
-HWND g_hFont, g_hBase, g_hSS, g_hRendLbl, g_hMsaa, g_hShadow,
-     g_hAniso, g_hSmaa, g_hBShadow, g_hBCutInShadow, g_hBCutInDim, g_hVerbose,
-     g_hPath;
+HWND g_hTabs = nullptr;
+HWND g_hDesc[20] = {};   // greyed one-line notes; drawn in COLOR_GRAYTEXT
+int  g_descCount = 0;
+HWND g_pageCtrls[3][40] = {};   // which controls belong to which tab page
+int  g_pageCount[3] = {};
+HWND g_hPreset, g_hWinMode, g_hLang, g_hMaxFps,
+     g_hFont, g_hBase, g_hSS, g_hRendLbl, g_hMsaa, g_hShadow,
+     g_hAniso, g_hSmaa, g_hBShadow, g_hBCutInShadow, g_hBCutInDim, g_hVerbose;
 
 HFONT g_uiFont = nullptr;
 
@@ -60,17 +84,22 @@ const ComboItem kFontItems[] = {
   { L"upscaled (smooth the original glyphs)",      "upscaled" },
   { L"original (untouched bitmap font)",           "original" },
 };
-// MSAA / ShadowMultiplier share the same 1/2/4/8 scale (1 = off).
+// MSAA / ShadowMultiplier share the same 1/2/4/8 scale (1 = off). The labels
+// name what the number means, since the group labels above them are written in
+// plain language and a bare "8" would say nothing on its own. The second column
+// is the exact string written to the ini and must not change.
 const ComboItem kMsaaItems[] = {
-  { L"1 (off)", "1" }, { L"2", "2" }, { L"4", "4" }, { L"8", "8" },
+  { L"Off",                  "1" }, { L"2x samples",  "2" },
+  { L"4x samples",           "4" }, { L"8x samples",  "8" },
 };
 const ComboItem kShadowItems[] = {
-  { L"1 (off, 1024)", "1" }, { L"2 (2048)", "2" },
-  { L"4 (4096)", "4" },      { L"8 (8192)", "8" },
+  { L"Normal (1024 map)",    "1" }, { L"2x (2048 map)", "2" },
+  { L"4x (4096 map)",        "4" }, { L"8x (8192 map)", "8" },
 };
 const ComboItem kAnisoItems[] = {
-  { L"1 (off)", "1" }, { L"2", "2" }, { L"4", "4" },
-  { L"8", "8" },       { L"16", "16" },
+  { L"Off",                  "1" }, { L"2x anisotropic",  "2" },
+  { L"4x anisotropic",       "4" }, { L"8x anisotropic",  "8" },
+  { L"16x anisotropic",     "16" },
 };
 
 // Base (display / backbuffer) resolutions. w == 0 means "Auto" (blank in the
@@ -117,6 +146,67 @@ const MultItem kSSItems[] = {
 };
 const int kSSCount = 6;
 const unsigned kMaxDim = 16384;
+
+// Frame-rate ceiling. Above roughly 115 fps the field-map character loses its
+// footing on steps, so 100 is both the default and the maximum the mod accepts;
+// "uncapped" is offered but flagged, since it reinstates the problem.
+struct FpsItem { const wchar_t* label; unsigned fps; };
+const FpsItem kFpsItems[] = {
+  { L"100 (default)",         100 },
+  { L"72",                    72  },
+  { L"60",                    60  },
+  { L"Uncapped (not advised)", 0  },
+};
+const int kFpsCount = 4;
+
+// Quality presets. These set only the Image quality group -- resolution,
+// borderless, frame rate, the battle options and the UI font are preferences
+// rather than quality levels, and a preset that silently changed them would
+// surprise more than it helped. Selecting Custom changes nothing; any manual
+// edit switches the box to Custom so it never claims a preset it is not on.
+struct Preset {
+  const wchar_t* label;
+  int supersampling;   // index into kSSItems
+  int msaa;            // index into kMsaaItems
+  bool smaa;
+  int aniso;           // index into kAnisoItems
+  int shadow;          // index into kShadowItems
+};
+// Balanced matches default.ini exactly, so a fresh install opens on a named
+// preset rather than on Custom. The higher tiers add the cheap wins first
+// (anisotropic filtering costs nothing per frame, shadows little) before
+// spending on supersampling, which costs the most.
+const Preset kPresets[] = {
+  //                        SS  MSAA  SMAA  aniso  shadow
+  { L"Balanced (default)",   0,   0,  true,     0,      0 },
+  { L"High",                 2,   0,  true,     4,      1 },
+  { L"Maximum",              3,   0,  true,     4,      2 },
+  { L"Custom",              -1,  -1,  true,    -1,     -1 },
+};
+const int kPresetCount = 4;
+const int kPresetCustom = 3;
+
+// Window mode spans two files: Borderless in arland-fix.ini, FullScreen in the
+// game's own ArlandDX_Settings.ini. Borderless is a window as far as the game
+// is concerned, so it writes FullScreen=0 -- that way disabling the mod leaves
+// a sane windowed game rather than an unexpected mode change.
+struct WindowModeItem { const wchar_t* label; bool borderless; const char* fullscreen; };
+const WindowModeItem kWindowModes[] = {
+  { L"Windowed",              false, "0" },
+  { L"Borderless Fullscreen", true,  "0" },
+  { L"Fullscreen",            false, "1" },
+};
+const int kWindowModeCount = 3;
+
+// The game's own [Lang] Language value. Which of these an executable honours
+// depends on the build, so all four are offered and the game decides.
+const ComboItem kLangItems[] = {
+  { L"Japanese",              "1" },
+  { L"English",               "2" },
+  { L"Chinese (Simplified)",  "3" },
+  { L"Chinese (Traditional)", "4" },
+};
+const int kLangCount = 4;
 
 // Pack a base resolution into a combo item's LPARAM (w and h each fit in the
 // 640..16384 range, so 16 bits apiece). 0 == Auto.
@@ -220,6 +310,37 @@ bool computeRender(unsigned* rw, unsigned* rh) {
 // Refresh the live render-resolution label and the enabled state of the
 // supersampling dropdown. Supersampling needs a concrete base to compute
 // against, so it is greyed out and forced to Off while the base is "Auto".
+// Push a preset's values into the quality controls.
+void applyPreset(int index) {
+  if (index < 0 || index >= kPresetCustom)
+    return;
+  const Preset& preset = kPresets[index];
+  SendMessageW(g_hSS, CB_SETCURSEL, preset.supersampling, 0);
+  SendMessageW(g_hMsaa, CB_SETCURSEL, preset.msaa, 0);
+  SendMessageW(g_hAniso, CB_SETCURSEL, preset.aniso, 0);
+  SendMessageW(g_hShadow, CB_SETCURSEL, preset.shadow, 0);
+  SendMessageW(g_hSmaa, BM_SETCHECK,
+    preset.smaa ? BST_CHECKED : BST_UNCHECKED, 0);
+}
+
+// Which preset the current controls correspond to, or Custom if none.
+int detectPreset() {
+  for (int i = 0; i < kPresetCustom; ++i) {
+    const Preset& preset = kPresets[i];
+    if ((int)SendMessageW(g_hSS, CB_GETCURSEL, 0, 0) == preset.supersampling &&
+        (int)SendMessageW(g_hMsaa, CB_GETCURSEL, 0, 0) == preset.msaa &&
+        (int)SendMessageW(g_hAniso, CB_GETCURSEL, 0, 0) == preset.aniso &&
+        (int)SendMessageW(g_hShadow, CB_GETCURSEL, 0, 0) == preset.shadow &&
+        (SendMessageW(g_hSmaa, BM_GETCHECK, 0, 0) == BST_CHECKED) == preset.smaa)
+      return i;
+  }
+  return kPresetCustom;
+}
+
+void refreshPreset() {
+  SendMessageW(g_hPreset, CB_SETCURSEL, detectPreset(), 0);
+}
+
 void updateRenderResolution() {
   unsigned bw, bh;
   bool haveBase = selectedBase(&bw, &bh);
@@ -304,6 +425,34 @@ void loadFromIni() {
   SendMessageW(g_hSmaa, BM_SETCHECK,
     iniBool("Rendering", "SMAA", true) ? BST_CHECKED : BST_UNCHECKED, 0);
 
+  // Borderless wins when set; otherwise the game's own FullScreen decides.
+  const bool borderless = iniBool("Rendering", "Borderless", false);
+  const bool fullscreen =
+    GetPrivateProfileIntA("Window", "FullScreen", 0, g_settingsPath) != 0;
+  SendMessageW(g_hWinMode, CB_SETCURSEL,
+    borderless ? 1 : (fullscreen ? 2 : 0), 0);
+
+  // The game's language lives entirely in its own settings file.
+  {
+    const int lang =
+      GetPrivateProfileIntA("Lang", "Language", 2, g_settingsPath);
+    int sel = 1;                       // English unless the file says otherwise
+    for (int i = 0; i < kLangCount; ++i)
+      if (kLangItems[i].value[0] == ('0' + lang))
+        sel = i;
+    SendMessageW(g_hLang, CB_SETCURSEL, sel, 0);
+  }
+
+  // [Engine] MaxFps, default 100. An unrecognised or out-of-range value falls
+  // back to the default entry rather than inventing one.
+  const unsigned fps = (unsigned)GetPrivateProfileIntA(
+    "Engine", "MaxFps", 100, g_iniPath);
+  int fpsSel = 0;
+  for (int i = 0; i < kFpsCount; ++i)
+    if (kFpsItems[i].fps == fps)
+      fpsSel = i;
+  SendMessageW(g_hMaxFps, CB_SETCURSEL, fpsSel, 0);
+
   // [Battle]: defaults match src/game.cpp (shadows on, cut-in shadows off,
   // cut-in dimming held on).
   SendMessageW(g_hBShadow, BM_SETCHECK,
@@ -317,7 +466,10 @@ void loadFromIni() {
   SendMessageW(g_hVerbose, BM_SETCHECK,
     iniBool("Diagnostics", "VerboseLogging", false) ? BST_CHECKED : BST_UNCHECKED, 0);
 
-  SetWindowTextA(g_hPath, g_iniPath);
+  // Last, once every quality control holds its loaded value: show which preset
+  // that combination is, or Custom.
+  refreshPreset();
+  updateRenderResolution();
 }
 
 bool isChecked(HWND ctrl) {
@@ -339,8 +491,13 @@ void saveToIni() {
   if (selectedBase(&bw, &bh)) {
     wsprintfA(num, "%u", bw);
     WritePrivateProfileStringA("Rendering", "DisplayWidth", num, g_iniPath);
+    // Keep the game's own settings file in step: the mod overrides the swap
+    // chain with the display resolution anyway, and leaving the two disagreeing
+    // is what makes "which resolution am I actually running?" hard to answer.
+    WritePrivateProfileStringA("Graphics", "ScreenWidth", num, g_settingsPath);
     wsprintfA(num, "%u", bh);
     WritePrivateProfileStringA("Rendering", "DisplayHeight", num, g_iniPath);
+    WritePrivateProfileStringA("Graphics", "ScreenHeight", num, g_settingsPath);
   } else {
     WritePrivateProfileStringA("Rendering", "DisplayWidth", "", g_iniPath);
     WritePrivateProfileStringA("Rendering", "DisplayHeight", "", g_iniPath);
@@ -366,6 +523,25 @@ void saveToIni() {
   WritePrivateProfileStringA("Rendering", "AnisotropicFiltering",
     comboValue(g_hAniso, kAnisoItems, 5), g_iniPath);
   iniWriteBool("Rendering", "SMAA", isChecked(g_hSmaa));
+  {
+    int sel = (int)SendMessageW(g_hWinMode, CB_GETCURSEL, 0, 0);
+    if (sel < 0 || sel >= kWindowModeCount)
+      sel = 0;
+    const WindowModeItem& mode = kWindowModes[sel];
+    iniWriteBool("Rendering", "Borderless", mode.borderless);
+    WritePrivateProfileStringA("Window", "FullScreen", mode.fullscreen,
+      g_settingsPath);
+  }
+  WritePrivateProfileStringA("Lang", "Language",
+    comboValue(g_hLang, kLangItems, kLangCount), g_settingsPath);
+
+  {
+    const int sel = (int)SendMessageW(g_hMaxFps, CB_GETCURSEL, 0, 0);
+    const unsigned fps = kFpsItems[sel < 0 || sel >= kFpsCount ? 0 : sel].fps;
+    char value[16];
+    wsprintfA(value, "%u", fps);
+    WritePrivateProfileStringA("Engine", "MaxFps", value, g_iniPath);
+  }
 
   iniWriteBool("Battle", "BattleShadows", isChecked(g_hBShadow));
   iniWriteBool("Battle", "BattleCutInShadows", isChecked(g_hBCutInShadow));
@@ -375,6 +551,7 @@ void saveToIni() {
 
   // Flush the cache so the file is on disk before we report success.
   WritePrivateProfileStringA(nullptr, nullptr, nullptr, g_iniPath);
+  WritePrivateProfileStringA(nullptr, nullptr, nullptr, g_settingsPath);
 }
 
 // ---- ini location ----------------------------------------------------------
@@ -394,51 +571,37 @@ void iniPathInDir(const char* dir) {
 // Resolve the initial ini path: prefer one beside this exe, else one in the
 // current working directory, else fall back to beside the exe (Save will
 // create it).
-void resolveInitialPath() {
+// Everything is resolved relative to this executable: the tool is meant to sit
+// in the game folder beside the DLLs, so there is nothing to choose. Returns
+// false when the folder is not a game folder, which the caller reports.
+bool resolveGameFolder() {
   char exe[MAX_PATH] = {};
-  DWORD n = GetModuleFileNameA(nullptr, exe, MAX_PATH);
-  if (n && n < MAX_PATH) {
-    char* slash = std::strrchr(exe, '\\');
-    if (slash) {
-      slash[1] = '\0';
-      iniPathInDir(exe);
-      if (GetFileAttributesA(g_iniPath) != INVALID_FILE_ATTRIBUTES)
-        return;  // found beside the exe
+  const DWORD n = GetModuleFileNameA(nullptr, exe, MAX_PATH);
+  if (!n || n >= MAX_PATH)
+    return false;
+  char* slash = std::strrchr(exe, '\\');
+  if (!slash)
+    return false;
+  slash[1] = '\0';
+
+  iniPathInDir(exe);
+  lstrcpynA(g_settingsPath, exe, MAX_PATH);
+  lstrcatA(g_settingsPath, "ArlandDX_Settings.ini");
+
+  for (int i = 0; i < kGameExeCount; ++i) {
+    char candidate[MAX_PATH];
+    lstrcpynA(candidate, exe, MAX_PATH);
+    lstrcatA(candidate, kGameExes[i].exe);
+    if (GetFileAttributesA(candidate) != INVALID_FILE_ATTRIBUTES) {
+      g_gameName = kGameExes[i].name;
+      break;
     }
   }
-
-  char cwd[MAX_PATH] = {};
-  if (GetCurrentDirectoryA(MAX_PATH, cwd)) {
-    char candidate[MAX_PATH];
-    char saved[MAX_PATH];
-    lstrcpynA(saved, g_iniPath, MAX_PATH);
-    iniPathInDir(cwd);
-    lstrcpynA(candidate, g_iniPath, MAX_PATH);
-    if (GetFileAttributesA(candidate) != INVALID_FILE_ATTRIBUTES)
-      return;  // found in the working directory
-    // Neither exists: keep the beside-the-exe path if we had one.
-    if (saved[0]) lstrcpynA(g_iniPath, saved, MAX_PATH);
-  }
+  return g_gameName != nullptr;
 }
+
 
 // Let the user pick a game folder; we edit the arland-fix.ini inside it.
-void browseForFolder(HWND owner) {
-  BROWSEINFOA bi = {};
-  bi.hwndOwner = owner;
-  bi.lpszTitle = "Select the game folder that holds arland-fix.ini "
-                 "(next to d3d11.dll):";
-  bi.ulFlags = BIF_RETURNONLYFSDIRS | BIF_NEWDIALOGSTYLE;
-  LPITEMIDLIST idl = SHBrowseForFolderA(&bi);
-  if (!idl)
-    return;
-  char folder[MAX_PATH] = {};
-  if (SHGetPathFromIDListA(idl, folder)) {
-    iniPathInDir(folder);
-    loadFromIni();
-  }
-  CoTaskMemFree(idl);
-}
-
 // ---- window construction ---------------------------------------------------
 
 HWND mkLabel(HWND parent, const wchar_t* text, int x, int y, int w, int h) {
@@ -476,23 +639,58 @@ void applyFont(HWND parent) {
     SendMessageW(c, WM_SETFONT, (WPARAM)g_uiFont, TRUE);
 }
 
+// Remember a control so the tab can show or hide it with its page.
+void onPage(int page, HWND ctrl) {
+  if (ctrl && g_pageCount[page] < 40)
+    g_pageCtrls[page][g_pageCount[page]++] = ctrl;
+}
+
+// A one-line note under the control it explains: indented past the control's
+// label so it reads as subordinate, and drawn grey (see WM_CTLCOLORSTATIC).
+HWND mkDesc(HWND parent, const wchar_t* text, int y) {
+  // Two lines' worth of height: a static word-wraps on its own, so a longer
+  // note reflows instead of being clipped. Rows are pitched to suit.
+  HWND h = mkLabel(parent, text, 40, y, 412, 32);
+  if (g_descCount < 20)
+    g_hDesc[g_descCount++] = h;
+  return h;
+}
+
+void showPage(int page) {
+  for (int p = 0; p < 3; ++p)
+    for (int i = 0; i < g_pageCount[p]; ++i)
+      ShowWindow(g_pageCtrls[p][i], p == page ? SW_SHOW : SW_HIDE);
+}
+
 void createControls(HWND w) {
-  const int L = 24;    // left text column inside a group
+  const int L = 24;    // left text column
   const int F = 176;   // field column
 
-  // ---------------- Rendering ----------------
-  mkGroup(w, L"Rendering", 12, 6, 456, 316);
+  // Which game this folder is, before anything else: the tool configures
+  // whatever it sits next to, so that is the first thing to confirm.
+  wchar_t heading[160];
+  wsprintfW(heading, L"Game: %s", g_gameName ? g_gameName : L"not detected");
+  mkLabel(w, heading, 16, 10, 452, 18);
 
-  mkLabel(w, L"UI font:", L, 34, 90, 18);
-  g_hFont = mkCombo(w, F, 30, 280, IDC_FONT);
-  comboFill(g_hFont, kFontItems, 3);
+  g_hTabs = CreateWindowExW(0, WC_TABCONTROLW, nullptr,
+    WS_CHILD | WS_VISIBLE | WS_TABSTOP, 12, 32, 456, 464,
+    w, (HMENU)(INT_PTR)IDC_TABS, nullptr, nullptr);
+  TCITEMW tab = {};
+  tab.mask = TCIF_TEXT;
+  const wchar_t* pageNames[3] = { L"Display", L"Image quality", L"Game" };
+  for (int i = 0; i < 3; ++i) {
+    tab.pszText = (LPWSTR)pageNames[i];
+    SendMessageW(g_hTabs, TCM_INSERTITEMW, i, (LPARAM)&tab);
+  }
 
-  mkLabel(w, L"Base resolution:", L, 66, 140, 18);
-  g_hBase = mkCombo(w, F, 62, 200, IDC_BASE);
+  // ---------------- page 0: Display ----------------
+  onPage(0, mkLabel(w, L"Resolution:", L, 74, 140, 18));
+  g_hBase = mkCombo(w, F, 70, 200, IDC_BASE);
+  onPage(0, g_hBase);
   unsigned maxW = 0, maxH = 0;
   displayMaximum(&maxW, &maxH);
   for (int i = 0; i < kBaseCount; ++i) {
-    // Skip anything the display cannot actually show. Auto (0x0) always stays.
+    // Skip anything the display cannot show. Auto (0x0) always stays.
     if (maxW && maxH && kBaseItems[i].w &&
         (kBaseItems[i].w > maxW || kBaseItems[i].h > maxH))
       continue;
@@ -500,58 +698,116 @@ void createControls(HWND w) {
     SendMessageW(g_hBase, CB_SETITEMDATA, idx,
       packRes(kBaseItems[i].w, kBaseItems[i].h));
   }
+  onPage(0, mkDesc(w,
+    L"What reaches the screen. Also written to the game's own settings.", 94));
 
-  mkLabel(w, L"Supersampling:", L, 96, 140, 18);
-  g_hSS = mkCombo(w, F, 92, 110, IDC_SS);
+  onPage(0, mkLabel(w, L"Frame rate limit:", L, 130, 140, 18));
+  g_hMaxFps = mkCombo(w, F, 126, 170, IDC_MAXFPS);
+  onPage(0, g_hMaxFps);
+  for (int i = 0; i < kFpsCount; ++i) {
+    int idx = (int)SendMessageW(g_hMaxFps, CB_ADDSTRING, 0, (LPARAM)kFpsItems[i].label);
+    SendMessageW(g_hMaxFps, CB_SETITEMDATA, idx, kFpsItems[i].fps);
+  }
+  onPage(0, mkDesc(w,
+    L"Above roughly 115 fps the field-map character stutters on steps.", 150));
+
+  onPage(0, mkLabel(w, L"Window mode:", L, 190, 140, 18));
+  g_hWinMode = mkCombo(w, F, 186, 200, IDC_WINMODE);
+  onPage(0, g_hWinMode);
+  for (int i = 0; i < kWindowModeCount; ++i)
+    SendMessageW(g_hWinMode, CB_ADDSTRING, 0, (LPARAM)kWindowModes[i].label);
+  onPage(0, mkDesc(w,
+    L"Borderless fills the monitor without taking over the display, so "
+    L"alt-tab is instant. Also written to the game's own settings.", 210));
+
+  // ---------------- page 1: Image quality ----------------
+  onPage(1, mkLabel(w, L"Preset:", L, 74, 140, 18));
+  g_hPreset = mkCombo(w, F, 70, 200, IDC_PRESET);
+  onPage(1, g_hPreset);
+  for (int i = 0; i < kPresetCount; ++i)
+    SendMessageW(g_hPreset, CB_ADDSTRING, 0, (LPARAM)kPresets[i].label);
+  onPage(1, mkDesc(w, L"Sets the four options below.", 94));
+
+  onPage(1, mkLabel(w, L"Supersampling:", L, 130, 140, 18));
+  g_hSS = mkCombo(w, F, 126, 170, IDC_SS);
+  onPage(1, g_hSS);
   for (int i = 0; i < kSSCount; ++i)
     SendMessageW(g_hSS, CB_ADDSTRING, 0, (LPARAM)kSSItems[i].label);
+  onPage(1, mkDesc(w,
+    L"Renders higher, then scales down. Sharpest, and the most costly.", 150));
 
-  g_hRendLbl = mkLabel(w, L"Render resolution:", L, 124, 432, 18);
+  g_hRendLbl = mkDesc(w, L"Render resolution:", 186);
+  onPage(1, g_hRendLbl);
 
-  mkLabel(w,
-    L"Base \"Auto\" keeps the launcher's resolution and disables "
-    L"supersampling (no concrete size to scale). Render larger than base "
-    L"supersamples the whole frame down to base size at present.",
-    L, 146, 432, 32);
-
-  mkLabel(w, L"MSAA:", L, 184, 130, 18);
-  g_hMsaa = mkCombo(w, F, 180, 110, IDC_MSAA);
+  onPage(1, mkLabel(w, L"Multisampling:", L, 226, 150, 18));
+  g_hMsaa = mkCombo(w, F, 222, 170, IDC_MSAA);
+  onPage(1, g_hMsaa);
   comboFill(g_hMsaa, kMsaaItems, 4);
+  onPage(1, mkDesc(w,
+    L"MSAA. Smooths geometry edges; supersampling usually beats it.", 246));
 
-  mkLabel(w, L"Shadow resolution:", L, 214, 140, 18);
-  g_hShadow = mkCombo(w, F, 210, 110, IDC_SHADOW);
-  comboFill(g_hShadow, kShadowItems, 4);
-
-  mkLabel(w, L"Anisotropic filtering:", L, 244, 150, 18);
-  g_hAniso = mkCombo(w, F, 240, 110, IDC_ANISO);
+  onPage(1, mkLabel(w, L"Texture sharpness:", L, 282, 150, 18));
+  g_hAniso = mkCombo(w, F, 278, 170, IDC_ANISO);
+  onPage(1, g_hAniso);
   comboFill(g_hAniso, kAnisoItems, 5);
+  onPage(1, mkDesc(w,
+    L"Anisotropic filtering. Keeps floors and walls sharp when seen at a "
+    L"shallow angle; costs nothing per frame.", 302));
 
-  g_hSmaa = mkCheck(w, L"SMAA (post-process anti-aliasing)", L, 272, 300, IDC_SMAA);
+  onPage(1, mkLabel(w, L"Shadow detail:", L, 338, 150, 18));
+  g_hShadow = mkCombo(w, F, 334, 170, IDC_SHADOW);
+  onPage(1, g_hShadow);
+  comboFill(g_hShadow, kShadowItems, 4);
+  onPage(1, mkDesc(w,
+    L"Larger shadow maps, so sharper shadow edges. Costs video memory.", 358));
 
-  // ---------------- Battle ----------------
-  mkGroup(w, L"Battle", 12, 330, 456, 116);
-  g_hBShadow = mkCheck(w,
-    L"Battle shadows (restore character shadows in battle)",
-    L, 354, 420, IDC_BSHADOW);
-  g_hBCutInShadow = mkCheck(w,
-    L"Battle cut-in shadows (ground shadows during action cut-ins)",
-    L, 380, 420, IDC_BCUTINSHADOW);
-  g_hBCutInDim = mkCheck(w,
-    L"Battle cut-in dimming (checked = keep dimming; uncheck = full brightness)",
-    L, 406, 440, IDC_BCUTINDIM);
+  g_hSmaa = mkCheck(w, L"Edge smoothing", L, 394, 300, IDC_SMAA);
+  onPage(1, g_hSmaa);
+  onPage(1, mkDesc(w,
+    L"SMAA post-process. Cheap, and catches edges MSAA cannot.", 414));
 
-  // ---------------- Diagnostics ----------------
-  mkGroup(w, L"Diagnostics", 12, 454, 456, 56);
-  g_hVerbose = mkCheck(w, L"Verbose logging", L, 476, 300, IDC_VERBOSE);
+  // ---------------- page 2: Game ----------------
+  onPage(2, mkLabel(w, L"UI font:", L, 74, 90, 18));
+  g_hFont = mkCombo(w, F, 70, 280, IDC_FONT);
+  onPage(2, g_hFont);
+  comboFill(g_hFont, kFontItems, 3);
+  onPage(2, mkDesc(w,
+    L"Replaced re-renders every string from a bundled scalable font. "
+    L"English builds only; Japanese and Chinese keep the original.", 94));
 
-  // ---------------- ini path + buttons ----------------
-  g_hPath = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", nullptr,
-    WS_CHILD | WS_VISIBLE | ES_READONLY | ES_AUTOHSCROLL,
-    12, 522, 340, 22, w, (HMENU)(INT_PTR)IDC_PATH, nullptr, nullptr);
-  mkButton(w, L"Browse...", 360, 520, 108, IDC_BROWSE);
+  onPage(2, mkLabel(w, L"Language:", L, 134, 140, 18));
+  g_hLang = mkCombo(w, F, 130, 200, IDC_LANG);
+  onPage(2, g_hLang);
+  comboFill(g_hLang, kLangItems, kLangCount);
+  onPage(2, mkDesc(w,
+    L"Written to the game's own settings. Which languages a copy actually "
+    L"has depends on the executable it ships with.", 154));
 
-  mkButton(w, L"Save", 280, 556, 90, IDC_SAVE);
-  mkButton(w, L"Close", 378, 556, 90, IDC_CLOSE);
+  onPage(2, mkLabel(w, L"Battle", L, 198, 200, 18));
+  g_hBShadow = mkCheck(w, L"Character shadows in battle", L, 222, 400, IDC_BSHADOW);
+  onPage(2, g_hBShadow);
+  onPage(2, mkDesc(w, L"Restores the shadows Rorona is missing while fighting.",
+    242));
+  g_hBCutInShadow = mkCheck(w, L"Ground shadows during cut-ins", L, 278, 400,
+    IDC_BCUTINSHADOW);
+  onPage(2, g_hBCutInShadow);
+  onPage(2, mkDesc(w, L"Off by default; the vanilla cut-ins have no shadows.",
+    298));
+  g_hBCutInDim = mkCheck(w, L"Dim the scene during cut-ins", L, 334, 400,
+    IDC_BCUTINDIM);
+  onPage(2, g_hBCutInDim);
+  onPage(2, mkDesc(w, L"Uncheck to hold close-ups at full brightness.", 354));
+
+  onPage(2, mkLabel(w, L"Diagnostics", L, 390, 200, 18));
+  g_hVerbose = mkCheck(w, L"Verbose logging", L, 414, 300, IDC_VERBOSE);
+  onPage(2, g_hVerbose);
+  onPage(2, mkDesc(w,
+    L"Extra detail in arland-fix.log. Crash reports are always written.", 434));
+
+  mkButton(w, L"Save", 280, 508, 90, IDC_SAVE);
+  mkButton(w, L"Close", 378, 508, 90, IDC_CLOSE);
+
+  showPage(0);
 
   applyFont(w);
 }
@@ -563,24 +819,62 @@ LRESULT CALLBACK WndProc(HWND w, UINT msg, WPARAM wp, LPARAM lp) {
       loadFromIni();
       return 0;
 
+    case WM_NOTIFY: {
+      const NMHDR* note = (const NMHDR*)lp;
+      if (note && note->hwndFrom == g_hTabs && note->code == TCN_SELCHANGE) {
+        showPage((int)SendMessageW(g_hTabs, TCM_GETCURSEL, 0, 0));
+        return 0;
+      }
+      break;
+    }
+    case WM_CTLCOLORSTATIC: {
+      // The one-line notes under each quality control are secondary text, so
+      // they are drawn in the system's grey rather than competing with the
+      // labels they explain.
+      for (int i = 0; i < g_descCount; ++i) {
+        if ((HWND)lp == g_hDesc[i]) {
+          SetTextColor((HDC)wp, GetSysColor(COLOR_GRAYTEXT));
+          SetBkMode((HDC)wp, TRANSPARENT);
+          return (LRESULT)GetSysColorBrush(COLOR_BTNFACE);
+        }
+      }
+      break;
+    }
     case WM_COMMAND:
       // Base or supersampling changed: recompute the render label and the
       // Auto-disables-supersampling rule live.
-      if (HIWORD(wp) == CBN_SELCHANGE &&
-          (LOWORD(wp) == IDC_BASE || LOWORD(wp) == IDC_SS)) {
+      if (HIWORD(wp) == CBN_SELCHANGE && LOWORD(wp) == IDC_PRESET) {
+        applyPreset((int)SendMessageW(g_hPreset, CB_GETCURSEL, 0, 0));
+        updateRenderResolution();
+        return 0;
+      }
+      // Any hand-edited quality setting means the preset no longer describes
+      // what is selected, so the box drops to Custom rather than lying.
+      if ((HIWORD(wp) == CBN_SELCHANGE &&
+           (LOWORD(wp) == IDC_SS || LOWORD(wp) == IDC_MSAA ||
+            LOWORD(wp) == IDC_ANISO || LOWORD(wp) == IDC_SHADOW)) ||
+          (HIWORD(wp) == BN_CLICKED && LOWORD(wp) == IDC_SMAA)) {
+        refreshPreset();
+        updateRenderResolution();
+        return 0;
+      }
+      if (HIWORD(wp) == CBN_SELCHANGE && LOWORD(wp) == IDC_BASE) {
         updateRenderResolution();
         return 0;
       }
       switch (LOWORD(wp)) {
-        case IDC_BROWSE:
-          browseForFolder(w);
-          return 0;
-        case IDC_SAVE:
+        case IDC_SAVE: {
           saveToIni();
-          MessageBoxA(w, "Settings saved to arland-fix.ini.\n"
-            "Close the game before it reads the file.", "arland-config",
-            MB_OK | MB_ICONINFORMATION);
+          // Name the game back to the user: this tool configures whichever
+          // folder it sits in, and saying which one closes that loop.
+          wchar_t saved[320];
+          wsprintfW(saved,
+            L"The configuration has been saved successfully. The next time "
+            L"you launch %s these settings will be used.",
+            g_gameName ? g_gameName : L"the game");
+          MessageBoxW(w, saved, L"Configure Mod", MB_OK | MB_ICONINFORMATION);
           return 0;
+        }
         case IDC_CLOSE:
           DestroyWindow(w);
           return 0;
@@ -605,7 +899,26 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int) {
   InitCommonControlsEx(&icc);
 
   g_uiFont = (HFONT)GetStockObject(DEFAULT_GUI_FONT);
-  resolveInitialPath();
+
+  // This tool edits the files beside it, so both must be there. Saying which
+  // one is missing is the whole of the diagnosis for a misplaced copy.
+  if (!resolveGameFolder()) {
+    MessageBoxW(nullptr,
+      L"No Atelier Arland game was found in this folder.\n\n"
+      L"Put arland-config.exe in the game's installation folder, "
+      L"beside the game executable and d3d11.dll, and run it from there.",
+      L"Atelier Arland Fixes", MB_OK | MB_ICONERROR);
+    return 1;
+  }
+  if (GetFileAttributesA(g_iniPath) == INVALID_FILE_ATTRIBUTES) {
+    MessageBoxW(nullptr,
+      L"arland-fix.ini was not found in this folder.\n\n"
+      L"It ships in the release archive alongside the DLLs. Copy it in "
+      L"next to the game executable, or launch the game once to have the "
+      L"mod create one.",
+      L"Atelier Arland Fixes", MB_OK | MB_ICONERROR);
+    return 1;
+  }
 
   WNDCLASSEXW wc = {};
   wc.cbSize = sizeof(wc);
@@ -619,10 +932,10 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int) {
   // Fixed-size dialog-style window (no maximize / resize).
   const DWORD style = (WS_OVERLAPPEDWINDOW & ~(WS_MAXIMIZEBOX | WS_THICKFRAME))
                       | WS_VISIBLE;
-  RECT r = { 0, 0, 484, 596 };
+  RECT r = { 0, 0, 484, 548 };
   AdjustWindowRect(&r, style, FALSE);
   HWND w = CreateWindowExW(0, wc.lpszClassName,
-    L"Atelier Arland Fixes - Configuration", style,
+    L"Configure Mod", style,
     CW_USEDEFAULT, CW_USEDEFAULT, r.right - r.left, r.bottom - r.top,
     nullptr, nullptr, hInst, nullptr);
   if (!w)

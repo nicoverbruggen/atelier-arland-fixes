@@ -88,7 +88,7 @@ jobs:
           cp README.md CHANGELOG.md ADVANCED.md dist/atelier-fix/
           cp -r licenses dist/atelier-fix/LICENSES
           cd dist
-          zip -r "../atelier-arland-fixes-${GITHUB_REF_NAME}.zip" \
+          zip -r "../arland-fix-${GITHUB_REF_NAME}.zip" \
             d3d11.dll msimg32.dll arland-fix.ini atelier-fix
       - name: Publish tagged release
         env:
@@ -104,28 +104,19 @@ jobs:
           cat > release-notes.md <<'NOTES'
           ## Installing
 
-          Download the `.zip` below and extract all three files into the game's
-          installation folder — the one containing the game executable
-          (`A11R_x64_Release_en.exe` for Rorona, `A12V_x64_Release_en.exe` for
-          Totori, `A13V_x64_Release_EN.exe` for Meruru):
+          Download `arland-fix-<version>.zip` below and extract all three files into the game's installation folder — the one containing the game executable (`A11R_x64_Release_en.exe` for Rorona, `A12V_x64_Release_en.exe` for Totori, `A13V_x64_Release_EN.exe` for Meruru):
 
           - `d3d11.dll` — the mod itself
           - `msimg32.dll` — adds 1440p and 4K to the game's settings launcher
           - `arland-fix.ini` — optional settings, documented inline
 
-          The archive also contains an `atelier-fix` folder with the
-          documentation and the licences for the embedded fonts. Nothing reads
-          it at runtime, so keep it or delete it as you prefer.
+          The archive also contains an `atelier-fix` folder with the documentation and the licences for the embedded fonts. Nothing reads it at runtime, so keep it or delete it as you prefer.
 
-          Everything works with no configuration; the `.ini` only needs editing if
-          you want the optional extras. To uninstall, delete the three files.
+          Everything works with no configuration; the `.ini` only needs editing if you want the optional extras. To uninstall, delete the three files.
 
-          **Upgrading from an earlier version**: replace the two DLLs, but keep the
-          `arland-fix.ini` you already have. The bundled one contains nothing but
-          the defaults, so overwriting it would silently discard your settings.
+          **Upgrading from an earlier version**: replace the two DLLs, but keep the `arland-fix.ini` you already have. The bundled one contains nothing but the defaults, so overwriting it would silently discard your settings.
 
-          **Steam Deck, Linux and anyone using Proton**: also add this to the
-          game's Steam Launch Options:
+          **Steam Deck, Linux and anyone using Proton**: also add this to the game's Steam Launch Options:
 
           ```
           WINEDLLOVERRIDES="d3d11,msimg32=n,b" %command%
@@ -143,7 +134,7 @@ jobs:
           fi
           if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
             gh release edit "${GITHUB_REF_NAME}" --notes-file release-notes.md $PRERELEASE
-            gh release upload "${GITHUB_REF_NAME}" "atelier-arland-fixes-${GITHUB_REF_NAME}.zip" dist/d3d11.dll dist/msimg32.dll --clobber
+            gh release upload "${GITHUB_REF_NAME}" "arland-fix-${GITHUB_REF_NAME}.zip" --clobber
           else
-            gh release create "${GITHUB_REF_NAME}" "atelier-arland-fixes-${GITHUB_REF_NAME}.zip" dist/d3d11.dll dist/msimg32.dll --verify-tag --notes-file release-notes.md --title "${GITHUB_REF_NAME}" $PRERELEASE
+            gh release create "${GITHUB_REF_NAME}" "arland-fix-${GITHUB_REF_NAME}.zip" --verify-tag --notes-file release-notes.md --title "${GITHUB_REF_NAME}" $PRERELEASE
           fi
