@@ -868,21 +868,43 @@ bool isTraceBackbuffer(ID3D11Resource* resource) {
 void presentTraceRenderTargets(UINT rtvCount,
                                ID3D11RenderTargetView* const* rtvs,
                                ID3D11DepthStencilView* dsv) {
-  if (!presentTraceEnabled() || dsv || rtvCount != 1 || !rtvs || !rtvs[0])
+  if (!presentTraceEnabled() || !rtvs || rtvCount == 0)
     return;
-  ID3D11Texture2D* tex = nullptr;
-  if (!smaaMainSizeColor(rtvs[0], &tex) || !tex)
-    return;
+  const void* backbuffer = g_traceBackbuffer.load(std::memory_order_relaxed);
+  if (!backbuffer)
+    return;   // backbuffer is not captured until the first Present
+  const UINT mw = g_mainRtWidth.load(std::memory_order_relaxed);
+  const UINT mh = g_mainRtHeight.load(std::memory_order_relaxed);
   static std::atomic<uint32_t> logged{0};
-  if (logged.fetch_add(1, std::memory_order_relaxed) < 4) {
-    const void* backbuffer = g_traceBackbuffer.load(std::memory_order_relaxed);
-    log("PRESENTTRACE main-size colour target=", static_cast<void*>(tex),
-        " backbuffer=", backbuffer, " is_backbuffer=",
-        static_cast<void*>(tex) == backbuffer
-          ? "YES (scenario A: direct render)"
-          : "no (scenario B: copied in)");
+  // Log any bound render target that IS the backbuffer or is main-sized, with or
+  // without depth. If a main-size colour RTV equals the backbuffer, the game
+  // renders straight into it (Scenario A); a main-size RTV that is NOT the
+  // backbuffer means a separate main target that must be copied in (Scenario B),
+  // which the copy-into-backbuffer probe then catches.
+  for (UINT i = 0; i < rtvCount && i < 8; ++i) {
+    if (!rtvs[i])
+      continue;
+    ID3D11Resource* res = nullptr;
+    rtvs[i]->GetResource(&res);
+    if (!res)
+      continue;
+    ID3D11Texture2D* tex = nullptr;
+    if (SUCCEEDED(res->QueryInterface(IID_PPV_ARGS(&tex))) && tex) {
+      D3D11_TEXTURE2D_DESC d = { };
+      tex->GetDesc(&d);
+      const bool isBack = static_cast<void*>(tex) == backbuffer;
+      const bool mainSize = mw && d.Width == mw && d.Height == mh;
+      if ((isBack || mainSize) &&
+          logged.fetch_add(1, std::memory_order_relaxed) < 8) {
+        log("PRESENTTRACE rtv res=", static_cast<void*>(tex), " ", std::dec,
+            d.Width, "x", d.Height, " samples=", d.SampleDesc.Count,
+            " depth=", dsv ? "yes" : "no", " is_backbuffer=",
+            isBack ? "YES (scenario A)" : "no (separate RT)");
+      }
+      tex->Release();
+    }
+    res->Release();
   }
-  tex->Release();
 }
 
 // Called at the top of OMSetRenderTargets with the INCOMING (pre-substitution)

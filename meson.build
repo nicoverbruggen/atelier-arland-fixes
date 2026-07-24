@@ -66,4 +66,20 @@ else
     cpp_args : common_cpp_args,
     link_args : common_link_args + (cpp.get_id() == 'gcc' ? ['-Wl,--file-alignment=4096'] : []),
     install : true)
+
+  # Standalone 64-bit GUI to view and edit arland-fix.ini (src/config_gui/).
+  # Own target, own sources; shares no object files with the DLL. The
+  # win_subsystem kwarg selects the GUI subsystem (WinMain) for both MinGW
+  # (-mwindows) and MSVC (/SUBSYSTEM:WINDOWS).
+  executable('arland-config',
+    ['src/config_gui/main.cpp'],
+    win_subsystem : 'windows',
+    dependencies : [
+      cpp.find_library('comctl32'),
+      cpp.find_library('shell32'),
+      cpp.find_library('ole32'),
+    ],
+    cpp_args : common_cpp_args,
+    link_args : common_link_args,
+    install : true)
 endif
