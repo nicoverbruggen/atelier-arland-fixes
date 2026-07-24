@@ -37,7 +37,7 @@ These are on by default.
 
 ✓ fixed, enabled by default · — not needed (no defect in that game)
 
-SMAA anti-aliasing and the high-resolution UI text are on by default; both can be turned off in `arland-fix.ini`. The UI text is re-rendered from a bundled scalable font on the English executables, and smoothed from the original bitmap font on the Japanese and Chinese ones.
+SMAA anti-aliasing and the high-resolution UI text are on by default; both can be turned off in `arland-fix.ini`. The UI text is re-rendered from a bundled scalable font; this applies to the English executables only, and the Japanese and Chinese builds keep their original font untouched.
 
 The frame rate is capped at 100 by default. Above roughly 115 fps the field-map character loses its footing on steps and visibly buzzes — a constant in the games that is only correct at 60 fps — so the cap keeps well above 60 while staying clear of it. Raise or remove it with `MaxFps` (see [ADVANCED.md](ADVANCED.md)).
 

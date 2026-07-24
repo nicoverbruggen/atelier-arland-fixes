@@ -216,8 +216,8 @@ AnisotropicFiltering=16
 ```
 
 Accepted values are `2`, `4`, `8`, and `16` (the maximum-anisotropy level);
-`0` (the default), any other value, or the setting removed leaves the game's
-original filtering. The
+`0`, `1` (the shipped value), any other number, or the setting removed all leave
+the game's original filtering in place. The
 mod upgrades the game's texture samplers at creation, so all world and character
 textures benefit with no per-frame cost; shadow-comparison samplers are left
 untouched. Off by default. `ARLAND_ANISO` overrides the INI.
