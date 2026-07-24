@@ -20,14 +20,18 @@ else
   # generated sources are not checked in. Declarations live in src/embedded_font.h.
   py = find_program('python3')
   embed_font = files('scripts/embed_font.py')
-  embedded_cuprum = custom_target('embedded_font_cuprum',
-    input : 'vendor/font/Cuprum-Medium.ttf',
-    output : 'embedded_font_cuprum.cpp',
-    command : [py, embed_font, '@INPUT@', '@OUTPUT@', 'kEmbeddedFontCuprum'])
-  embedded_np = custom_target('embedded_font_np',
-    input : 'vendor/font/NationalPark-Medium.ttf',
-    output : 'embedded_font_np.cpp',
-    command : [py, embed_font, '@INPUT@', '@OUTPUT@', 'kEmbeddedFontNationalPark'])
+  embedded_np = custom_target('embedded_font_np_semibold',
+    input : 'vendor/font/NationalPark-SemiBold.ttf',
+    output : 'embedded_font_np_semibold.cpp',
+    command : [py, embed_font, '@INPUT@', '@OUTPUT@', 'kEmbeddedFontNationalParkSemiBold'])
+  embedded_nunito = custom_target('embedded_font_nunito',
+    input : 'vendor/font/Nunito-Regular.ttf',
+    output : 'embedded_font_nunito.cpp',
+    command : [py, embed_font, '@INPUT@', '@OUTPUT@', 'kEmbeddedFontNunito'])
+  embedded_mgopen = custom_target('embedded_font_mgopen',
+    input : 'vendor/font/Cosmetica-Medium.ttf',
+    output : 'embedded_font_mgopen.cpp',
+    command : [py, embed_font, '@INPUT@', '@OUTPUT@', 'kEmbeddedFontMgOpenCosmetica'])
 
   # DXGI interface GUIDs (IID_IDXGIFactory, IID_IDXGIDevice). MSVC needs
   # dxguid.lib explicitly; MinGW happens to resolve them elsewhere.
@@ -53,7 +57,7 @@ else
   )
 
   shared_library('d3d11',
-    [sources, embedded_cuprum, embedded_np,
+    [sources, embedded_np, embedded_nunito, embedded_mgopen,
      windows.compile_resources('src/d3d11.rc')],
     name_prefix : '',
     vs_module_defs : 'src/d3d11.def',

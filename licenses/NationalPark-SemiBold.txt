@@ -1,0 +1,9 @@
+National Park SemiBold
+Used as the replacement UI font for Atelier Rorona DX (English build).
+
+Copyright 2024 The National Park Project Authors
+(https://github.com/benhoepner/National-Park)
+
+This Font Software is licensed under the SIL Open Font License, Version 1.1.
+The full license text is in OFL-1.1.txt in this directory, and is also
+available with a FAQ at: https://openfontlicense.org

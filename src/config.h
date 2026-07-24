@@ -41,20 +41,14 @@ unsigned int msaaSamples();
 // probe and other opt-in diagnostic lines so the default log stays quiet.
 bool verboseLogging();
 
-// How UI text is rendered: [Rendering] Font — "replaced" (the DEFAULT: re-render
-// each string from the embedded scalable font (Cuprum), multi-line and glyph-
-// atlas-cached, falling back to upscaling for glyphs it can't resolve), "upscaled"
-// (filter-upscale the baked glyphs, preserving the engine's exact layout), or
-// "default"/"off" (the untouched baked bitmap font). A arland-hires-font.ttf
-// beside the DLL overrides the embedded font. ARLAND_UIFONT overrides the mode.
-enum class UIFontMode { Default, Upscaled, Replaced };
+// How UI text is rendered: [Rendering] Font. "replaced" (the DEFAULT: re-render
+// each string from the embedded scalable font (National Park), multi-line and
+// glyph-atlas-cached, falling back to upscaling for glyphs it can't resolve),
+// "upscaled" (filter-upscale the baked glyphs, preserving the engine's exact
+// layout), or "original" (the untouched baked bitmap font; "off" stays accepted
+// as a legacy alias). A arland-hires-font.ttf beside the DLL
+// overrides the embedded font. ARLAND_UIFONT overrides the mode.
+enum class UIFontMode { Original, Upscaled, Replaced };
 UIFontMode uiFontMode();
-
-// Which bundled replacement font "replaced" mode uses when no loose
-// arland-hires-font.ttf overrides it: [Rendering] FontName -- "NationalPark"
-// (the DEFAULT) or "Cuprum". Both are OFL and compiled into the DLL.
-// ARLAND_FONT_NAME overrides the ini key.
-enum class EmbeddedFont { NationalPark, Cuprum };
-EmbeddedFont embeddedFontChoice();
 
 }  // namespace atfix

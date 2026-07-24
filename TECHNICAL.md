@@ -206,7 +206,7 @@ Two edges are handled. The typewriter reveal inserts one entry per partial strin
 
 ## High-resolution UI text
 
-All UI text in these games comes from a pre-baked bitmap font. Koei Tecmo's G1N atlases store every glyph as a fixed 32×48 image that the engine blits 1:1, with no scalable rasterizer, so text is soft and pixelated at 1440p or 4K. This feature re-renders that text at full resolution while preserving the engine's exact layout. `[Rendering] Font` chooses the mode: `replaced` (the default), `upscaled`, or `default`/`off` (the untouched bitmap).
+All UI text in these games comes from a pre-baked bitmap font. Koei Tecmo's G1N atlases store every glyph as a fixed 32×48 image that the engine blits 1:1, with no scalable rasterizer, so text is soft and pixelated at 1440p or 4K. This feature re-renders that text at full resolution while preserving the engine's exact layout. `[Rendering] Font` chooses the mode: `replaced` (the default), `upscaled`, or `original` (or `off`; the untouched bitmap).
 
 Every mode works the same way at the top level: let the engine render a string normally, then swap the result. When the engine finishes a string it leaves an "output object" at `renderer+0x1a0`. That struct holds the power-of-two bitmap width and height, a pointer to its 8-bit alpha pixels, four normalized metrics (used-width, used-height, and line-height, each a fraction of the pow2 size), and the line count. The mod reads it, builds a higher-resolution bitmap of its own, and writes the new pixel pointer and doubled (`kScale = 2`) dimensions back into it.
 
@@ -214,7 +214,7 @@ One detail makes or breaks the swap. A text quad's on-screen size is computed as
 
 `upscaled` keeps the engine's own glyphs and only raises their resolution. The baked bitmap is filtered up 2×, by default an SDF-style alpha-coverage steepen (bilinear and Lanczos are also available), followed by an unsharp pass. Nothing about the layout changes, so multi-line text, alignment, and the game's custom icon glyphs all survive untouched.
 
-`replaced` re-renders each string from a bundled scalable font (National Park by default, or Cuprum), rasterized with stb_truetype through a glyph-atlas cache so each glyph is drawn once and then reused. Matching the engine's layout took reverse-engineering the text renderer, and three points matter:
+`replaced` re-renders each string from a per-game bundled scalable font (National Park SemiBold for Rorona, Nunito for Totori, Cosmetica Medium for Meruru; a compile-time matrix pairs each with a size multiplier and baseline nudge tuned to its metrics), rasterized with stb_truetype through a glyph-atlas cache so each glyph is drawn once and then reused. Matching the engine's layout took reverse-engineering the text renderer, and three points matter:
 
 - Line breaks come only from an explicit `\n`; there is no word wrap.
 - Line pitch is read from the engine's own line-height metric (`output+0x18`), not from an even division of the used height. The engine lays text out as `usedH = topOffset + numLines × lineHeight`, so dividing evenly overstates the pitch and multi-line text slowly drifts off the paper's ruled panels. Using the real line-height keeps every row aligned, and the block is centered in the used height so the single-line case matches the simple even split.

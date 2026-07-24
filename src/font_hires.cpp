@@ -6,8 +6,9 @@
 // read crisply. Two modes, selected by [Rendering] Font (see config.cpp):
 //
 //   "replaced" (the default) — re-render the string from a bundled scalable font
-//     (National Park by default or Cuprum, both embedded and chosen by
-//     [Rendering] FontName; a loose arland-hires-font.ttf overrides both) via a
+//     (a per-game face baked into the DLL: National Park SemiBold for Rorona,
+//     Nunito for Totori, Cosmetica Medium for Meruru; a loose
+//     arland-hires-font.ttf overrides them) via a
 //     glyph-atlas cache. renderReplaced() replicates the engine's layout (split on
 //     '\n', stack by lineHeight, left-aligned, fixed cap-box baseline). If the font
 //     lacks a glyph the string needs (e.g. the game's custom button-prompt icons),
@@ -342,22 +343,46 @@ bool loadFontFile() {
   return true;
 }
 
-// Prefer a user override beside the DLL; otherwise use one of the fonts compiled
-// into the DLL ([Rendering] FontName -- National Park by default, or Cuprum) so
-// "replaced" mode needs no loose .ttf. The embedded arrays have program lifetime,
-// so stbtt can point straight at them without a copy.
+// Per-game replacement font for the English build: the face plus a size multiplier
+// and baseline nudge, tuned so each one sits right in that game's UI. Indexed by
+// the detected game; Rorona's entry doubles as the fallback. Edit these to retune
+// per game. Licenses are in licenses/ (National Park and Nunito are OFL 1.1;
+// MgOpen Cosmetica is MAGENTA Ltd.'s permissive license). Meruru uses Cosmetica
+// Medium, a stroke-emboldened MgOpen Cosmetica (see scripts/embolden_font.py).
+struct FontChoice {
+  const char* name;
+  const unsigned char* data;
+  unsigned int size;
+  float scale;   // size multiplier over the auto-fit line height
+  int voff;      // vertical baseline nudge, baked px
+};
+
+const FontChoice& gameFont() {
+  static const FontChoice rorona{ "National Park SemiBold",
+    kEmbeddedFontNationalParkSemiBold, kEmbeddedFontNationalParkSemiBoldSize,
+    0.95f, 0 };
+  static const FontChoice totori{ "Nunito Regular",
+    kEmbeddedFontNunito, kEmbeddedFontNunitoSize, 0.90f, 0 };
+  static const FontChoice meruru{ "Cosmetica Medium",
+    kEmbeddedFontMgOpenCosmetica, kEmbeddedFontMgOpenCosmeticaSize, 0.80f, -5 };
+  switch (currentTitle()) {
+    case Title::Totori: return totori;
+    case Title::Meruru: return meruru;
+    default:            return rorona;
+  }
+}
+
+// Prefer a user override beside the DLL; otherwise use this game's bundled font
+// from the matrix above, so "replaced" mode needs no loose .ttf. The embedded
+// arrays have program lifetime, so stbtt can point straight at them without a copy.
 bool loadFont() {
   if (loadFontFile())
     return true;
-  const bool cuprum = embeddedFontChoice() == EmbeddedFont::Cuprum;
-  const unsigned char* data = cuprum ? kEmbeddedFontCuprum
-                                     : kEmbeddedFontNationalPark;
-  const unsigned int size = cuprum ? kEmbeddedFontCuprumSize
-                                   : kEmbeddedFontNationalParkSize;
-  if (!stbtt_InitFont(&g_font, data, stbtt_GetFontOffsetForIndex(data, 0)))
+  const FontChoice& f = gameFont();
+  if (!stbtt_InitFont(&g_font, f.data, stbtt_GetFontOffsetForIndex(f.data, 0)))
     return false;
-  log("HiResText: using embedded font ", cuprum ? "Cuprum" : "NationalPark",
-    " (", std::dec, size, " bytes)");
+  log("HiResText: using embedded font ", f.name, " (", std::dec, f.size,
+    " bytes)");
   return true;
 }
 void ensureInit() {
@@ -458,15 +483,18 @@ float drawGlyph(unsigned char* dst, int dw, int dh, int penX, int baseline,
   return g.advance;
 }
 
-// Replacement-font size multiplier / vertical nudge (compensate per-font metrics).
+// Replacement-font size multiplier / vertical nudge. Both default to the current
+// game's entry in the gameFont() matrix (which compensates each face's metrics);
+// ARLAND_HIRES_SCALE / ARLAND_HIRES_VOFF override for quick tuning.
 float userScale() {
   static const float s = [] {
-    // Default below 1.0: scaling the font to the full line height renders it
-    // larger than the baked glyphs (which don't fill their 48px cell), so trim
-    // it to sit at roughly the original on-screen size.
     const char* v = std::getenv("ARLAND_HIRES_SCALE");
-    const float x = v ? static_cast<float>(std::atof(v)) : 0.85f;
-    return (x >= 0.3f && x <= 2.0f) ? x : 0.85f;
+    if (v) {
+      const float x = static_cast<float>(std::atof(v));
+      if (x >= 0.3f && x <= 2.0f)
+        return x;
+    }
+    return gameFont().scale;
   }();
   return s;
 }
@@ -475,10 +503,7 @@ int userVOff() {
     const char* e = std::getenv("ARLAND_HIRES_VOFF");
     if (e)
       return std::atoi(e);
-    // Per-game baseline nudge (baked px). Meruru's replaced text reads slightly
-    // low against its ruled-paper panels; -5 lands it on the lines. Rorona and
-    // Totori look right at 0. ARLAND_HIRES_VOFF overrides.
-    return (currentTitle() == Title::Meruru) ? -5 : 0;
+    return gameFont().voff;
   }();
   return v;
 }

@@ -164,35 +164,13 @@ UIFontMode uiFontMode() {
     } else {
       std::strncpy(value, "replaced", sizeof(value) - 1);
     }
-    if (!_strnicmp(value, "default", 7) || !_strnicmp(value, "off", 3))
-      return UIFontMode::Default;
+    if (!_strnicmp(value, "original", 8) || !_strnicmp(value, "off", 3))
+      return UIFontMode::Original;   // "off" is a legacy alias for "original"
     if (!_strnicmp(value, "upscale", 7))
       return UIFontMode::Upscaled;
-    return UIFontMode::Replaced;     // the default (embedded Cuprum, see font_hires)
+    return UIFontMode::Replaced;     // the default (embedded National Park)
   }();
   return mode;
-}
-
-EmbeddedFont embeddedFontChoice() {
-  static const EmbeddedFont font = []() -> EmbeddedFont {
-    char value[24] = { };
-    if (const char* env = std::getenv("ARLAND_FONT_NAME")) {
-      std::strncpy(value, env, sizeof(value) - 1);
-    } else if (const char* path = configPath()) {
-      GetPrivateProfileStringA("Rendering", "FontName", "\x01", value,
-        sizeof(value), path);
-      if (value[0] == '\x01') {                    // absent: seed the default
-        WritePrivateProfileStringA("Rendering", "FontName", "NationalPark", path);
-        std::strncpy(value, "NationalPark", sizeof(value) - 1);
-      }
-    } else {
-      std::strncpy(value, "NationalPark", sizeof(value) - 1);
-    }
-    if (!_strnicmp(value, "cuprum", 6))
-      return EmbeddedFont::Cuprum;
-    return EmbeddedFont::NationalPark;     // the default
-  }();
-  return font;
 }
 
 bool verboseLogging() {

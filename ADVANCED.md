@@ -79,27 +79,21 @@ Font=replaced
   automatically, so nothing is left pixelated or missing.
 - **`upscaled`** — keep the original baked glyphs but smooth them (the exact
   original look, just sharper).
-- **`default`** (or `off`) — the untouched original bitmap font.
+- **`original`** (or `off`) — the untouched original bitmap font.
 
-`replaced` mode ships with two bundled fonts; `FontName` in the `[Rendering]`
-section chooses between them, defaulting to **National Park**:
+`replaced` mode uses a different bundled font per game, each embedded in the DLL
+so nothing extra is installed:
 
-```ini
-[Rendering]
-FontName=NationalPark
-```
+- **Atelier Rorona** — National Park SemiBold
+- **Atelier Totori** — Nunito Regular
+- **Atelier Meruru** — Cosmetica Medium (a bolder MgOpen Cosmetica)
 
-- **`NationalPark`** (default) — [National Park](https://nationalparktypeface.com/)
-  Medium.
-- **`Cuprum`** — [Cuprum](https://fonts.google.com/specimen/Cuprum), the font used
-  through the earlier previews.
-
-Both are embedded in the DLL, so nothing extra is installed. To supply your own
-replacement font instead, drop a `arland-hires-font.ttf` next to the DLL; it
-overrides whichever bundled font `FontName` selects. `ARLAND_UIFONT` overrides the
-mode for a session (`ARLAND_UIFONT=upscaled`, etc.) and `ARLAND_FONT_NAME` the
-bundled font. English versions only — the Japanese and Chinese builds are
-unaffected.
+To supply your own replacement font instead, drop a `arland-hires-font.ttf` next
+to the DLL; it overrides the bundled font for whichever game is running.
+`ARLAND_UIFONT` overrides the mode for a session (`ARLAND_UIFONT=upscaled`, etc.),
+and `ARLAND_HIRES_SCALE` / `ARLAND_HIRES_VOFF` nudge the replacement font's size
+and vertical position for quick tuning. English versions only — the Japanese and
+Chinese builds are unaffected. Each bundled font's license is in `licenses/`.
 
 ## MSAA
 

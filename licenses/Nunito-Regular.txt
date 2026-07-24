@@ -1,0 +1,9 @@
+Nunito Regular
+Used as the replacement UI font for Atelier Totori DX (English build).
+
+Copyright 2014 The Nunito Project Authors
+(https://github.com/googlefonts/nunito)
+
+This Font Software is licensed under the SIL Open Font License, Version 1.1.
+The full license text is in OFL-1.1.txt in this directory, and is also
+available with a FAQ at: https://scripts.sil.org/OFL
