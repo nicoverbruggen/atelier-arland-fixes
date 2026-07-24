@@ -27,6 +27,7 @@
 #include "hook_util.h"     // Game, matches, installDetour, installMinHookDetour
 #include "log.h"
 #include "mem.h"           // readableRange, tryRead
+#include "util.h"          // arlandReturnAddress
 #include "menu_internal.h" // gameBase, supportedGame, g_battleActive
 
 namespace atfix {
@@ -238,7 +239,7 @@ uintptr_t tracedShadowSkinNodeMapping(uintptr_t mapping, uintptr_t node) {
 uintptr_t tracedShadowShaderBuild(uintptr_t shader, uintptr_t a2,
                                   uintptr_t a3, uintptr_t a4) {
   const uintptr_t caller = reinterpret_cast<uintptr_t>(
-    __builtin_return_address(0));
+    arlandReturnAddress());
   const uintptr_t callerRva = gameBase && caller >= uintptr_t(gameBase)
     ? caller - uintptr_t(gameBase) : 0;
   size_t nodes = 0;
@@ -273,7 +274,7 @@ uintptr_t tracedShadowGroupBuild(uintptr_t group, uintptr_t a2,
   const USHORT frameCount = CaptureStackBackTrace(
     0, static_cast<DWORD>(std::size(frames)), frames, nullptr);
   const uintptr_t caller = reinterpret_cast<uintptr_t>(
-    __builtin_return_address(0));
+    arlandReturnAddress());
   const uintptr_t callerRva = gameBase && caller >= uintptr_t(gameBase)
     ? caller - uintptr_t(gameBase) : 0;
   atfix::log("SHADOW_GROUP caller_rva=0x", std::hex, callerRva, std::dec,
@@ -294,7 +295,7 @@ uintptr_t tracedShadowGroupBuild(uintptr_t group, uintptr_t a2,
 uintptr_t tracedShadowCharacterBuild(uintptr_t helper, uintptr_t scene,
                                      uintptr_t character, uintptr_t a4) {
   const uintptr_t caller = reinterpret_cast<uintptr_t>(
-    __builtin_return_address(0));
+    arlandReturnAddress());
   const uintptr_t callerRva = gameBase && caller >= uintptr_t(gameBase)
     ? caller - uintptr_t(gameBase) : 0;
   const size_t before = helper ? shadowLayerCount(helper, 0x48) : 0;
@@ -1094,7 +1095,7 @@ std::atomic<uint32_t> g_sceneGeneration{0};
 uintptr_t tracedShadowHelperInit(uintptr_t helper, uintptr_t id,
                                  uintptr_t resource, uintptr_t config) {
   const uintptr_t caller = reinterpret_cast<uintptr_t>(
-    __builtin_return_address(0));
+    arlandReturnAddress());
   const uintptr_t callerRva = gameBase && caller >= uintptr_t(gameBase)
     ? caller - uintptr_t(gameBase) : 0;
   const uintptr_t result = originalShadowHelperInit(
@@ -1250,7 +1251,7 @@ uintptr_t tracedShadowRenderNodeFactory(uintptr_t allocator,
                                         uintptr_t context) {
   return tracedShadowNodeFactory("render", originalShadowRenderNodeFactory,
     allocator, source, context, reinterpret_cast<uintptr_t>(
-      __builtin_return_address(0)));
+      arlandReturnAddress()));
 }
 
 uintptr_t tracedShadowSkinNodeFactory(uintptr_t allocator,
@@ -1258,7 +1259,7 @@ uintptr_t tracedShadowSkinNodeFactory(uintptr_t allocator,
                                       uintptr_t context) {
   return tracedShadowNodeFactory("skin", originalShadowSkinNodeFactory,
     allocator, source, context, reinterpret_cast<uintptr_t>(
-      __builtin_return_address(0)));
+      arlandReturnAddress()));
 }
 
 size_t shadowLayerCount(uintptr_t helper, size_t offset) {
@@ -1272,7 +1273,7 @@ size_t shadowLayerCount(uintptr_t helper, size_t offset) {
 
 void tracedShadowLayerBuild(uintptr_t helper, uintptr_t scene) {
   const uintptr_t caller = reinterpret_cast<uintptr_t>(
-    __builtin_return_address(0));
+    arlandReturnAddress());
   const uintptr_t callerRva = gameBase && caller >= uintptr_t(gameBase)
     ? caller - uintptr_t(gameBase) : 0;
   originalShadowLayerBuild(helper, scene);
@@ -1366,7 +1367,7 @@ SnodeFlagProc originalSnodeInit = nullptr;
 uintptr_t tracedSnodeFlagClear(uintptr_t a1, uintptr_t a2, uintptr_t a3,
                                uintptr_t a4) {
   const uintptr_t caller =
-    reinterpret_cast<uintptr_t>(__builtin_return_address(0));
+    reinterpret_cast<uintptr_t>(arlandReturnAddress());
   const uintptr_t rva = gameBase && caller >= uintptr_t(gameBase)
     ? caller - uintptr_t(gameBase) : 0;
   static std::atomic<uint32_t> logs{0};
@@ -1380,7 +1381,7 @@ uintptr_t tracedSnodeFlagClear(uintptr_t a1, uintptr_t a2, uintptr_t a3,
 uintptr_t tracedSnodeInit(uintptr_t a1, uintptr_t a2, uintptr_t a3,
                           uintptr_t a4) {
   const uintptr_t caller =
-    reinterpret_cast<uintptr_t>(__builtin_return_address(0));
+    reinterpret_cast<uintptr_t>(arlandReturnAddress());
   const uintptr_t rva = gameBase && caller >= uintptr_t(gameBase)
     ? caller - uintptr_t(gameBase) : 0;
   static std::atomic<uint32_t> logs{0};

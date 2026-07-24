@@ -8,24 +8,63 @@ on:
 permissions:
   contents: write
 
+# Built with MSVC (rather than the local MinGW cross-build) because MSVC output
+# is far less likely to trip Microsoft Defender's ML heuristics (Wacatac!ml and
+# similar) than MinGW output, which is over-represented in malware corpora. One
+# job per target architecture: switching MSVC arch inside a single job is
+# unreliable, so x64 (d3d11.dll) and x86 (msimg32.dll) build separately.
 jobs:
-  windows-dlls:
+  build-x64:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+      - run: pip install meson ninja
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+      - run: meson setup build64 --buildtype release
+      - run: meson compile -C build64
+      - uses: actions/upload-artifact@v4
+        with:
+          name: d3d11
+          path: build64/d3d11.dll
+
+  build-x86:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+      - run: pip install meson ninja
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x86
+      - run: meson setup build32 --buildtype release
+      - run: meson compile -C build32
+      - uses: actions/upload-artifact@v4
+        with:
+          name: msimg32
+          path: build32/msimg32.dll
+
+  release:
+    needs: [build-x64, build-x86]
+    if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: sudo apt-get update && sudo apt-get install -y g++-mingw-w64-x86-64 g++-mingw-w64-i686 meson ninja-build
-      - run: meson setup build64 --cross-file build-win64.txt --buildtype release
-      - run: ninja -C build64
-      - run: meson setup build32 --cross-file build-win32.txt --buildtype release
-      - run: ninja -C build32
-      - uses: actions/upload-artifact@v4
+      - uses: actions/download-artifact@v4
         with:
-          name: atelier-arland-fixes
-          path: |
-            build64/d3d11.dll
-            build32/msimg32.dll
+          name: d3d11
+          path: dist
+      - uses: actions/download-artifact@v4
+        with:
+          name: msimg32
+          path: dist
       - name: Publish tagged release
-        if: startsWith(github.ref, 'refs/tags/v')
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -43,7 +82,7 @@ jobs:
           fi
           if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
             gh release edit "${GITHUB_REF_NAME}" --notes-file release-notes.md $PRERELEASE
-            gh release upload "${GITHUB_REF_NAME}" build64/d3d11.dll build32/msimg32.dll --clobber
+            gh release upload "${GITHUB_REF_NAME}" dist/d3d11.dll dist/msimg32.dll --clobber
           else
-            gh release create "${GITHUB_REF_NAME}" build64/d3d11.dll build32/msimg32.dll --verify-tag --notes-file release-notes.md --title "${GITHUB_REF_NAME}" $PRERELEASE
+            gh release create "${GITHUB_REF_NAME}" dist/d3d11.dll dist/msimg32.dll --verify-tag --notes-file release-notes.md --title "${GITHUB_REF_NAME}" $PRERELEASE
           fi

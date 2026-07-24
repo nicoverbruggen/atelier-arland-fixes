@@ -13,6 +13,20 @@
 
 #include "../vendor/minhook/include/MinHook.h"
 
+// Portable caller return address, used by the hook functions to recover the
+// game call site (its RVA distinguishes call sites of a shared hooked routine).
+// Must be a macro: wrapping the intrinsic in a function would return the
+// wrapper's own return address. Returns void*; call sites reinterpret_cast it to
+// uintptr_t. The enclosing function must not be inlined, which holds because the
+// hook targets are address-taken (passed to MinHook).
+#if defined(_MSC_VER)
+  #include <intrin.h>
+  #pragma intrinsic(_ReturnAddress)
+  #define arlandReturnAddress() (_ReturnAddress())
+#else
+  #define arlandReturnAddress() (__builtin_return_address(0))
+#endif
+
 namespace atfix {
 
 /**

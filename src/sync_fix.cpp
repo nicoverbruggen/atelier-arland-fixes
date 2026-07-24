@@ -2649,7 +2649,7 @@ HRESULT STDMETHODCALLTYPE ID3D11DeviceContext_Map(
   TransitionTimer transitionTimer(g_transitionMap);
   TransitionMapKindTimer mapKindTimer(MapType);
   const uintptr_t caller = transitionTraceEnabled()
-    ? reinterpret_cast<uintptr_t>(__builtin_return_address(0)) : 0;
+    ? reinterpret_cast<uintptr_t>(arlandReturnAddress()) : 0;
   auto procs = getContextProcs(pContext);
   if (!pResource || !isImmediatecontext(pContext)) {
     mapKindTimer.setBranch(0);
