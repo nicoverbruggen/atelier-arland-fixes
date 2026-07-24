@@ -68,6 +68,20 @@ The expected outputs are `builds/release-x64/d3d11.dll` and `builds/release-x86/
 - Gate experimental behavior until it has passed clean-text, repeated-menu, and multiple-game validation.
 - Keep launcher mutations in memory and signature-gated; never modify or redistribute Koei Tecmo executables.
 
+## Configuration options
+
+`default.ini` ships in the release archive and repeats defaults that really live
+in `src/config.cpp` (and `src/game.cpp`'s feature table). When you add, rename,
+remove or re-default an option, update `default.ini` and `ADVANCED.md` in the
+same change.
+
+`scripts/check_default_ini.py` enforces this and runs in CI: it checks that every
+option the code reads is documented, that nothing documented is unread, and that
+the literal defaults agree. If an option is deliberately undocumented (the
+deprecated `Width`/`Height`) or its default cannot be read from a single call
+site (the per-game cut-in keys), add it to the allowlists at the top of that
+script rather than dropping the check.
+
 ## Attribution and documentation
 
 Philip Rebohle created the original `atelier-sync-fix` synchronization implementation. TellowKrinkle supplied the earlier Map/Unmap coherence work and the old-Arland resolution correction. Yuri Hime's Atelier Graphics Tweak and the linked Steam investigations are prior work identifying the broad font-atlas transfer problem; AGT's unsafe upload-suppression implementation is not included. Nico, the author of this repository, led the Arland menu-hitch investigation, the `.PSSG` and bounded atlas-read cache research, and the launcher analysis. MinHook is by Tsuda Kageyu and contributors.

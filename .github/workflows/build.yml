@@ -32,6 +32,17 @@ jobs:
           name: d3d11
           path: build64/d3d11.dll
 
+  check-defaults:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+      # default.ini ships to users and repeats defaults that live in src/, so
+      # nothing but this stops the two drifting apart.
+      - run: python3 scripts/check_default_ini.py
+
   build-x86:
     runs-on: windows-latest
     steps:
@@ -51,7 +62,7 @@ jobs:
           path: build32/msimg32.dll
 
   release:
-    needs: [build-x64, build-x86]
+    needs: [build-x64, build-x86, check-defaults]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     steps:
