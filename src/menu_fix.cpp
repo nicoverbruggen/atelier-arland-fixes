@@ -16,6 +16,7 @@
 #include <vector>
 
 #include "../vendor/minhook/include/MinHook.h"
+#include "field_physics.h"
 #include "font_hires.h"
 #include "game.h"
 #include "log.h"
@@ -2063,6 +2064,7 @@ void detectAndInstallGameHooks() {
     const bool deepStatsInstalled = atlasInstalled
       ? installDeepMenuStats(gameBase, game) : false;
     atfix::installBattleShadowRestore(gameBase, game);
+    atfix::installFieldPhysics(gameBase, game);
     atfix::log("Menu hooks pssg=", pathInstalled,
       " atlas=", atlasInstalled,
       " frame_atlas_cache=", frameAtlasCacheEnabled(),

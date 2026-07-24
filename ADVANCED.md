@@ -81,6 +81,37 @@ render target — so prefer raising the render resolution over stacking the two.
 blank, so existing configurations keep working, but new ones should use
 `DisplayWidth`/`DisplayHeight`. If both pairs are set, the `Display` pair wins.
 
+## Field-map stutter at high refresh rates
+
+Standing on a step or ledge on the field map, the character can buzz vertically.
+It is steady up to roughly 115 fps and appears above that, so it shows up on
+120 Hz and 144 Hz displays and not on 60 Hz ones.
+
+The cause is a constant that was only ever correct at 60 fps: the games discard
+any frame in which the character moves less than a fixed distance, reverting the
+position and skipping the ground-snap that would re-seat it. Resting on a
+surface, the only motion is a single frame of gravity — which at 60 fps clears
+that distance in two frames, but at 144 fps takes twelve, longer than the brief
+grace period the character's footing is held for. Footing is lost, the character
+falls until it has picked up enough speed for one frame to clear the distance,
+lands, and the cycle repeats.
+
+```ini
+[Gameplay]
+MaxEngineFps=100
+```
+
+The mod therefore holds the frame rate just below where the problem appears.
+100 is the default and also the maximum: a higher ceiling would run straight back
+into the bug, so values above 100 are clamped. Set `0` to remove the cap
+entirely, and lower it if you prefer.
+
+This keeps the benefit of well above 60 fps, and because it changes nothing
+inside the game it also covers any other frame-rate assumption the engine may
+hold that has not been found. Note that it turns vsync off while pacing: a
+ceiling that is not a divisor of your display's refresh rate cannot be held with
+vsync on.
+
 ## SMAA anti-aliasing
 
 SMAA (a post-process anti-aliasing pass) is **on by default**. It smooths edges
