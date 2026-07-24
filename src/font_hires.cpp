@@ -1,12 +1,26 @@
 // SPDX-License-Identifier: MIT
 //
-// High-resolution UI text — "upscaled" mode. For each string the engine renders,
-// this upscales the engine's own baked bitmap kScale× (bilinear, or Lanczos with
-// ARLAND_HIRES_FILTER=lanczos) with an unsharp-mask sharpen, and substitutes it
-// back into the output object. The engine's exact layout is preserved (multi-line,
-// alignment, icon glyphs) — only the resolution increases. A per-string result
-// cache keeps it off the hot menu path. A "replaced" mode (re-render each string
-// from a bundled scalable font) is planned but not implemented here; see TODO.
+// High-resolution UI text. The game bakes its UI font to a low-resolution bitmap;
+// for each string the engine renders, this substitutes a kScale× (2×) bitmap back
+// into the engine's per-string output object, so menus, save slots, and labels
+// read crisply. Two modes, selected by [Rendering] Font (see config.cpp):
+//
+//   "replaced" (the default) — re-render the string from a bundled scalable font
+//     (Cuprum 500, embedded; overridable with a loose arland-hires-font.ttf) via a
+//     glyph-atlas cache. renderReplaced() replicates the engine's layout (split on
+//     '\n', stack by lineHeight, left-aligned, fixed cap-box baseline). If the font
+//     lacks a glyph the string needs (e.g. the game's custom button-prompt icons),
+//     it falls back to the upscaled path so nothing is left as raw baked art.
+//   "upscaled" — keep the engine's own baked glyphs but filter-upscale them
+//     (bilinear + SDF coverage-steepen by default; bilinear+unsharp or lanczos+
+//     unsharp via ARLAND_HIRES_FILTER). Preserves the engine's exact layout and
+//     any icon glyphs; only the resolution increases.
+//
+// Both modes keep a per-string result cache to stay off the hot menu path, and
+// both stash the pre-substitution dims so the consumer wrapper can restore them
+// (auto-size widgets read the original size back). English builds only: on the
+// multilingual exes the text allocator/consumer hooks stay unresolved and the
+// substitution safely no-ops.
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 

@@ -36,8 +36,9 @@ const char* configPath() {
       WritePrivateProfileStringA("Battle", "BattleShadows", "true", result.data());
       // The cut-in keys (BattleCutInShadows / BattleCutInDimming) are seeded
       // lazily by featureEnabled() using their per-game matrix defaults, so they
-      // stay correct when those defaults change (currently OptIn/off while the
-      // cut-in shadow glitch is fixed); not written eagerly here.
+      // stay correct when those defaults change (currently OnByDefault on every
+      // supported game now that the cut-in shadow glitch is fixed); not written
+      // eagerly here.
     }
     return result;
   }();

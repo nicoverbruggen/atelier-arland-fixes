@@ -625,6 +625,18 @@ void snapCbWrite(ID3D11Resource* resource, const void* data, uint32_t size) {
   snap.size = size;
   std::memcpy(snap.data, data, std::min<uint32_t>(size, sizeof(snap.data)));
   std::lock_guard lock(g_cbSnapMutex);
+  // Drop snapshots from previous scenes on each rebuild. g_cbSnaps is keyed by
+  // raw resource pointer and never erased otherwise, so without this it grows
+  // for the lifetime of the process (a cut-in constant buffer is snapshotted
+  // every cinematic frame with cut-in shadows on, which is the default) and a
+  // recycled pointer could return a stale snapshot. Matches the SRV verdict-
+  // cache and twin-negative-cache invalidation on scene generation.
+  static uint32_t cachedGeneration = 0;
+  const uint32_t generation = arlandSceneGeneration();
+  if (generation != cachedGeneration) {
+    cachedGeneration = generation;
+    g_cbSnaps.clear();
+  }
   g_cbSnaps[resource] = snap;
 }
 
@@ -1122,6 +1134,20 @@ void cutinBlobCaptureDraw(ID3D11DeviceContext* ctx, UINT count) {
 // verdict by pointer so the desc query only happens once per view. Caller holds
 // g_shadowTraceMutex.
 bool isShadowSrvLocked(ID3D11ShaderResourceView* srv) {
+  // Invalidate the verdict caches on every scene rebuild. A rebuild can recycle a
+  // destroyed SRV's address to a brand-new view, so a verdict keyed by the raw
+  // pointer would misclassify the newcomer. This mirrors the twin-SRV negative-
+  // cache clear on each new shadow-map generation; without it, a stale "shadow"
+  // verdict on a recycled pointer could make gateHoldAtDraw write its 16 gate
+  // bytes into an unrelated 880-byte VS cb0. Caller holds g_shadowTraceMutex, so
+  // the static generation is accessed under the lock.
+  static uint32_t cachedGeneration = 0;
+  const uint32_t generation = arlandSceneGeneration();
+  if (generation != cachedGeneration) {
+    cachedGeneration = generation;
+    g_shadowSrvs.clear();
+    g_nonShadowSrvs.clear();
+  }
   const uintptr_t key = reinterpret_cast<uintptr_t>(srv);
   if (g_shadowSrvs.count(key))
     return true;
@@ -4110,8 +4136,15 @@ void hookContext(ID3D11DeviceContext* pContext) {
 
   g_installedHooks |= flag;
 
-  /* Immediate context and deferred context methods may share code */
-  if (flag & HOOK_IMM_CTX)
+  /* Immediate and deferred contexts share one vtable, so the second context to
+     reach hookProc gets MH_ERROR_ALREADY_CREATED and its originals are NOT
+     repopulated. The immediate context is created at device creation and hooked
+     first, so we copy its captured originals to the deferred table here. Guard on
+     the immediate table actually being populated: if a deferred context were ever
+     hooked first, this pass's hooks would all no-op (already created) and copying
+     an empty g_immContextProcs would clobber the good deferred originals with
+     nulls. In the normal (immediate-first) order the guard is always true. */
+  if ((flag & HOOK_IMM_CTX) && g_immContextProcs.Draw)
     g_defContextProcs = g_immContextProcs;
 }
 

@@ -19,6 +19,7 @@
 #include "font_hires.h"
 #include "game.h"
 #include "log.h"
+#include "mem.h"   // readableRange + tryRead (guarded game-memory reads)
 
 namespace atfix {
 extern Log log;
@@ -1008,22 +1009,11 @@ size_t dispatchBattleCharaShadows(uintptr_t helper, uintptr_t scene) {
   return dispatched;
 }
 
-// True if [p, p+n) is committed, readable, non-guard memory.
-bool readableRange(uintptr_t p, size_t n) {
-  if (!p)
-    return false;
-  MEMORY_BASIC_INFORMATION mbi = {};
-  if (!VirtualQuery(reinterpret_cast<void*>(p), &mbi, sizeof(mbi)))
-    return false;
-  if (mbi.State != MEM_COMMIT)
-    return false;
-  const DWORD readable = PAGE_READONLY | PAGE_READWRITE | PAGE_WRITECOPY |
-    PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY;
-  if (!(mbi.Protect & readable) || (mbi.Protect & PAGE_GUARD))
-    return false;
-  const uintptr_t base = reinterpret_cast<uintptr_t>(mbi.BaseAddress);
-  return p >= base && p + n <= base + mbi.RegionSize;
-}
+// readableRange / tryRead are the shared guarded-read primitives from mem.h.
+// This TU's code lives in the global anonymous namespace, so pull them in for
+// unqualified use (they are declared in namespace atfix).
+using atfix::readableRange;
+using atfix::tryRead;
 
 // Scan an object's memory for a std::vector<BtlChara*> — a (begin,end) pair
 // whose first element carries a known BtlChara-family vtable — recursing one
@@ -3793,11 +3783,20 @@ void trackBattleStateTick() {
       !g_battleActive.load(std::memory_order_acquire))
     return;
   uintptr_t slot = g_battleStateSlot.load(std::memory_order_acquire);
-  if (slot && (!readableRange(slot, 8) ||
-      !battleStateName(*reinterpret_cast<const uintptr_t*>(
-        *reinterpret_cast<const uintptr_t*>(slot))))) {
-    slot = 0;
-    g_battleStateSlot.store(0, std::memory_order_release);
+  if (slot) {
+    // Re-validate the cached slot every frame: on a battle->field return the
+    // battle game-mode is freed while g_battleActive can still read true (the
+    // race the battleShadowFrameTick watchdog documents), leaving this slot
+    // pointing into freed memory. tryRead guards BOTH pointer levels -- the slot
+    // and the state object it holds -- so the staleness check itself cannot fault
+    // on the freed/garbage state object.
+    uintptr_t stateObj = 0, vt = 0;
+    const bool valid = tryRead(slot, stateObj) && stateObj &&
+      tryRead(stateObj, vt) && battleStateName(vt);
+    if (!valid) {
+      slot = 0;
+      g_battleStateSlot.store(0, std::memory_order_release);
+    }
   }
   if (!slot) {
     const uintptr_t gameMode = g_battleGameMode.load(std::memory_order_acquire);
@@ -3810,8 +3809,9 @@ void trackBattleStateTick() {
       return;
     g_battleStateSlot.store(slot, std::memory_order_release);
   }
-  const uintptr_t stateObj = *reinterpret_cast<const uintptr_t*>(slot);
-  const uintptr_t vt = *reinterpret_cast<const uintptr_t*>(stateObj);
+  uintptr_t stateObj = 0, vt = 0;
+  if (!tryRead(slot, stateObj) || !stateObj || !tryRead(stateObj, vt))
+    return;
   if (vt == g_lastBattleStateVt.load(std::memory_order_acquire))
     return;
   g_lastBattleStateVt.store(vt, std::memory_order_release);
@@ -3969,7 +3969,9 @@ size_t scanCutinCharas(uintptr_t obj, size_t window, int depth,
           readableRange(ptr, 0x80)) {
         for (size_t f = 0; f < 0x80; f += 8) {
           const uintptr_t v = *reinterpret_cast<const uintptr_t*>(ptr + f);
-          const char* fc = (v && !(v & 7) && readableRange(v, 8))
+          // Guard 0x20: the class probe reads *v (vtable) and the log line below
+          // reads *(v + 0x18), so v must be readable to 0x20, not just 8.
+          const char* fc = (v && !(v & 7) && readableRange(v, 0x20))
             ? charaFamilyName(*reinterpret_cast<const uintptr_t*>(v)) : nullptr;
           if (fc)
             atfix::log("EVENT_EXEC ms=", GetTickCount64(), " state=", state,
