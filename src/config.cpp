@@ -22,13 +22,22 @@ const char* configPath() {
     std::array<char, MAX_PATH + 1> result = { };
     const DWORD pathLength = GetModuleFileNameA(
       nullptr, result.data(), MAX_PATH);
+    // GetModuleFileNameA returns MAX_PATH when it had to truncate, and a
+    // truncated path is not the directory we want. Swapping the exe name for
+    // the ini name has to fit as well. Failing either, the buffer is cleared so
+    // this returns nullptr: keeping the exe path would write every setting to a
+    // file nothing reads, which fails silently rather than visibly.
+    char* slash = nullptr;
     if (pathLength && pathLength < MAX_PATH) {
       char* back = std::strrchr(result.data(), '\\');
       char* forward = std::strrchr(result.data(), '/');
-      char* slash = !back || (forward && forward > back) ? forward : back;
-      if (slash)
-        std::memcpy(slash + 1, "arland-fix.ini", sizeof("arland-fix.ini"));
+      slash = !back || (forward && forward > back) ? forward : back;
     }
+    const size_t used = slash ? size_t(slash + 1 - result.data()) : 0;
+    if (slash && used + sizeof("arland-fix.ini") <= result.size())
+      std::memcpy(slash + 1, "arland-fix.ini", sizeof("arland-fix.ini"));
+    else
+      result[0] = '\0';
 
     if (result[0] &&
         GetFileAttributesA(result.data()) == INVALID_FILE_ATTRIBUTES) {

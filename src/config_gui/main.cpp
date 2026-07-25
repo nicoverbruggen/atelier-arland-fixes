@@ -820,12 +820,25 @@ void iniPathInDir(const char* dir) {
   lstrcpynA(g_iniPath + len, "arland-fix.ini", (int)(MAX_PATH - len));
 }
 
+// Join `dir` (which must end in a separator) and `name` into a MAX_PATH `out`.
+// False when the result would not fit, leaving out empty: lstrcatA takes no
+// bound, so a folder near MAX_PATH would run past the caller's buffer.
+bool joinPath(char* out, const char* dir, const char* name) {
+  out[0] = '\0';
+  const size_t dirLen = std::strlen(dir);
+  const size_t nameLen = std::strlen(name);
+  if (dirLen + nameLen + 1 > MAX_PATH)
+    return false;
+  std::memcpy(out, dir, dirLen);
+  std::memcpy(out + dirLen, name, nameLen + 1);
+  return true;
+}
+
 // Join `dir` (which must end in a separator) and `name` into `out`, and say
 // whether the result exists.
 bool fileInDir(const char* dir, const char* name, char* out) {
-  lstrcpynA(out, dir, MAX_PATH);
-  lstrcatA(out, name);
-  return GetFileAttributesA(out) != INVALID_FILE_ATTRIBUTES;
+  return joinPath(out, dir, name) &&
+         GetFileAttributesA(out) != INVALID_FILE_ATTRIBUTES;
 }
 
 // Index into kGames of the game installed in `dir`, or -1 if it holds none.
@@ -866,8 +879,9 @@ bool gameExeForLanguage(const char* language, char* out) {
 // still set, so Save can create one).
 void adoptFolder(const char* dir, int game) {
   iniPathInDir(dir);
-  lstrcpynA(g_settingsPath, dir, MAX_PATH);
-  lstrcatA(g_settingsPath, "ArlandDX_Settings.ini");
+  // Left empty if the folder sits too deep for the name to fit; such a folder
+  // cannot be configured either way, since iniPathInDir truncates as well.
+  joinPath(g_settingsPath, dir, "ArlandDX_Settings.ini");
   lstrcpynA(g_gameDir, dir, MAX_PATH);   // keeps its trailing separator
   g_game = game;
   if (game < 0)
@@ -964,8 +978,8 @@ bool runStockTool(const char* exeName) {
   if (!g_gameDir[0])
     return false;
   char path[MAX_PATH];
-  lstrcpynA(path, g_gameDir, MAX_PATH);
-  lstrcatA(path, exeName);
+  if (!joinPath(path, g_gameDir, exeName))
+    return false;
   if (GetFileAttributesA(path) == INVALID_FILE_ATTRIBUTES)
     return false;
 
@@ -1074,9 +1088,8 @@ bool stockToolPresent(const char* exeName) {
   if (!g_gameDir[0])
     return false;
   char path[MAX_PATH];
-  lstrcpynA(path, g_gameDir, MAX_PATH);
-  lstrcatA(path, exeName);
-  return GetFileAttributesA(path) != INVALID_FILE_ATTRIBUTES;
+  return joinPath(path, g_gameDir, exeName) &&
+         GetFileAttributesA(path) != INVALID_FILE_ATTRIBUTES;
 }
 
 HWND mkButton(HWND parent, const wchar_t* text, int x, int y, int w, int id,
