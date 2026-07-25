@@ -708,6 +708,9 @@ bool hiResTextRerender(uintptr_t renderer, const char* utf8,
       " enabled=", hiResTextEnabled() ? 1 : 0,
       " title=", static_cast<int>(currentTitle()),
       " alloc=", alloc ? 1 : 0, " free=", free ? 1 : 0);
+  // The stash describes the current string only. Otherwise it is cleared just
+  // by hiResTextRestoreDims, from a consumer hook that may decline to install.
+  g_restoreOutput = nullptr;
   if (!hiResTextEnabled() || !renderer || !utf8 || !alloc || !free)
     return false;
   bool fontReady = false;
