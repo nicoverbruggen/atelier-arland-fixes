@@ -54,6 +54,8 @@ Unlike MSAA and SMAA, which smooth edges after the fact, this resolves detail th
 
 It is the most expensive option in this file, and cost scales with pixels drawn: 3840×2160 into a 2560×1440 window is 2.25× the pixels of 1440p, and 4× if the window is 1080p. Exact integer ratios (a 1080p window rendering at 4K) resolve with a true box filter and are the sharpest; other ratios use a bilinear resolve. Because supersampling already anti-aliases geometry, there is little reason to combine it with MSAA — that multiplies the cost of an already larger render target — so prefer raising the render resolution over stacking the two.
 
+The render resolution is capped at **7680×4320** (8K), and a larger value is reduced to it with the ratio kept and a line in the log. Above that the engine's own render targets stop fitting in video memory on real hardware — a 4K panel at 4× is 15360×8640, over half a gigabyte for a single target, and the games allocate many. That does not fail cleanly: some targets are created and some are not, so the game runs but conversations draw black and the frame rate hitches every few seconds as video memory is paged. The launcher does not offer multipliers that would exceed the cap.
+
 ### Deprecated: `Width` / `Height`
 
 `Width`/`Height` are the old names for the display resolution and are **deprecated**. They are still honoured when `DisplayWidth`/`DisplayHeight` are blank, so existing configurations keep working, but new ones should use `DisplayWidth`/`DisplayHeight`. If both pairs are set, the `Display` pair wins.

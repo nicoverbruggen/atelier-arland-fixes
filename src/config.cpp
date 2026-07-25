@@ -185,8 +185,32 @@ bool renderResolution(UINT* width, UINT* height) {
   // The internal render size: RenderWidth/Height, falling back to the display
   // resolution. When larger than display, the frame is supersampled down at
   // present.
-  return readResPair("RenderWidth", "RenderHeight", width, height) ||
-         displayResolution(width, height);
+  if (!readResPair("RenderWidth", "RenderHeight", width, height))
+    return displayResolution(width, height);
+
+  // 8K is where this stops being a quality setting and starts being a way to
+  // run out of video memory. The engine derives a large family of render
+  // targets from this size, so a 4K panel at 4x asks for over half a gigabyte
+  // each; what that looks like in play is not a clean failure but a game that
+  // runs with some of its targets missing -- conversations drawing black, and
+  // a hitch every few seconds as video memory is paged. The ratio is kept, so
+  // the frame stays the shape the display asked for.
+  const UINT maxWidth = 7680;
+  const UINT maxHeight = 4320;
+  if (*width > maxWidth || *height > maxHeight) {
+    static std::atomic<bool> warned { false };
+    const UINT clampedWidth = *width * maxHeight >= *height * maxWidth
+      ? maxWidth : UINT(uint64_t(*width) * maxHeight / *height);
+    const UINT clampedHeight = *width * maxHeight >= *height * maxWidth
+      ? UINT(uint64_t(*height) * maxWidth / *width) : maxHeight;
+    if (!warned.exchange(true))
+      log("Render resolution ", std::dec, *width, "x", *height,
+        " exceeds the ", maxWidth, "x", maxHeight, " supersampling limit;"
+        " rendering at ", clampedWidth, "x", clampedHeight, " instead.");
+    *width = clampedWidth;
+    *height = clampedHeight;
+  }
+  return true;
 }
 
 bool configuredResolution(UINT* width, UINT* height) {

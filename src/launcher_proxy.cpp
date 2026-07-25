@@ -266,18 +266,87 @@ bool installModeBuilderHook(std::uint8_t* target) {
   return true;
 }
 
-// Steam runs ArlandDXLauncher.exe. When our configurator is installed beside it
-// we start that instead and end the original before it puts a window on screen,
-// so a plain drop-in install replaces the stock launcher with no extra steps.
+// ---- the launcher redirect -------------------------------------------------
+//
+// Steam runs ArlandDXLauncher.exe. When our own launcher is installed beside it
+// we run that instead, and the stock one never puts a window on screen, so a
+// plain drop-in install replaces it with no extra steps.
+//
+// Two things about *when* and *for how long* this happens are load-bearing, and
+// both were learned the hard way:
+//
+//  - It must not happen in DllMain. This DLL is a static import of the
+//    launcher, so its process attach runs before the executable's entry point
+//    and before anything injected into the process has finished setting itself
+//    up -- including Steam's overlay, which hooks process creation in order to
+//    follow the game into child processes. Starting our launcher from there
+//    produced a child Steam knew nothing about: no overlay, no frame-rate
+//    counter, and no Steam Input, which is what makes a DualSense work at all
+//    when Steam is handling it. So the redirect is armed here and runs at the
+//    executable's entry point instead, by which time the process is fully
+//    assembled.
+//
+//  - The stock launcher process must stay alive while ours is open, rather than
+//    being terminated the moment its replacement starts. It is the process
+//    Steam launched and is counting, and the game is started from our launcher
+//    underneath it. Waiting costs nothing -- this process has no window and no
+//    work of its own once its entry point belongs to us.
 //
 // Nothing here is destructive if the install is partial: with no
-// arland-fix-launcher.exe next to it this returns false and the stock launcher comes
-// up exactly as before.
+// arland-fix-launcher.exe next to it the redirect is never armed and the stock
+// launcher comes up exactly as before.
 //
-// ARLAND_NO_REDIRECT stands the redirect down. The configurator sets it on the
+// ARLAND_NO_REDIRECT stands the redirect down. Our launcher sets it on the
 // original launcher and settings editor when its own buttons open them, which
 // is what stops those buttons from being bounced straight back here.
-bool redirectToConfigurator() {
+
+std::array<wchar_t, 32768> g_configurator = { };
+std::array<wchar_t, 32768> g_gameDirectory = { };
+std::uint8_t* g_entryPoint = nullptr;
+std::array<std::uint8_t, 5> g_entryOriginal = { };
+
+// Put the executable's own entry point back and run it, for the case where the
+// configurator cannot be started after all. The launcher then comes up as if
+// the mod were not installed.
+void runOriginalEntryPoint() {
+  DWORD oldProtect = 0;
+  if (VirtualProtect(g_entryPoint, g_entryOriginal.size(),
+      PAGE_EXECUTE_READWRITE, &oldProtect)) {
+    std::memcpy(g_entryPoint, g_entryOriginal.data(), g_entryOriginal.size());
+    DWORD ignored = 0;
+    VirtualProtect(g_entryPoint, g_entryOriginal.size(), oldProtect, &ignored);
+    FlushInstructionCache(GetCurrentProcess(), g_entryPoint,
+      g_entryOriginal.size());
+  }
+  reinterpret_cast<void (*)()>(g_entryPoint)();
+}
+
+// Stands in for the launcher's entry point once the redirect is armed.
+void redirectedEntryPoint() {
+  STARTUPINFOW startup = { };
+  startup.cb = sizeof(startup);
+  PROCESS_INFORMATION process = { };
+  // Our launcher is 64-bit and this proxy is 32-bit; CreateProcess spans that
+  // difference, and the child inherits our environment either way -- which is
+  // how the Steam variables reach the game and stop it restarting itself
+  // through Steam.
+  if (!CreateProcessW(g_configurator.data(), nullptr, nullptr, nullptr, FALSE,
+      0, nullptr, g_gameDirectory.data(), &startup, &process)) {
+    launcherLog("configurator failed to start; running the stock launcher");
+    runOriginalEntryPoint();
+    return;
+  }
+  CloseHandle(process.hThread);
+  launcherLog("configurator started; holding this process open behind it");
+  WaitForSingleObject(process.hProcess, INFINITE);
+  CloseHandle(process.hProcess);
+  launcherLog("configurator closed; ending the stock launcher");
+  ExitProcess(0);
+}
+
+// Point the executable's entry point at redirectedEntryPoint. Returns false
+// with the image untouched if anything does not look as expected.
+bool armRedirect() {
   std::array<wchar_t, 32768> path = { };
   const wchar_t* name = nullptr;
   if (!hostExeName(path, &name))
@@ -291,37 +360,55 @@ bool redirectToConfigurator() {
     return false;
   }
 
-  // Directory of the launcher, which is also the game folder the configurator
-  // is dropped into. `name` points into `path`, so truncating there leaves the
+  // Directory of the launcher, which is also the game folder our launcher is
+  // dropped into. `name` points into `path`, so truncating there leaves the
   // directory with its trailing backslash.
-  std::array<wchar_t, 32768> directory = { };
   const std::size_t directoryLength = static_cast<std::size_t>(name - path.data());
-  std::memcpy(directory.data(), path.data(), directoryLength * sizeof(wchar_t));
-
-  std::array<wchar_t, 32768> configurator = { };
-  std::memcpy(configurator.data(), directory.data(),
+  std::memcpy(g_gameDirectory.data(), path.data(),
     directoryLength * sizeof(wchar_t));
-  std::memcpy(configurator.data() + directoryLength, L"arland-fix-launcher.exe",
-    sizeof(L"arland-fix-launcher.exe"));
+  std::memcpy(g_configurator.data(), path.data(),
+    directoryLength * sizeof(wchar_t));
+  std::memcpy(g_configurator.data() + directoryLength,
+    L"arland-fix-launcher.exe", sizeof(L"arland-fix-launcher.exe"));
 
-  if (GetFileAttributesW(configurator.data()) == INVALID_FILE_ATTRIBUTES) {
+  if (GetFileAttributesW(g_configurator.data()) == INVALID_FILE_ATTRIBUTES) {
     launcherLog("no configurator installed; leaving the stock launcher alone");
     return false;
   }
 
-  STARTUPINFOW startup = { };
-  startup.cb = sizeof(startup);
-  PROCESS_INFORMATION process = { };
-  // The configurator is 64-bit and this proxy is 32-bit; CreateProcess spans
-  // that difference, and the child inherits our environment either way.
-  if (!CreateProcessW(configurator.data(), nullptr, nullptr, nullptr, FALSE,
-      0, nullptr, directory.data(), &startup, &process)) {
-    launcherLog("configurator failed to start; leaving the stock launcher");
+  auto* base = reinterpret_cast<std::uint8_t*>(GetModuleHandleW(nullptr));
+  if (!base)
+    return false;
+  const auto* dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(base);
+  if (dos->e_magic != IMAGE_DOS_SIGNATURE)
+    return false;
+  const auto* nt =
+    reinterpret_cast<const IMAGE_NT_HEADERS32*>(base + dos->e_lfanew);
+  if (nt->Signature != IMAGE_NT_SIGNATURE ||
+      nt->FileHeader.Machine != IMAGE_FILE_MACHINE_I386 ||
+      !nt->OptionalHeader.AddressOfEntryPoint)
+    return false;
+
+  // Taken from the headers rather than from a hardcoded address, so this holds
+  // for all three games' launchers and for any future build of them.
+  g_entryPoint = base + nt->OptionalHeader.AddressOfEntryPoint;
+  std::memcpy(g_entryOriginal.data(), g_entryPoint, g_entryOriginal.size());
+
+  DWORD oldProtect = 0;
+  if (!VirtualProtect(g_entryPoint, g_entryOriginal.size(),
+      PAGE_EXECUTE_READWRITE, &oldProtect)) {
+    launcherLog("entry point is not writable; leaving the stock launcher");
     return false;
   }
-  CloseHandle(process.hThread);
-  CloseHandle(process.hProcess);
-  launcherLog("configurator started; ending the stock launcher");
+  g_entryPoint[0] = 0xe9;
+  const std::int32_t delta = static_cast<std::int32_t>(
+    reinterpret_cast<std::uint8_t*>(&redirectedEntryPoint) - (g_entryPoint + 5));
+  std::memcpy(g_entryPoint + 1, &delta, sizeof(delta));
+  DWORD ignored = 0;
+  VirtualProtect(g_entryPoint, g_entryOriginal.size(), oldProtect, &ignored);
+  FlushInstructionCache(GetCurrentProcess(), g_entryPoint,
+    g_entryOriginal.size());
+  launcherLog("redirect armed at the launcher entry point");
   return true;
 }
 
@@ -422,13 +509,10 @@ BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, LPVOID) {
   if (reason == DLL_PROCESS_ATTACH) {
     DisableThreadLibraryCalls(instance);
     launcherLog("msimg32 process attach");
-    if (redirectToConfigurator()) {
-      // TerminateProcess rather than ExitProcess: ExitProcess runs detach
-      // handlers for every loaded module while we are still inside the loader
-      // lock, which is a documented way to deadlock. Nothing of the launcher
-      // has run yet at process attach, so there is no state worth unwinding.
-      TerminateProcess(GetCurrentProcess(), 0);
-    }
+    // Only armed here; it runs at the executable's entry point, once the
+    // process (Steam's injections included) is fully assembled.
+    if (armRedirect())
+      return TRUE;
     installLauncherResolutionHook();
   }
   return TRUE;

@@ -58,23 +58,29 @@ enum : int {
 // via Browse.
 char g_iniPath[MAX_PATH] = {};        // arland-fix.ini, beside this exe
 char g_settingsPath[MAX_PATH] = {};   // ArlandDX_Settings.ini, same folder
-char g_gameExePath[MAX_PATH] = {};    // the recognised game exe, for Start game
+char g_gameExePath[MAX_PATH] = {};    // an installed game exe, for the icon
 char g_gameDir[MAX_PATH] = {};        // its folder, used as the working directory
 const wchar_t* g_gameName = nullptr;  // null when no game was recognised
 
-// The executables the mod supports, matched in the folder this tool sits in.
-// Both the English and the multilingual build of each game are recognised: the
-// settings file and the resolution keys are the same either way.
-struct GameExe { const char* exe; const wchar_t* name; };
-const GameExe kGameExes[] = {
-  { "A11R_x64_Release_en.exe", L"Atelier Rorona DX" },
-  { "A11R_x64_Release.exe",    L"Atelier Rorona DX" },
-  { "A12V_x64_Release_en.exe", L"Atelier Totori DX" },
-  { "A12V_x64_Release.exe",    L"Atelier Totori DX" },
-  { "A13V_x64_Release_EN.exe", L"Atelier Meruru DX" },
-  { "A13V_x64_Release.exe",    L"Atelier Meruru DX" },
+// The games the mod supports, matched in the folder this tool sits in.
+//
+// Each ships as two executables and the language decides which one runs: the
+// `_en` build is the English one, and the other is the multilingual build that
+// carries Japanese, Simplified Chinese and Traditional Chinese. Both are
+// normally installed side by side, so which one is present is not the question
+// -- which one to start is (see gameExeForLanguage).
+struct Game {
+  const char* english;
+  const char* multilingual;
+  const wchar_t* name;
 };
-const int kGameExeCount = 6;
+const Game kGames[] = {
+  { "A11R_x64_Release_en.exe", "A11R_x64_Release.exe", L"Atelier Rorona DX" },
+  { "A12V_x64_Release_en.exe", "A12V_x64_Release.exe", L"Atelier Totori DX" },
+  { "A13V_x64_Release_EN.exe", "A13V_x64_Release.exe", L"Atelier Meruru DX" },
+};
+const int kGameCount = 3;
+int g_game = -1;   // index into kGames, -1 when the folder holds no game
 
 // Handles to the controls we read from and write to.
 HWND g_hTabs = nullptr;
@@ -159,7 +165,17 @@ const MultItem kSSItems[] = {
   { L"2x",    2.0 },  { L"3x",    3.0  }, { L"4x",   4.0 },
 };
 const int kSSCount = 6;
-const unsigned kMaxDim = 16384;
+
+// The ceiling on the internal render resolution: 8K, four times the pixels of
+// 4K. Above it the engine's own render targets stop fitting in video memory on
+// real hardware -- a 4K panel at 4x is 15360x8640, over half a gigabyte for a
+// single target, and the games allocate many. What that looks like in play is
+// not a clean failure: some targets still allocate and some do not, so the
+// game runs but a conversation draws black and the frame rate hitches every
+// few seconds as video memory is paged. Multipliers that would exceed this are
+// not offered (see refillSupersampling), and the mod clamps the ini as well.
+const unsigned kMaxRenderWidth = 7680;
+const unsigned kMaxRenderHeight = 4320;
 
 // Quality presets. These set only the Image quality group -- resolution,
 // borderless, frame rate, the battle options and the UI font are preferences
@@ -287,25 +303,78 @@ bool selectedBase(unsigned* w, unsigned* h) {
   return true;
 }
 
-// The selected supersampling multiplier, or 0.0 when "Off" (index 0).
-double selectedMult() {
-  int sel = (int)SendMessageW(g_hSS, CB_GETCURSEL, 0, 0);
-  if (sel <= 0 || sel >= kSSCount) return 0.0;
-  return kSSItems[sel].mult;
+// The render resolution a multiplier produces over a base, and whether it is
+// within the 8K ceiling. Both are needed: one to show, one to decide whether to
+// offer the multiplier at all.
+void renderFor(unsigned bw, unsigned bh, double mult,
+               unsigned* rw, unsigned* rh) {
+  *rw = (unsigned)(bw * mult + 0.5);
+  *rh = (unsigned)(bh * mult + 0.5);
 }
 
-// Compute the render resolution (base x multiplier, clamped) into out. Returns
-// false when there is nothing to render at (Auto base or Off).
+bool withinRenderLimit(unsigned bw, unsigned bh, double mult) {
+  unsigned rw, rh;
+  renderFor(bw, bh, mult, &rw, &rh);
+  return rw <= kMaxRenderWidth && rh <= kMaxRenderHeight;
+}
+
+// The supersampling dropdown holds only the multipliers that fit the current
+// base, so its indices are not kSSItems indices; each item carries its own as
+// item data. These two are the only way to read and write the selection.
+int ssIndex() {
+  const int sel = (int)SendMessageW(g_hSS, CB_GETCURSEL, 0, 0);
+  if (sel < 0) return 0;
+  const int index = (int)SendMessageW(g_hSS, CB_GETITEMDATA, sel, 0);
+  return index >= 0 && index < kSSCount ? index : 0;
+}
+
+// Select the entry for a kSSItems index, or Off when the list does not hold it
+// (the base is too large for that multiplier).
+void setSsIndex(int index) {
+  const int count = (int)SendMessageW(g_hSS, CB_GETCOUNT, 0, 0);
+  for (int i = 0; i < count; ++i) {
+    if ((int)SendMessageW(g_hSS, CB_GETITEMDATA, i, 0) == index) {
+      SendMessageW(g_hSS, CB_SETCURSEL, i, 0);
+      return;
+    }
+  }
+  SendMessageW(g_hSS, CB_SETCURSEL, 0, 0);
+}
+
+// The selected supersampling multiplier, or 0.0 when "Off" (index 0).
+double selectedMult() {
+  const int index = ssIndex();
+  if (index <= 0 || index >= kSSCount) return 0.0;
+  return kSSItems[index].mult;
+}
+
+// Rebuild the multiplier list for the current base, keeping the selection if it
+// still fits. Anything that would render above 8K is left out rather than
+// offered and then silently clamped: a 4K panel can have 1.5x but not 3x, and
+// the difference matters enough to be visible in the list.
+void refillSupersampling() {
+  const int wanted = ssIndex();
+  unsigned bw = 0, bh = 0;
+  const bool haveBase = selectedBase(&bw, &bh);
+  SendMessageW(g_hSS, CB_RESETCONTENT, 0, 0);
+  for (int i = 0; i < kSSCount; ++i) {
+    if (i && haveBase && !withinRenderLimit(bw, bh, kSSItems[i].mult))
+      continue;
+    const int at =
+      (int)SendMessageW(g_hSS, CB_ADDSTRING, 0, (LPARAM)kSSItems[i].label);
+    SendMessageW(g_hSS, CB_SETITEMDATA, at, i);
+  }
+  setSsIndex(wanted);
+}
+
+// Compute the render resolution (base x multiplier) into out. Returns false
+// when there is nothing to render at (Auto base or Off).
 bool computeRender(unsigned* rw, unsigned* rh) {
   unsigned bw, bh;
   double m = selectedMult();
   if (m <= 1.0 || !selectedBase(&bw, &bh))
     return false;
-  unsigned long long w = (unsigned long long)(bw * m + 0.5);
-  unsigned long long h = (unsigned long long)(bh * m + 0.5);
-  if (w > kMaxDim) w = kMaxDim;
-  if (h > kMaxDim) h = kMaxDim;
-  *rw = (unsigned)w; *rh = (unsigned)h;
+  renderFor(bw, bh, m, rw, rh);
   return true;
 }
 
@@ -317,7 +386,7 @@ void applyPreset(int index) {
   if (index < 0 || index >= kPresetCustom)
     return;
   const Preset& preset = kPresets[index];
-  SendMessageW(g_hSS, CB_SETCURSEL, preset.supersampling, 0);
+  setSsIndex(preset.supersampling);
   SendMessageW(g_hMsaa, CB_SETCURSEL, preset.msaa, 0);
   SendMessageW(g_hAniso, CB_SETCURSEL, preset.aniso, 0);
   SendMessageW(g_hShadow, CB_SETCURSEL, preset.shadow, 0);
@@ -329,7 +398,7 @@ void applyPreset(int index) {
 int detectPreset() {
   for (int i = 0; i < kPresetCustom; ++i) {
     const Preset& preset = kPresets[i];
-    if ((int)SendMessageW(g_hSS, CB_GETCURSEL, 0, 0) == preset.supersampling &&
+    if (ssIndex() == preset.supersampling &&
         (int)SendMessageW(g_hMsaa, CB_GETCURSEL, 0, 0) == preset.msaa &&
         (int)SendMessageW(g_hAniso, CB_GETCURSEL, 0, 0) == preset.aniso &&
         (int)SendMessageW(g_hShadow, CB_GETCURSEL, 0, 0) == preset.shadow &&
@@ -343,9 +412,13 @@ void refreshPreset() {
   SendMessageW(g_hPreset, CB_SETCURSEL, detectPreset(), 0);
 }
 
+// Defined with the rest of the drawing code below.
+void repaintUnder(HWND ctrl);
+
 void updateRenderResolution() {
   unsigned bw, bh;
   bool haveBase = selectedBase(&bw, &bh);
+  refillSupersampling();
   EnableWindow(g_hSS, haveBase);
   if (!haveBase)
     SendMessageW(g_hSS, CB_SETCURSEL, 0, 0);   // force Off
@@ -359,6 +432,9 @@ void updateRenderResolution() {
   else
     wsprintfA(text, "Render resolution: %u x %u", rw, rh);
   SetWindowTextA(g_hRendLbl, text);
+  // The only label whose text changes while the window is up, so the only one
+  // that has to clear what it said before.
+  repaintUnder(g_hRendLbl);
 }
 
 // ---- load / save -----------------------------------------------------------
@@ -409,7 +485,11 @@ void loadFromIni() {
       if (d < best) { best = d; ssSel = i; }
     }
   }
-  SendMessageW(g_hSS, CB_SETCURSEL, ssSel, 0);
+  // The list has to hold the multipliers for this base before one can be
+  // selected. A saved value the base no longer allows falls back to Off, which
+  // is the same answer the mod's own clamp gives that ini.
+  refillSupersampling();
+  setSsIndex(ssSel);
 
   // Sync the computed render-resolution label and the Auto-greys-out rule.
   updateRenderResolution();
@@ -552,32 +632,66 @@ void iniPathInDir(const char* dir) {
   lstrcpynA(g_iniPath + len, "arland-fix.ini", (int)(MAX_PATH - len));
 }
 
-// Index of the recognised game executable in `dir`, or -1 if it holds none.
-// `dir` must end in a separator.
+// Join `dir` (which must end in a separator) and `name` into `out`, and say
+// whether the result exists.
+bool fileInDir(const char* dir, const char* name, char* out) {
+  lstrcpynA(out, dir, MAX_PATH);
+  lstrcatA(out, name);
+  return GetFileAttributesA(out) != INVALID_FILE_ATTRIBUTES;
+}
+
+// Index into kGames of the game installed in `dir`, or -1 if it holds none.
+// Either of a game's two executables is enough to recognise it.
 int gameInFolder(const char* dir) {
-  for (int i = 0; i < kGameExeCount; ++i) {
-    char candidate[MAX_PATH];
-    lstrcpynA(candidate, dir, MAX_PATH);
-    lstrcatA(candidate, kGameExes[i].exe);
-    if (GetFileAttributesA(candidate) != INVALID_FILE_ATTRIBUTES)
+  char candidate[MAX_PATH];
+  for (int i = 0; i < kGameCount; ++i) {
+    if (fileInDir(dir, kGames[i].english, candidate) ||
+        fileInDir(dir, kGames[i].multilingual, candidate))
       return i;
   }
   return -1;
 }
 
+// The executable to start for a given [Lang] Language value, written into
+// `out`. Koei Tecmo's own launcher runs the `_en` build for Language=2 and the
+// multilingual build for 1 (Japanese), 3 (Simplified Chinese) and 4
+// (Traditional Chinese); anything else it treats as English. This matches that,
+// because the two builds do not each carry every language: starting the English
+// one with Language=3 gets English, which is exactly the bug this avoids.
+//
+// If the build the language calls for is not installed, the other one is used
+// rather than refusing to start anything.
+bool gameExeForLanguage(const char* language, char* out) {
+  if (g_game < 0 || !g_gameDir[0])
+    return false;
+  const char code = language ? language[0] : '2';
+  const bool english = code != '1' && code != '3' && code != '4';
+  const Game& game = kGames[g_game];
+  const char* first = english ? game.english : game.multilingual;
+  const char* second = english ? game.multilingual : game.english;
+  return fileInDir(g_gameDir, first, out) ||
+         fileInDir(g_gameDir, second, out);
+}
+
 // Point every path this tool works with at `dir`. `game` is an index into
-// kGameExes, or -1 when the folder holds no recognised game (the ini path is
+// kGames, or -1 when the folder holds no recognised game (the ini path is
 // still set, so Save can create one).
 void adoptFolder(const char* dir, int game) {
   iniPathInDir(dir);
   lstrcpynA(g_settingsPath, dir, MAX_PATH);
   lstrcatA(g_settingsPath, "ArlandDX_Settings.ini");
   lstrcpynA(g_gameDir, dir, MAX_PATH);   // keeps its trailing separator
+  g_game = game;
   if (game < 0)
     return;
-  g_gameName = kGameExes[game].name;
-  lstrcpynA(g_gameExePath, dir, MAX_PATH);
-  lstrcatA(g_gameExePath, kGameExes[game].exe);
+  g_gameName = kGames[game].name;
+  // For the icon and for whether Start game can do anything at all; which
+  // executable actually runs is decided at that point, from the language.
+  char language[16] = {};
+  GetPrivateProfileStringA("Lang", "Language", "2", language, sizeof(language),
+    g_settingsPath);
+  if (!gameExeForLanguage(language, g_gameExePath))
+    g_gameExePath[0] = '\0';
 }
 
 // Work out which game folder to configure.
@@ -766,10 +880,30 @@ HWND mkDesc(HWND parent, const wchar_t* text, int y) {
   return h;
 }
 
+// Repaint the whole area a control covers, background included. The labels are
+// drawn without a background of their own (see WM_CTLCOLORSTATIC), so whatever
+// they had before stays on screen until the tab page underneath is redrawn --
+// which needs the parent, the tab control and the label itself, in that order.
+void repaintUnder(HWND ctrl) {
+  HWND parent = GetParent(ctrl);
+  if (!parent)
+    return;
+  RECT area;
+  GetWindowRect(ctrl, &area);
+  MapWindowPoints(nullptr, parent, (POINT*)&area, 2);
+  RedrawWindow(parent, &area, nullptr,
+    RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN);
+}
+
 void showPage(int page) {
   for (int p = 0; p < 3; ++p)
     for (int i = 0; i < g_pageCount[p]; ++i)
       ShowWindow(g_pageCtrls[p][i], p == page ? SW_SHOW : SW_HIDE);
+  // The outgoing page's labels leave their text behind them, so the page is
+  // redrawn as a whole rather than relying on each control to clean up after
+  // itself.
+  if (g_hTabs)
+    repaintUnder(g_hTabs);
 }
 
 void createControls(HWND w) {
@@ -867,10 +1001,11 @@ void createControls(HWND w) {
   onPage(1, mkLabel(w, L"Supersampling:", L, 130, 140, 18));
   g_hSS = mkCombo(w, F, 126, 170, IDC_SS);
   onPage(1, g_hSS);
-  for (int i = 0; i < kSSCount; ++i)
-    SendMessageW(g_hSS, CB_ADDSTRING, 0, (LPARAM)kSSItems[i].label);
+  refillSupersampling();
   onPage(1, mkDesc(w,
-    L"Renders higher, then scales down. Sharpest, and the most costly.", 150));
+    L"Renders higher, then scales down. Sharpest, and the most costly. "
+    L"Limited to 8K, which is as far as the engine's own targets stretch.",
+    150));
 
   g_hRendLbl = mkDesc(w, L"Render resolution:", 186);
   onPage(1, g_hRendLbl);
@@ -978,17 +1113,24 @@ LRESULT CALLBACK WndProc(HWND w, UINT msg, WPARAM wp, LPARAM lp) {
       break;
     }
     case WM_CTLCOLORSTATIC: {
-      // The one-line notes under each quality control are secondary text, so
-      // they are drawn in the system's grey rather than competing with the
-      // labels they explain.
+      // Every label sits on top of the tab control, and a themed tab page is
+      // lighter than COLOR_BTNFACE. Handing back a real brush therefore paints
+      // that grey behind the text, which reads as a box drawn around each line.
+      // A hollow brush leaves the page the tab control has already drawn, and
+      // TRANSPARENT stops the text bringing its own background with it. The
+      // cost is that a static no longer erases what it had before, which is
+      // what repaintUnder is for.
+      SetBkMode((HDC)wp, TRANSPARENT);
+      // The one-line notes under each control are secondary text, so they are
+      // drawn in the system's grey rather than competing with the labels they
+      // explain.
       for (int i = 0; i < g_descCount; ++i) {
         if ((HWND)lp == g_hDesc[i]) {
           SetTextColor((HDC)wp, GetSysColor(COLOR_GRAYTEXT));
-          SetBkMode((HDC)wp, TRANSPARENT);
-          return (LRESULT)GetSysColorBrush(COLOR_BTNFACE);
+          break;
         }
       }
-      break;
+      return (LRESULT)GetStockObject(NULL_BRUSH);
     }
     case WM_COMMAND:
       // Base or supersampling changed: recompute the render label and the
@@ -1029,19 +1171,34 @@ LRESULT CALLBACK WndProc(HWND w, UINT msg, WPARAM wp, LPARAM lp) {
           // Save first: starting the game with the settings still only on
           // screen is the one outcome nobody wants from this button.
           saveToIni();
-          const INT_PTR result = (INT_PTR)ShellExecuteA(
-            w, "open", g_gameExePath, nullptr, g_gameDir, SW_SHOWNORMAL);
-          // ShellExecute reports failure as a value of 32 or less.
-          if (result <= 32) {
+          // Which executable to run follows the language that was just saved,
+          // exactly as the game's own launcher decides it. Read from the
+          // control rather than the file so it is the selection in front of the
+          // user, not a stale one.
+          char exePath[MAX_PATH] = {};
+          const bool have = gameExeForLanguage(
+            comboValue(g_hLang, kLangItems, kLangCount), exePath);
+          // CreateProcess rather than ShellExecute: the game has to be a child
+          // of this process for Steam to keep counting the session as running,
+          // which is what keeps the overlay and Steam Input attached to it.
+          STARTUPINFOA startup = {};
+          startup.cb = sizeof(startup);
+          PROCESS_INFORMATION process = {};
+          const BOOL started = have && CreateProcessA(exePath, nullptr, nullptr,
+            nullptr, FALSE, 0, nullptr, g_gameDir, &startup, &process);
+          if (!started) {
             wchar_t failed[320];
             wsprintfW(failed,
               L"The configuration was saved, but %s could not be started "
-              L"(error %d). Launch the game as you normally would; the saved "
+              L"(error %lu). Launch the game as you normally would; the saved "
               L"settings still apply.",
-              g_gameName ? g_gameName : L"the game", (int)result);
+              g_gameName ? g_gameName : L"the game",
+              have ? GetLastError() : (DWORD)ERROR_FILE_NOT_FOUND);
             MessageBoxW(w, failed, L"Atelier Arland Fixes", MB_OK | MB_ICONWARNING);
             return 0;
           }
+          CloseHandle(process.hThread);
+          CloseHandle(process.hProcess);
           // The game is running and owns the screen from here, so the
           // configurator steps out of the way rather than sitting behind it.
           DestroyWindow(w);
