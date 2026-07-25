@@ -801,7 +801,14 @@ bool textBitmapCacheEnabled() {
 bool menuStatsEnabled() {
   static const bool enabled = [] {
     const char* value = std::getenv("ARLAND_MENU_STATS");
-    return value && value[0] != '0';
+    if (value)
+      return value[0] != '0';
+    // Follows [Diagnostics] VerboseLogging otherwise: a pure observer, so the
+    // launcher's checkbox can turn it on without changing what is being
+    // observed. The traces that alter behaviour (the menu transition trace, the
+    // cut-in blob probe) deliberately do NOT do this -- a diagnostic that moves
+    // the code path it reports on is worse than none.
+    return atfix::verboseLogging();
   }();
   return enabled;
 }

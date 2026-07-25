@@ -24,6 +24,7 @@
 #include <d3dcompiler.h>
 
 #include <atomic>
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
@@ -229,6 +230,12 @@ float downscaleSamples() {
 
 bool ssaaRequested() {
   static const bool requested = [] {
+    // Borderless can need this pass even with no supersampling configured: the
+    // monitor may not be the shape of the chosen resolution, and fitting one
+    // inside the other goes through the same redirect. The monitor is not known
+    // here, so borderless arms the machinery and ssaaNoteSwapChain decides.
+    if (borderlessWindow())
+      return true;
     UINT renderWidth = 0, renderHeight = 0;
     if (!renderResolution(&renderWidth, &renderHeight))
       return false;
@@ -270,6 +277,17 @@ ID3D11Texture2D* ssaaRedirectRenderTargetView(
   return g_color;
 }
 
+bool ssaaIsBackbuffer(ID3D11Resource* resource) {
+  if (!resource || !g_backbuffer || !ssaaActive())
+    return false;
+  ID3D11Texture2D* texture = nullptr;
+  if (FAILED(resource->QueryInterface(IID_PPV_ARGS(&texture))) || !texture)
+    return false;
+  const bool isBackbuffer = static_cast<const void*>(texture) == g_backbuffer;
+  texture->Release();
+  return isBackbuffer;
+}
+
 ID3D11Texture2D* ssaaAcquireColor() {
   // Until a redirect has actually happened the frame is still going to the
   // backbuffer, and callers wanting "where the finished frame is" must be told
@@ -293,10 +311,25 @@ void ssaaNoteSwapChain(IDXGISwapChain* swapChain) {
   back->GetDesc(&backDesc);
 
   UINT renderWidth = 0, renderHeight = 0;
-  if (!renderResolution(&renderWidth, &renderHeight) ||
-      (renderWidth <= backDesc.Width && renderHeight <= backDesc.Height)) {
-    // A render resolution no larger than the backbuffer is not supersampling;
-    // the existing single-resolution path already covers it.
+  if (!renderResolution(&renderWidth, &renderHeight)) {
+    back->Release();
+    return;
+  }
+  // Two reasons to take this path: rendering larger than the backbuffer
+  // (supersampling), or rendering a different SHAPE from it (a 16:9 game on a
+  // 16:10 panel), which needs fitting rather than stretching. Same size and
+  // same shape needs neither.
+  const bool larger =
+    renderWidth > backDesc.Width || renderHeight > backDesc.Height;
+  const bool differentShape =
+    uint64_t(renderWidth) * backDesc.Height !=
+    uint64_t(backDesc.Width) * renderHeight;
+  // Borderless takes this path even when neither applies. Its swap chain is
+  // flip-model (see applyResolutionOverride), and a flip-model backbuffer is
+  // unbound after every present -- so something has to bind it each frame. This
+  // pass does, which is what makes that swap-chain change safe. At matching size
+  // and shape it degenerates to a 1:1 copy: one fullscreen pass, no filtering.
+  if (!larger && !differentShape && !borderlessWindow()) {
     back->Release();
     return;
   }
@@ -423,8 +456,24 @@ void ssaaDownscale(IDXGISwapChain* swapChain) {
   // Bind the backbuffer first: that unbinds the render target the game left
   // bound, which is the very texture we are about to sample.
   context->OMSetRenderTargets(1, &g_backRTV, nullptr);
+
+  // Fit the rendered frame inside the backbuffer without changing its shape:
+  // the larger of the two scale factors would crop, so the smaller one is used
+  // and the remainder becomes bars. When the shapes match this is the whole
+  // backbuffer and the clear costs one fill of pixels nothing else writes.
+  const float scale = std::min(
+    float(g_displayWidth) / float(g_renderWidth),
+    float(g_displayHeight) / float(g_renderHeight));
+  const float fittedWidth = float(g_renderWidth) * scale;
+  const float fittedHeight = float(g_renderHeight) * scale;
   const D3D11_VIEWPORT viewport = {
-    0.0f, 0.0f, float(g_displayWidth), float(g_displayHeight), 0.0f, 1.0f };
+    (float(g_displayWidth) - fittedWidth) * 0.5f,
+    (float(g_displayHeight) - fittedHeight) * 0.5f,
+    fittedWidth, fittedHeight, 0.0f, 1.0f };
+  // The bars have to be painted every frame: nothing else in the pipeline
+  // writes those pixels, so whatever the last frame left there would stay.
+  const float black[4] = { 0.0f, 0.0f, 0.0f, 1.0f };
+  context->ClearRenderTargetView(g_backRTV, black);
   context->RSSetViewports(1, &viewport);
   context->RSSetState(g_raster);
   context->OMSetBlendState(g_blendState, nullptr, 0xffffffff);

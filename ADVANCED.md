@@ -109,7 +109,7 @@ To supply your own replacement font instead, drop a `arland-hires-font.ttf` next
 
 ## MSAA
 
-Multisample anti-aliasing defaults to **2x**. `MSAA` in the `[Rendering]` section requests a sample count of `1` (off), `2`, `4`, or `8`:
+Multisample anti-aliasing is off by default — SMAA, below, is the anti-aliasing the mod ships with, and it costs far less. `MSAA` in the `[Rendering]` section requests a sample count of `2`, `4`, or `8`:
 
 ```ini
 [Rendering]
@@ -197,11 +197,12 @@ These are environment variables, not INI keys: they are for narrowing down a pro
 
 | Variable | Effect |
 | --- | --- |
-| `ARLAND_VERBOSE_LOG=1` | Extra logging, same as `[Diagnostics] VerboseLogging`. |
+| `ARLAND_VERBOSE_LOG=1` | Extra logging, same as `[Diagnostics] VerboseLogging`. Turns on the observing diagnostics below — the frame-time line, menu statistics, scene tracking and the memory probe — so a log can be asked for without anyone editing environment variables. The heavier traces stay opt-in individually, and the two that change behaviour rather than only reporting (`ARLAND_MENU_TRANSITION_TRACE`, `ARLAND_CUTIN_BLOB`) are deliberately never included: a diagnostic that moves the code path it reports on is worse than none. |
 | `ARLAND_MENU_STATS=1` | Per-drain menu timings and cache hit rates. |
 | `ARLAND_FIELD_TRACE=1` | Logs the field-map character's state around each loss of footing. |
 | `ARLAND_PRESENT_INTERVAL=0` | Forces vsync off (`1`, `2`, `3` present every Nth refresh). Useful with an external frame limiter. Unset, the game's own vsync is left alone; `0` will tear in exclusive fullscreen. |
 | `ARLAND_NO_REDIRECT=1` | Opens Koei Tecmo's own launcher instead of the mod's. |
+| `ARLAND_PERF_LOG=1` | On with verbose logging; set explicitly to `0` to suppress it or `1` without it. Writes a `PERF` line to `arland-fix.log` every ten seconds: average frame rate, average frame time, and the worst single frame in that window. For comparing one setting against another, which an average alone cannot do — a steady 60 with a 90 ms hitch reads very differently from a steady 60. |
 | `ARLAND_DISABLE=1` | Stands the whole mod down for one launch: `d3d11.dll` still loads and still forwards Direct3D, but installs no hooks and changes nothing, so the game runs as it shipped. This is what the launcher's **Play without the mod** button passes to the game, and it is the quickest way to tell a problem apart from a problem the mod is causing without moving files out of the game folder. |
 | `ARLAND_FIELD_ENGINE_FIX=0` | Restores the game's own minimum-movement distance, reinstating the high-refresh field-map problems. For comparing against unmodified behaviour. |
 | `ARLAND_FIELD_STABILIZER=0` | Stops holding the character still at rest, leaving a small residual movement at high frame rates. Ignored unless the option above is also on. |

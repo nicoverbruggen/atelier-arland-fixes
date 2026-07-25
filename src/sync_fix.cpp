@@ -480,6 +480,30 @@ static RasterState g_defRasterState;
 // MSAA design adapted from TellowKrinkle's atelier-sync-fix rendering fork.
 // The game continues to own single-sample resources; matching multisample
 // render targets are attached as private data and resolved before every read.
+// What a render target IS, recorded when the mod resizes it, so nothing has to
+// work it out again from its dimensions later.
+//
+// Sizes cannot answer this question reliably. At exactly 2x supersampling
+// main/2 == the display size, so "half the render target" and "the size the
+// game asked for" are the same number and a size test cannot tell a half-res
+// blur target from a full-size one. Every such collision this project has hit
+// -- the black conversations, the scene drawn into a quarter of the frame --
+// is that ambiguity resolving the wrong way. The mod knows the answer at the
+// moment it resizes the texture; this writes it down instead of guessing later.
+static const GUID IID_ResolutionRole =
+  {0x9a3c17e4,0x5b62,0x4f0a,{0xb1,0x77,0x2e,0x64,0x9d,0x3f,0x8c,0x21}};
+enum ResolutionRole : UINT { RoleNone = 0, RoleMain = 1, RoleHalf = 2 };
+
+UINT resolutionRole(ID3D11Resource* resource) {
+  if (!resource)
+    return RoleNone;
+  UINT role = RoleNone;
+  UINT size = sizeof(role);
+  if (FAILED(resource->GetPrivateData(IID_ResolutionRole, &size, &role)))
+    return RoleNone;
+  return role;
+}
+
 static const GUID IID_MSAAResource = {0xe2728d94,0x9fdd,0x40d0,{0x87,0xa8,0x09,0xb6,0x2d,0xf3,0x14,0x9a}};
 static const GUID IID_MSAAState = {0xe2728d93,0x9fdd,0x40d0,{0x87,0xa8,0x09,0xb6,0x2d,0xf3,0x14,0x9a}};
 static const GUID IID_MSAABoundHost = {0xe2728d98,0x9fdd,0x40d0,{0x87,0xa8,0x09,0xb6,0x2d,0xf3,0x14,0x9a}};
@@ -720,6 +744,84 @@ bool applyResolutionOverride(DXGI_SWAP_CHAIN_DESC* pDesc) {
   UINT height = 0;
   if (!displayResolution(&width, &height))
     return false;
+  // Borderless covers the whole monitor, and a monitor is not always the shape
+  // of the resolution chosen for it -- a Steam Deck is 1280x800, 16:10, while
+  // every resolution offered here is 16:9. Presenting a 16:9 backbuffer into a
+  // 16:10 window makes DXGI stretch it to fit, which is a vertically squashed
+  // picture, so instead the CHAIN takes the monitor's size and the game keeps
+  // rendering at the chosen one. supersample.cpp then fits one inside the other
+  // with black bars rather than distorting it.
+  if (borderlessWindow() && pDesc->OutputWindow) {
+    if (HMONITOR monitor = MonitorFromWindow(pDesc->OutputWindow,
+          MONITOR_DEFAULTTONEAREST)) {
+      MONITORINFO info = { };
+      info.cbSize = sizeof(info);
+      if (GetMonitorInfoW(monitor, &info)) {
+        const UINT monitorWidth = info.rcMonitor.right - info.rcMonitor.left;
+        const UINT monitorHeight = info.rcMonitor.bottom - info.rcMonitor.top;
+        // Compared as a cross product so no division rounds the answer away.
+        if (monitorWidth && monitorHeight &&
+            uint64_t(monitorWidth) * height != uint64_t(monitorHeight) * width) {
+          log("Aspect fit: presenting at the monitor's ", std::dec,
+              monitorWidth, "x", monitorHeight, " and rendering at ",
+              width, "x", height, ", letterboxed rather than stretched");
+          width = monitorWidth;
+          height = monitorHeight;
+        }
+      }
+    }
+  }
+
+  // Borderless gets a FLIP-model swap chain.
+  //
+  // These games ask for DXGI_SWAP_EFFECT_DISCARD, the blt model. In exclusive
+  // fullscreen that flips straight to the display, but a windowed blt chain is
+  // composited: every present COPIES the backbuffer into DWM's surface, and a
+  // frame that misses its vblank waits for the next one. That does not slow
+  // down gently -- it halves, 90 to 45 or 60 to 30, which is the doubled frame
+  // time borderless was reported to have.
+  //
+  // The flip model lets the compositor take the buffer directly (an independent
+  // flip), with no copy and no half-rate lock. It requires a non-multisampled
+  // backbuffer and at least two buffers, both set here; the game's own MSAA
+  // goes through the mod's separate multisampled twins, never the swap chain,
+  // so forcing a single sample here takes nothing away.
+  //
+  // The catch that makes this safe: a flip-model backbuffer is unbound from the
+  // pipeline after every present, so anything that binds it once and assumes it
+  // stays bound would draw nowhere. That is why supersample.cpp is made to own
+  // the final pass whenever borderless is on -- it binds the backbuffer itself,
+  // every frame, so the requirement is met by construction rather than by hope.
+  // Seed the main render size from the configuration rather than waiting to
+  // recognise it from a texture. It is known here -- it is what the ini says --
+  // and until it is set, the auxiliary-target branch in CreateTexture2D is
+  // gated off, so anything created before the main target happens to appear is
+  // classified against nothing and silently left at its original size. The
+  // detection below still runs and still logs; this only removes the window
+  // where the answer was available but not yet recorded.
+  {
+    UINT seedWidth = 0;
+    UINT seedHeight = 0;
+    if (renderResolution(&seedWidth, &seedHeight) &&
+        !g_mainRtWidth.load(std::memory_order_relaxed)) {
+      g_mainRtWidth.store(seedWidth, std::memory_order_relaxed);
+      g_mainRtHeight.store(seedHeight, std::memory_order_relaxed);
+      log("Main render size seeded from the configuration: ", std::dec,
+          seedWidth, "x", seedHeight);
+    }
+  }
+
+  if (borderlessWindow()) {
+    pDesc->SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
+    if (pDesc->BufferCount < 2)
+      pDesc->BufferCount = 2;
+    pDesc->SampleDesc.Count = 1;
+    pDesc->SampleDesc.Quality = 0;
+    log("Borderless: flip-model swap chain (", std::dec, pDesc->BufferCount,
+        " buffers), so presents are an independent flip rather than a"
+        " composited copy");
+  }
+
   pDesc->BufferDesc.Width = width;
   pDesc->BufferDesc.Height = height;
   pDesc->BufferDesc.RefreshRate.Numerator = 0;
@@ -1800,6 +1902,9 @@ HRESULT STDMETHODCALLTYPE ID3D11Device_CreateTexture2D(
   const bool haveOriginalDesc = pDesc != nullptr;
   bool createShadowTwin = false;
 
+  // Declared out here because it is written while deciding the resize and read
+  // after the texture exists.
+  UINT role = RoleNone;
   if (pDesc) {
     originalDesc = *pDesc;
     desc = *pDesc;
@@ -1830,6 +1935,7 @@ HRESULT STDMETHODCALLTYPE ID3D11Device_CreateTexture2D(
         static_cast<uint64_t>(desc.Width) * 9 ==
           static_cast<uint64_t>(desc.Height) * 16;
       if (matchesOriginalSwap || knownMainShape) {
+        role = RoleMain;
         UINT overrideWidth = 0;
         UINT overrideHeight = 0;
         if (renderResolution(&overrideWidth, &overrideHeight)) {
@@ -1883,6 +1989,7 @@ HRESULT STDMETHODCALLTYPE ID3D11Device_CreateTexture2D(
         desc.MipLevels == 1 && desc.ArraySize == 1 &&
         desc.SampleDesc.Count == 1;
       if (fullSizeTarget || halfSizeBlurTarget) {
+        role = halfSizeBlurTarget ? RoleHalf : RoleMain;
         desc.Width = halfSizeBlurTarget ? mainWidth / 2 : mainWidth;
         desc.Height = halfSizeBlurTarget ? mainHeight / 2 : mainHeight;
         changed = true;
@@ -1927,6 +2034,10 @@ HRESULT STDMETHODCALLTYPE ID3D11Device_CreateTexture2D(
   }
 
   const HRESULT hr = procs->CreateTexture2D(pDevice, pDesc, pData, ppTexture);
+  // Written onto the texture itself, so every later question about what this
+  // target is gets the answer the resize decision already had.
+  if (SUCCEEDED(hr) && role != RoleNone && ppTexture && *ppTexture)
+    (*ppTexture)->SetPrivateData(IID_ResolutionRole, sizeof(role), &role);
   if (createShadowTwin && SUCCEEDED(hr) && ppTexture && *ppTexture) {
     const UINT shadowRes = shadowMapResolution();
     D3D11_TEXTURE2D_DESC twinDesc = originalDesc;
@@ -2136,13 +2247,20 @@ void updateViewportScissor(ID3D11DeviceContext* pContext) {
         desc.Width == shadowRes && desc.Height == shadowRes &&
         desc.Format == DXGI_FORMAT_R24G8_TYPELESS &&
         isShadowResResized(texture);
+      const UINT role = resolutionRole(texture);
       texture->Release();
       const UINT mainWidth = g_mainRtWidth.load(std::memory_order_relaxed);
       const UINT mainHeight = g_mainRtHeight.load(std::memory_order_relaxed);
-      const bool fullSizeTarget = desc.Width == mainWidth &&
-        desc.Height == mainHeight;
-      const bool halfSizeTarget = desc.Width == mainWidth / 2 &&
-        desc.Height == mainHeight / 2;
+      // The tag when the mod resized this target, its size otherwise. The
+      // fallback keeps every target the mod never touched behaving exactly as
+      // before; the tag is what makes the 2x case unambiguous, where
+      // main/2 and the display size are the same number.
+      const bool fullSizeTarget = role != RoleNone
+        ? role == RoleMain
+        : (desc.Width == mainWidth && desc.Height == mainHeight);
+      const bool halfSizeTarget = role != RoleNone
+        ? role == RoleHalf
+        : (desc.Width == mainWidth / 2 && desc.Height == mainHeight / 2);
       resizeViewport = (fullSizeViewport && fullSizeTarget) ||
         (halfSizeViewport && halfSizeTarget) ||
         (shadowSizeViewport && shadowTarget);
@@ -2484,6 +2602,9 @@ void STDMETHODCALLTYPE ID3D11DeviceContext_CopySubresourceRegion(
   }
 
   D3D11_BOX scaledBox = { };
+  // Held until the copy has been issued: the substituted source is AddRef'd by
+  // ssaaAcquireColor and must outlive the call that consumes it.
+  ID3D11Texture2D* substitutedSource = nullptr;
   const UINT mainWidth = g_mainRtWidth.load(std::memory_order_relaxed);
   const UINT mainHeight = g_mainRtHeight.load(std::memory_order_relaxed);
   // The source box is hard-coded 1080p; under a render/display split the game
@@ -2530,6 +2651,52 @@ void STDMETHODCALLTYPE ID3D11DeviceContext_CopySubresourceRegion(
         IID_DialogSnapshotResource, sizeof(marker), &marker);
       log("Expanded dialogue snapshot copy from ", std::dec, fromWidth, "x",
           fromHeight, " to ", mainWidth, "x", mainHeight);
+    } else if (texture2DDesc(pDstResource, &dstDesc) &&
+               texture2DDesc(pSrcResource, &srcDesc) &&
+               dstDesc.Width == mainWidth && dstDesc.Height == mainHeight &&
+               isBgra8(dstDesc.Format) && isBgra8(srcDesc.Format) &&
+               ssaaIsBackbuffer(pSrcResource)) {
+      // The engine takes its screen snapshots -- the frozen scene behind a shop
+      // or conversation menu -- by copying FROM the swap chain's backbuffer,
+      // which it fetches with GetBuffer. That is why the render-target redirect
+      // never catches this: the redirect replaces VIEWS the engine creates over
+      // the backbuffer, and a copy needs no view.
+      //
+      // Under supersampling the backbuffer holds the finished frame already
+      // DOWNSCALED to the display size, while the snapshot texture has been
+      // resized to the render size. Copying one into the other lands a
+      // 1920x1080 image in the top-left corner of a 3840x2160 texture, and the
+      // menu then draws that texture full-screen: the scene appears in a
+      // quarter of the frame with black around it.
+      //
+      // So the source is substituted for the mod's own render-resolution
+      // colour target, which holds the same frame before it was downscaled --
+      // the copy then fills the snapshot, at full resolution rather than the
+      // display's. Nothing changes when supersampling is off: ssaaAcquireColor
+      // returns null and this falls through to the vanilla copy.
+      //
+      // Not the 2x size ambiguity that caused the neighbouring bugs: this one
+      // fails at every factor, because the backbuffer is always the display
+      // size and the snapshot is always the render size.
+      if (ID3D11Texture2D* fullResolution = ssaaAcquireColor()) {
+        substitutedSource = fullResolution;
+        pSrcResource = fullResolution;
+        scaledBox.left = 0;
+        scaledBox.top = 0;
+        scaledBox.front = 0;
+        scaledBox.right = mainWidth;
+        scaledBox.bottom = mainHeight;
+        scaledBox.back = 1;
+        pSrcBox = &scaledBox;
+        const UINT marker = 1;
+        pDstResource->SetPrivateData(
+          IID_DialogSnapshotResource, sizeof(marker), &marker);
+        static std::atomic<bool> saidSo { false };
+        if (!saidSo.exchange(true))
+          log("Snapshot copy taken from the render-resolution frame instead of"
+              " the downscaled backbuffer (", std::dec, mainWidth, "x",
+              mainHeight, ")");
+      }
     } else if (texture2DDesc(pDstResource, &dstDesc) &&
                texture2DDesc(pSrcResource, &srcDesc)) {
       // A copy that looked like the dialogue snapshot but failed one of the
@@ -2611,6 +2778,10 @@ void STDMETHODCALLTYPE ID3D11DeviceContext_CopySubresourceRegion(
 
     dstShadow->Release();
   }
+
+  // Released only here: every copy above may have consumed it.
+  if (substitutedSource)
+    substitutedSource->Release();
 }
 
 void STDMETHODCALLTYPE ID3D11DeviceContext_CopyStructureCount(

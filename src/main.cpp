@@ -120,12 +120,33 @@ bool menuTransitionTraceEnabled() {
     arland::battleShadowRestoreActive();
 }
 
+// Frame-time logging, off unless asked for. It is a measuring tool rather than
+// something a normal session needs, and leaving it on would put a line in every
+// user's log every ten seconds for the benefit of nobody reading it.
+//
+// Present has to be hooked for it, which is why it appears in presentHookNeeded
+// below: when it IS on, an A/B usually means turning the other features off, and
+// the hook would otherwise go with them and take the measurement with it.
+bool perfLogEnabled() {
+  static const bool enabled = [] {
+    const char* value = std::getenv("ARLAND_PERF_LOG");
+    if (value)
+      return value[0] != '0';
+    // Otherwise it follows [Diagnostics] VerboseLogging, so the launcher's own
+    // checkbox turns it on. That matters more than it sounds: a tester cannot
+    // easily set an environment variable, least of all through Steam, and this
+    // is exactly the measurement worth asking a tester for.
+    return atfix::verboseLogging();
+  }();
+  return enabled;
+}
+
 // Present must be hooked whenever the transition trace, SMAA, the supersampling
-// downscale or borderless mode needs it.
+// downscale, borderless mode or the frame-time log needs it.
 bool presentHookNeeded() {
   return menuTransitionTraceEnabled() || atfix::smaaEnabled() ||
     atfix::presentTraceEnabled() || atfix::ssaaRequested() ||
-    atfix::borderlessWindow();
+    atfix::borderlessWindow() || perfLogEnabled();
 }
 
 // Replace the game's present interval for a session: 0 turns vsync off so an
@@ -169,6 +190,54 @@ HRESULT STDMETHODCALLTYPE tracedPresent(
           "MB commit=", static_cast<unsigned>(pmc.PagefileUsage >> 20u), "MB");
     }
   }
+  // Frame-time heartbeat. On by default and deliberately so: the questions this
+  // project keeps having to answer are "what does this setting cost?" and "is
+  // it slower than it was?", and both are unanswerable from a report that says
+  // "it felt fine". A line every ten seconds makes any two runs comparable
+  // without the tester installing an overlay or knowing what one is.
+  //
+  // The average alone hides the thing people actually notice, so the worst
+  // frame in the window is reported alongside it: a steady 60 with a 90 ms
+  // hitch reads very differently from a steady 60.
+  //
+  // Costs one timestamp subtraction per frame, which is already being taken
+  // above for other reasons.
+  if (previous && perfLogEnabled()) {
+    static std::atomic<int64_t> windowStartNanos{0};
+    static std::atomic<int64_t> windowFrames{0};
+    static std::atomic<int64_t> windowWorstNanos{0};
+
+    const int64_t frameNanos = startedNanos - previous;
+    windowFrames.fetch_add(1, std::memory_order_relaxed);
+    int64_t worst = windowWorstNanos.load(std::memory_order_relaxed);
+    while (frameNanos > worst && !windowWorstNanos.compare_exchange_weak(
+        worst, frameNanos, std::memory_order_relaxed)) {}
+
+    int64_t windowStart = windowStartNanos.load(std::memory_order_relaxed);
+    if (!windowStart) {
+      windowStartNanos.compare_exchange_strong(windowStart, startedNanos,
+        std::memory_order_relaxed);
+    } else if (startedNanos - windowStart >= 10'000'000'000LL &&
+               windowStartNanos.compare_exchange_strong(windowStart,
+                 startedNanos, std::memory_order_relaxed)) {
+      const int64_t frames = windowFrames.exchange(0, std::memory_order_relaxed);
+      const int64_t worstFrame =
+        windowWorstNanos.exchange(0, std::memory_order_relaxed);
+      const int64_t elapsed = startedNanos - windowStart;
+      if (frames > 0 && elapsed > 0) {
+        // Integer arithmetic with one decimal place: the log has no float
+        // formatting and a rounded whole number hides a 59-vs-60 difference.
+        const int64_t fpsTenths = frames * 10'000'000'000LL / elapsed;
+        const int64_t averageMicros = elapsed / frames / 1000;
+        log("PERF fps=", std::dec, fpsTenths / 10, ".", fpsTenths % 10,
+            " avg=", averageMicros / 1000, ".",
+            (averageMicros % 1000) / 100, "ms",
+            " worst=", worstFrame / 1'000'000, "ms",
+            " frames=", frames);
+      }
+    }
+  }
+
   atfix::maintainBorderlessWindow();   // re-applies only if the game restyled
   atfix::notePresentBackbuffer(swapChain);   // ARLAND_PRESENT_TRACE diagnostic
   atfix::cutinDrawContactBlobs(swapChain);

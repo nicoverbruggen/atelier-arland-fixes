@@ -260,13 +260,16 @@ struct Preset {
 //
 // Balanced matches what the mod ships with (default.ini and the literals in
 // src/), so a fresh install opens on a named preset rather than on Custom, and
-// the launcher and the drop-in DLL agree about what "default" means. Neither of
-// its settings is expensive on anything that runs these games -- anisotropic
-// filtering in particular costs nothing per frame.
+// the launcher and the drop-in DLL agree about what "default" means.
+//
+// It leans on SMAA rather than MSAA for anti-aliasing: SMAA is on at every tier
+// and costs one cheap full-frame pass, where multisampling costs memory and
+// bandwidth on every render target. So MSAA starts at Medium, for people who
+// want more than the shader gives, and the default spends nothing on it.
 const Preset kPresets[] = {
   //                        SS  MSAA  SMAA  aniso  shadow
   { L"Low",                  0,   0,  true,     0,      0 },
-  { L"Balanced (default)",   0,   1,  true,     3,      0 },
+  { L"Balanced (default)",   0,   0,  true,     3,      0 },
   { L"Medium",               0,   2,  true,     3,      0 },
   { L"High",                 2,   0,  true,     4,      1 },
   { L"Maximum",              3,   0,  true,     4,      2 },
@@ -1487,7 +1490,7 @@ void createControls(HWND w) {
 
     g_hMsaa = mkCombo(w, 0, 0, 10, IDC_MSAA);
     comboFill(g_hMsaa, kMsaaItems, 4);
-    page.row(L"Multisampling:", g_hMsaa,
+    page.row(L"Anti-aliasing (MSAA):", g_hMsaa,
       L"MSAA. Smooths geometry edges; supersampling usually beats it.");
 
     g_hAniso = mkCombo(w, 0, 0, 10, IDC_ANISO);

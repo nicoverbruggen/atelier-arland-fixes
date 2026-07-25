@@ -47,6 +47,13 @@ ID3D11Texture2D* ssaaRedirectRenderTargetView(
 // or null when supersampling is inactive.
 ID3D11Texture2D* ssaaAcquireColor();
 
+// Whether a resource IS the swap chain's backbuffer. The engine takes screen
+// snapshots by copying from it, and under supersampling that holds the already
+// downscaled frame -- so a copy into a render-resolution texture has to be told
+// to take the full-resolution one instead. Only this module knows which texture
+// that is; see the note in ID3D11DeviceContext_CopySubresourceRegion.
+bool ssaaIsBackbuffer(ID3D11Resource* resource);
+
 // Downscale the finished render-resolution frame into the backbuffer. Called
 // from the Present hook, after any present-time post-processing and before the
 // real Present. No-op unless active.

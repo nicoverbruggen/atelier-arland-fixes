@@ -32,7 +32,7 @@ const char* configPath() {
 
     if (result[0] &&
         GetFileAttributesA(result.data()) == INVALID_FILE_ATTRIBUTES) {
-      WritePrivateProfileStringA("Rendering", "MSAA", "2", result.data());
+      WritePrivateProfileStringA("Rendering", "MSAA", "1", result.data());
       // Display = backbuffer / panel resolution (blank uses the game's own,
       // i.e. the old launcher's, resolution). Render = internal render target
       // (blank equals Display). A Render larger than Display supersamples the
@@ -424,7 +424,7 @@ UINT msaaSamples() {
       requested = std::strtoul(value, nullptr, 10);
     } else if (path) {
       requested = GetPrivateProfileIntA(
-        "Rendering", "MSAA", 2, path);
+        "Rendering", "MSAA", 1, path);
     }
     if (requested < 2)
       return 1u;
