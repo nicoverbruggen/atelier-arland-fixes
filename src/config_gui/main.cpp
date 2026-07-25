@@ -1,14 +1,22 @@
 // SPDX-License-Identifier: MIT
 //
-// arland-fix-launcher.exe: a small standalone Win32 GUI to view and edit the
-// atelier-arland-fixes mod's arland-fix.ini. It reads and writes the same keys
-// the DLL parses in src/config.cpp (and SMAA in smaa.cpp, AnisotropicFiltering
-// in sync_fix.cpp), using the exact same GetPrivateProfileStringA /
-// WritePrivateProfileStringA API so the on-disk format matches the mod. On save
-// it touches only the known keys, so any other or legacy keys already in the
-// file are preserved.
+// arland-fix-launcher.exe: the mod's launcher. It edits every setting the mod
+// has and starts the game, and it is what msimg32.dll opens in place of Koei
+// Tecmo's own launcher when the game is started from Steam.
 //
-// No external dependencies: plain Win32 common controls, GUI subsystem.
+// It reads and writes the same keys the DLL parses in src/config.cpp (and SMAA
+// in smaa.cpp, AnisotropicFiltering in sync_fix.cpp), using the exact same
+// GetPrivateProfileStringA / WritePrivateProfileStringA API so the on-disk
+// format matches the mod. On save it touches only the known keys, so any other
+// or legacy keys already in the file are preserved. It also writes the game's
+// own ArlandDX_Settings.ini where a setting spans both.
+//
+// It configures whichever game folder it is run from, which is not always the
+// folder it lives in: see resolveGameFolder.
+//
+// No external dependencies: plain Win32 common controls, GUI subsystem. The
+// modern look is the ComCtl32 v6 manifest in arland-fix-launcher.rc plus the
+// system UI font; there is no toolkit here.
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -630,12 +638,6 @@ HWND mkLabel(HWND parent, const wchar_t* text, int x, int y, int w, int h) {
     x, y, w, h, parent, nullptr, nullptr, nullptr);
 }
 
-HWND mkGroup(HWND parent, const wchar_t* text, int x, int y, int w, int h) {
-  return CreateWindowExW(0, L"BUTTON", text,
-    WS_CHILD | WS_VISIBLE | BS_GROUPBOX, x, y, w, h, parent, nullptr,
-    nullptr, nullptr);
-}
-
 HWND mkCheck(HWND parent, const wchar_t* text, int x, int y, int w, int id) {
   return CreateWindowExW(0, L"BUTTON", text,
     WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, x, y, w, 20, parent,
@@ -839,8 +841,8 @@ void createControls(HWND w) {
   // The stock front-ends are still reachable: this tool replaces them, it does
   // not remove them. Greyed out when the executable is not in this folder.
   onPage(0, mkLabel(w, L"The game's own tools", L, 240, 300, 18));
-  HWND openEnv = mkButton(w, L"Settings editor", 24, 264, 130, IDC_OPENENV);
-  HWND openLauncher = mkButton(w, L"Original launcher", 162, 264, 130,
+  HWND openEnv = mkButton(w, L"Settings &editor", 24, 264, 130, IDC_OPENENV);
+  HWND openLauncher = mkButton(w, L"&Original launcher", 162, 264, 130,
     IDC_OPENLAUNCHER);
   onPage(0, openEnv);
   onPage(0, openLauncher);
@@ -944,12 +946,14 @@ void createControls(HWND w) {
   // this window is opened on the way into the game, not to change something, so
   // Enter should start playing. That matters most on a controller or a handheld,
   // where the alternative is driving a cursor across the window.
-  g_hStart = mkButton(w, L"Start game", 24, 508, 110, IDC_START, true);
+  g_hStart = mkButton(w, L"&Start game", 24, 508, 110, IDC_START, true);
   if (!g_gameExePath[0])
     EnableWindow(g_hStart, FALSE);
 
-  mkButton(w, L"Save", 280, 508, 90, IDC_SAVE);
-  mkButton(w, L"Close", 378, 508, 90, IDC_CLOSE);
+  // Distinct mnemonics across the whole window: S start, A save, C close,
+  // E editor, O original launcher.
+  mkButton(w, L"S&ave", 280, 508, 90, IDC_SAVE);
+  mkButton(w, L"&Close", 378, 508, 90, IDC_CLOSE);
 
   showPage(0);
 
@@ -1016,7 +1020,7 @@ LRESULT CALLBACK WndProc(HWND w, UINT msg, WPARAM wp, LPARAM lp) {
             L"The configuration has been saved successfully. The next time "
             L"you launch %s these settings will be used.",
             g_gameName ? g_gameName : L"the game");
-          MessageBoxW(w, saved, L"Configure Mod", MB_OK | MB_ICONINFORMATION);
+          MessageBoxW(w, saved, L"Atelier Arland Fixes", MB_OK | MB_ICONINFORMATION);
           return 0;
         }
         case IDC_START: {
@@ -1033,7 +1037,7 @@ LRESULT CALLBACK WndProc(HWND w, UINT msg, WPARAM wp, LPARAM lp) {
               L"(error %d). Launch the game as you normally would; the saved "
               L"settings still apply.",
               g_gameName ? g_gameName : L"the game", (int)result);
-            MessageBoxW(w, failed, L"Configure Mod", MB_OK | MB_ICONWARNING);
+            MessageBoxW(w, failed, L"Atelier Arland Fixes", MB_OK | MB_ICONWARNING);
             return 0;
           }
           // The game is running and owns the screen from here, so the
@@ -1052,11 +1056,14 @@ LRESULT CALLBACK WndProc(HWND w, UINT msg, WPARAM wp, LPARAM lp) {
               L"%s could not be started. It may have been moved or removed "
               L"from the game folder.",
               env ? L"The settings editor" : L"The original launcher");
-            MessageBoxW(w, failed, L"Configure Mod", MB_OK | MB_ICONWARNING);
+            MessageBoxW(w, failed, L"Atelier Arland Fixes", MB_OK | MB_ICONWARNING);
           }
           return 0;
         }
         case IDC_CLOSE:
+        // IsDialogMessage turns Escape into IDCANCEL, so this is the Escape
+        // key. Closing without saving matches every other dialog-shaped window.
+        case IDCANCEL:
           DestroyWindow(w);
           return 0;
       }
@@ -1138,8 +1145,17 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int) {
         ((monitor.rcWork.bottom - monitor.rcWork.top) - height) / 2;
   }
 
+  // Name the game in the title, not just in the window: with the game's icon
+  // beside it this is what identifies the right one on a taskbar holding more
+  // than one of these.
+  wchar_t title[192];
+  if (g_gameName)
+    wsprintfW(title, L"%s - Atelier Arland Fixes", g_gameName);
+  else
+    lstrcpynW(title, L"Atelier Arland Fixes", 192);
+
   HWND w = CreateWindowExW(0, wc.lpszClassName,
-    L"Configure Mod", style,
+    title, style,
     x, y, width, height,
     nullptr, nullptr, hInst, nullptr);
   if (!w)

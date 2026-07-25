@@ -29,11 +29,13 @@ These are on by default.
 | Higher resolution rendering                  | ✓      | ✓      | ✓      |
 | High-resolution UI text                      | ✓      | ✓      | ✓      |
 | SMAA anti-aliasing                            | ✓      | ✓      | ✓      |
-| Default frame-rate cap (to avoid bugs)       | ✓      | ✓      | ✓      |
+| Correct behaviour at high refresh rates       | ✓      | ✓      | ✓      |
 | Restored battle shadows while fighting       | ✓      | —      | —      |
 | Conversation slowdown fix                    | —      | —      | ✓      |
 
 ✓ fixed, enabled by default · — not needed (no defect in that game)
+
+**High refresh rates work properly.** The games were written around 60 fps and misbehave above it: on a 120 Hz or 144 Hz display the field-map character buzzes vertically whenever it stands still on a step or ledge, which is visible in the world and can make an interaction prompt flicker, and past a few hundred frames per second the character stops being able to walk at all. Both come from the same place, an assumption that a frame is always 1/60 of a second, and the mod corrects it rather than working around it. There is no frame-rate limit and nothing about how the game presents frames is changed, so the game simply runs at your display's refresh rate. Under Proton a limit set by Steam or the compositor is respected as usual. Nothing to configure.
 
 SMAA anti-aliasing and the high-resolution UI text are on by default; both can be turned off in `arland-fix.ini`. The UI text is re-rendered from a bundled scalable font; this applies to the English executables only, and the Japanese and Chinese builds keep their original font untouched.
 

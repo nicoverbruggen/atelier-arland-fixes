@@ -41,4 +41,45 @@ for artifact in build64/d3d11.dll build64/arland-fix-launcher.exe build32/msimg3
     status=1
   fi
 done
-exit "$status"
+[[ $status -eq 0 ]] || exit "$status"
+
+# Package the same archive the release workflow does, so what gets tested by
+# hand locally has the same shape as what users download: same file names, same
+# layout, documentation and licences in the same subfolder. Only the version in
+# the name differs, since there is no tag to take it from.
+#
+# Kept out of the repo by /out/ in .gitignore.
+if ! command -v zip >/dev/null 2>&1; then
+  echo
+  echo "zip is not installed; skipping the archive" >&2
+  exit 0
+fi
+
+# Named for the commit it was built from, not a version: these are local builds,
+# and the useful question about one is which code is in it. "dirty" means the
+# tree had uncommitted changes, so the hash alone does not describe it.
+version="$(git -C "$repo" rev-parse --short HEAD 2>/dev/null || echo local)"
+if ! git -C "$repo" diff-index --quiet HEAD -- 2>/dev/null; then
+  version="$version-dirty"
+fi
+out="$repo/out"
+stage="$out/stage"
+rm -rf "$stage"
+mkdir -p "$stage/atelier-fix"
+
+# Shipped under its final name so the archive extracts straight into the game
+# directory with nothing to rename.
+cp "$repo/build64/d3d11.dll" "$repo/build64/arland-fix-launcher.exe" \
+   "$repo/build32/msimg32.dll" "$stage/"
+cp "$repo/default.ini" "$stage/arland-fix.ini"
+cp "$repo/README.md" "$repo/CHANGELOG.md" "$repo/ADVANCED.md" "$stage/atelier-fix/"
+cp -r "$repo/licenses" "$stage/atelier-fix/LICENSES"
+
+archive="$out/arland-fix-$version.zip"
+rm -f "$archive"
+( cd "$stage" && zip -qr "$archive" \
+    d3d11.dll msimg32.dll arland-fix.ini arland-fix-launcher.exe atelier-fix )
+rm -rf "$stage"
+
+echo
+echo "  packaged out/$(basename "$archive")"

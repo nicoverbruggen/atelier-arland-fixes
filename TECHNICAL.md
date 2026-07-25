@@ -91,6 +91,24 @@ Deeper tracing localized part of that residual Synthesis cost to eager construct
 
 Retaining those three atlas snapshots across frames could avoid this remaining first-read cost after the initial construction, but the atlases are mutable and proving complete invalidation coverage would require a broader correctness investigation. The current frame boundary remains the deliberate safety limit. No additional optimization is applied for this residual cost at present.
 
+## Frame-rate independence
+
+The engine is variable-timestep by design: a frame's elapsed time is measured, clamped to a maximum, and threaded through the update tree, which is why the games do not simply run fast at a high refresh rate. What is not frame-rate independent is a set of constants that describe a *distance per frame* rather than a speed, and those are only correct at the 60 fps the games were built around.
+
+The one that matters is in the field-map character's collision resolver. It computes the total distance the character moved this frame and, if that distance is below a fixed threshold, discards the entire frame's movement: the position is reverted to its value on entry, and the ground-snap sweep that would re-seat the character is skipped along with it. At 60 fps this is a reasonable way to ignore numerical noise. As the frame time shrinks, the same fixed distance covers more and more of what the character is actually doing.
+
+Two symptoms follow, and they are the same bug at different scales. Standing still, the only movement is one frame of gravity, which at a high refresh rate never covers the threshold before the grounded grace period expires, so the character loses its footing, falls, lands, and repeats: a visible vertical buzz that begins around 115 fps and is why interaction prompts near the character can flicker. Far higher, the threshold grows to exceed ordinary walking, and the character cannot move at all.
+
+The mod addresses the constant rather than the frame rate. It scales the threshold with frame time, so it describes a speed and means the same thing at any refresh rate, clamped so it never exceeds the value the games ship and so a low frame rate gets the original behaviour unchanged. That alone restores movement and holds ground contact, but it does not remove the resting case: gravity is gated on the character's own state bytes rather than on being grounded, so it keeps integrating into the surface and a frame still breaks through periodically.
+
+The second part suppresses that. While the character is genuinely at rest, meaning grounded, without horizontal velocity, and with the previous frame's movement reverted, the mod zeroes vertical velocity and pins the grounded grace timer before the update runs. Pinning the timer is what makes zeroing the velocity safe: the grace period can no longer expire, so nothing needs the velocity ramp to re-establish contact. It runs before the engine's update rather than after, because the update refreshes the entry-position copy that the rest test compares against.
+
+Both parts are on by default and each can be turned off for comparison, as described in [ADVANCED.md](ADVANCED.md). The second refuses to run without the first, since the grounded state it holds on can otherwise drop while the character is still settling.
+
+An earlier approach capped the frame rate instead. It was withdrawn: holding a rate that is not a divisor of the display's refresh meant presenting without waiting for vertical blank, which tears in exclusive fullscreen. Nothing in the current fix touches presentation, so the game presents exactly as it always did.
+
+Other frame-rate couplings exist outside the field map, in effect playback and, in Atelier Meruru DX, in secondary motion such as hair and clothing. Those are not yet addressed.
+
 ## High-resolution rendering
 
 The games accept high render dimensions, but the settings launcher filters its lists through Windows display-mode reporting. DPI virtualization and the current desktop mode can therefore hide a resolution that the game and display can use. The launcher stores independent fullscreen and windowed arrays, so both have to be corrected.

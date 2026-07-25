@@ -2,7 +2,19 @@
 
 The mod works as a drop-in with no configuration: faster menus, the synchronization and text-corruption fixes, high-resolution rendering support, and Atelier Rorona DX's restored battle shadows are all active by default. This document covers the optional graphics tweaks, the on-by-default features you may want to adjust, how to combine them for the best experience, and the diagnostic switches. For installation and the default feature set, see [README.md](README.md).
 
-All settings live in `arland-fix.ini` beside the DLLs (created on first launch). Close the game before editing the file.
+All settings live in `arland-fix.ini` beside the DLLs (created on first launch). Close the game before editing the file. Everything in this document can also be set from `arland-fix-launcher.exe`, which is usually easier.
+
+## The launcher
+
+`arland-fix-launcher.exe` holds every setting the mod has in one window, writes both `arland-fix.ini` and the game's own `ArlandDX_Settings.ini`, and starts the game. It configures whichever game folder it is run from, so it needs no configuration of its own.
+
+Starting the game normally opens it. Both of the games' own front-ends load `msimg32.dll`, so the mod's copy recognises Koei Tecmo's launcher among them and opens this one in its place before the original appears. Pressing Play in Steam therefore lands you here, and pressing Start game continues into the game as usual. This has been tested through Steam under Proton: the Steam session, the overlay and playtime tracking all behave as they would without the mod.
+
+If `arland-fix-launcher.exe` is not installed, the original launcher opens exactly as before, so an incomplete install cannot leave the game unstartable.
+
+Koei Tecmo's own launcher and settings editor are still available, from the buttons on the launcher's Display tab. Those open the real ones: the substitution does not apply to a launcher opened this way, so they cannot loop back. The settings editor also still gains the extra resolutions described under [Resolution](#resolution).
+
+To bypass the substitution outside the launcher, set `ARLAND_NO_REDIRECT=1` in the environment. The original launcher then opens untouched.
 
 ## Wine and Proton
 
@@ -185,6 +197,9 @@ These are environment variables, not INI keys: they are for narrowing down a pro
 | `ARLAND_MENU_STATS=1` | Per-drain menu timings and cache hit rates. |
 | `ARLAND_FIELD_TRACE=1` | Logs the field-map character's state around each loss of footing. |
 | `ARLAND_PRESENT_INTERVAL=0` | Forces vsync off (`1`, `2`, `3` present every Nth refresh). Useful with an external frame limiter. Unset, the game's own vsync is left alone; `0` will tear in exclusive fullscreen. |
+| `ARLAND_NO_REDIRECT=1` | Opens Koei Tecmo's own launcher instead of the mod's. |
+| `ARLAND_FIELD_ENGINE_FIX=0` | Restores the game's own minimum-movement distance, reinstating the high-refresh field-map problems. For comparing against unmodified behaviour. |
+| `ARLAND_FIELD_STABILIZER=0` | Stops holding the character still at rest, leaving a small residual movement at high frame rates. Ignored unless the option above is also on. |
 | `ARLAND_RESOLUTION_TRACE=1` | Traces the resolution override's effect on render targets. |
 | `ARLAND_PRESENT_TRACE=1` | Reports how the finished frame reaches the screen. Needs a display resolution set. |
 
