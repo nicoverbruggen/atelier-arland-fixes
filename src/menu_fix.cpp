@@ -1419,7 +1419,14 @@ uintptr_t cachedRenderText(uintptr_t a, uintptr_t b,
         // renders the strings still on screen once, then they re-cache.
         if (renderBitmapCache.size() >= 512)
           renderBitmapCache.clear();
-        renderBitmapCache.emplace(std::move(cacheKey), std::move(bitmap));
+        // cacheKey is copied, not moved: the deep-stats block below still keys
+        // renderKeyTimings by it. Moving leaves the scalars intact but empties
+        // text, so every string sharing a renderer/font/atlas/mode would merge
+        // into one anonymous row -- and only the storing calls, i.e. the slow
+        // uncached renders the profiling exists to find, would land in it. The
+        // string is bounded to 4096 bytes and the memcpy above moves up to
+        // 16 MB, so the copy costs nothing here.
+        renderBitmapCache.emplace(cacheKey, std::move(bitmap));
       }
     }
   }
