@@ -2,7 +2,7 @@
 
 This mod significantly improves performance in the Steam releases of **Atelier Rorona DX, Atelier Totori DX, and Atelier Meruru DX**, in every supported language. It removes severe menu hitches, reduces costly D3D11 synchronization stalls, prevents text corruption caused by the synchronization optimization, and adds game-side 2560×1440 and 3840×2160 rendering support.
 
-The mod ships with a 64-bit `d3d11.dll` for the games and a 32-bit `msimg32.dll` for their shared settings launcher. The game DLL combines the synchronization fix required by the Arland ports with the Arland-specific menu fixes discovered during this project. The launcher DLL always exposes 1920×1080, 2560×1440, and 3840×2160 in both windowed and fullscreen mode despite DPI, desktop-resolution, and display-mode filtering.
+The mod ships with a 64-bit `d3d11.dll` for the games, a 64-bit `arland-fix-launcher.exe`, and a 32-bit `msimg32.dll` for the two front-ends the games share. The game DLL combines the synchronization fix required by the Arland ports with the Arland-specific menu fixes discovered during this project. `arland-fix-launcher.exe` puts every setting in one window and starts the game from it. `msimg32.dll` is loaded by both of Koei Tecmo's front-ends: starting the game opens the launcher above instead, and their own settings editor gains 1920×1080, 2560×1440 and 3840×2160 in both windowed and fullscreen mode despite DPI, desktop-resolution, and display-mode filtering. Both of the original tools remain reachable from the launcher.
 
 > [!TIP]
 > No separate `atelier-sync-fix` or `dinput8.dll` is required. For newer Atelier games, use the upstream [atelier-sync-fix](https://github.com/doitsujin/atelier-sync-fix) or an appropriate maintained fork instead. This project deliberately contains only Arland-specific code.
@@ -37,8 +37,6 @@ These are on by default.
 
 SMAA anti-aliasing and the high-resolution UI text are on by default; both can be turned off in `arland-fix.ini`. The UI text is re-rendered from a bundled scalable font; this applies to the English executables only, and the Japanese and Chinese builds keep their original font untouched.
 
-The frame rate is capped at 100 by default. Above roughly 115 fps the field-map character loses its footing on steps and visibly buzzes — a constant in the games that is only correct at 60 fps — so the cap keeps well above 60 while staying clear of it. Raise or remove it with `MaxFps` (see [ADVANCED.md](ADVANCED.md)).
-
 The battle cut-in shadow and brightness restorations are off by default; enable them in `arland-fix.ini` if you prefer restored shadows and full-brightness close-ups over the vanilla darkened, shadowless ones.
 
 ### Advanced graphics tweaks
@@ -60,7 +58,7 @@ Rare crashes have been observed during long sessions with the advanced graphics 
 ## Installation on Windows
 
 1. Open the game's installation directory from Steam by selecting **Manage → Browse local files**.
-2. Copy `d3d11.dll`, `msimg32.dll` and `arland-fix.ini` into that directory, beside the game executables and `ArlandDXEnv.exe`. If you are updating an existing install, keep the `arland-fix.ini` you already have — the bundled one is only the defaults.
+2. Copy `d3d11.dll`, `arland-fix-launcher.exe`, `msimg32.dll` and `arland-fix.ini` into that directory, beside the game executables and `ArlandDXEnv.exe`. If you are updating an existing install, keep the `arland-fix.ini` you already have — the bundled one is only the defaults.
 3. Launch the game normally through Steam.
 
 All performance and text-correctness fixes are enabled automatically. No configuration is required.

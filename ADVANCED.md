@@ -59,19 +59,6 @@ The game then runs as a window with its decorations removed, sized to fill the m
 
 Use it with `DisplayWidth`/`DisplayHeight` set to your monitor's resolution. The window is sized to the monitor either way, so a smaller backbuffer is simply scaled up to fill it.
 
-## Frame rate cap
-
-Above roughly 115 fps the field-map character buzzes vertically when standing on a step or ledge — so this shows on 120 Hz and 144 Hz displays and not on 60 Hz ones. The games discard any frame in which the character moves less than a fixed distance, a constant that is only correct at 60 fps; at rest the only movement is a single frame of gravity, which at high frame rates never covers that distance before the character's footing times out, so it falls and lands repeatedly.
-
-```ini
-[Engine]
-MaxFps=100
-```
-
-The mod holds the frame rate just below where that begins. 100 is both the default and the maximum — a higher ceiling runs straight back into the problem, so larger values are clamped. Lower it if you prefer. Setting it to `0` removes the cap entirely, which is **not recommended**: above roughly 115 fps the field-map stutter returns.
-
-This keeps well above 60 fps, and since it changes nothing inside the game it also covers any other 60 fps assumption the engine may hold that has not been found. Note that pacing turns vsync off: a ceiling that is not a divisor of your display's refresh rate cannot be held with vsync on.
-
 ## SMAA anti-aliasing
 
 SMAA (a post-process anti-aliasing pass) is **on by default**. It smooths edges across the whole scene — including the thin alpha-tested costume trim that MSAA cannot touch — at a low, constant cost, and is applied before the UI is drawn so the HUD and text stay crisp. (Atelier Totori DX composites its scene and UI into one render target with no separable pre-UI point, so there SMAA runs as a full-frame pass at present time instead and also lightly affects the UI.) Turn it off with:
@@ -178,9 +165,6 @@ RenderHeight=
 ShadowMultiplier=2
 AnisotropicFiltering=16
 
-[Engine]
-MaxFps=100
-
 [Battle]
 BattleShadows=true
 BattleCutInShadows=true
@@ -200,7 +184,7 @@ These are environment variables, not INI keys: they are for narrowing down a pro
 | `ARLAND_VERBOSE_LOG=1` | Extra logging, same as `[Diagnostics] VerboseLogging`. |
 | `ARLAND_MENU_STATS=1` | Per-drain menu timings and cache hit rates. |
 | `ARLAND_FIELD_TRACE=1` | Logs the field-map character's state around each loss of footing. |
-| `ARLAND_PRESENT_INTERVAL=0` | Forces vsync off (`1`, `2`, `3` present every Nth refresh). Useful with an external frame limiter. |
+| `ARLAND_PRESENT_INTERVAL=0` | Forces vsync off (`1`, `2`, `3` present every Nth refresh). Useful with an external frame limiter. Unset, the game's own vsync is left alone; `0` will tear in exclusive fullscreen. |
 | `ARLAND_RESOLUTION_TRACE=1` | Traces the resolution override's effect on render targets. |
 | `ARLAND_PRESENT_TRACE=1` | Reports how the finished frame reaches the screen. Needs a display resolution set. |
 

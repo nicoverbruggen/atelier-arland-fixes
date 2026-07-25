@@ -74,8 +74,11 @@ else
   # Own target, own sources; shares no object files with the DLL. The
   # win_subsystem kwarg selects the GUI subsystem (WinMain) for both MinGW
   # (-mwindows) and MSVC (/SUBSYSTEM:WINDOWS).
-  executable('arland-config',
-    ['src/config_gui/main.cpp'],
+  executable('arland-fix-launcher',
+    ['src/config_gui/main.cpp',
+     # Carries the ComCtl32 v6 manifest, which is what gets the themed common
+     # controls rather than the flat 5.82 ones. See the manifest for the rest.
+     windows.compile_resources('src/config_gui/arland-fix-launcher.rc')],
     win_subsystem : 'windows',
     dependencies : [
       cpp.find_library('comctl32'),

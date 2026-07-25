@@ -57,15 +57,4 @@ bool verboseLogging();
 enum class UIFontMode { Original, Upscaled, Replaced };
 UIFontMode uiFontMode();
 
-// Frame-rate ceiling: [Engine] MaxFps, default 100. 0 disables it.
-//
-// The games discard any frame in which the field-map character moves less than
-// a fixed distance, a constant that is only correct at 60 fps. Above roughly
-// 115 fps a character resting on a step no longer moves far enough per frame to
-// keep its footing, so it repeatedly loses it and lands again — a visible
-// vertical buzz. Holding the frame rate below that avoids it without modifying
-// the game, and also covers any other frame-rate assumption the engine may hold
-// that has not been found. Clamped to 30..100 when enabled.
-unsigned int maxFps();
-
 }  // namespace atfix

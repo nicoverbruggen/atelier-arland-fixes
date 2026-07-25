@@ -233,37 +233,6 @@ bool verboseLogging() {
   return on;
 }
 
-UINT maxFps() {
-  static const UINT fps = [] {
-    unsigned long requested = 100;
-    char value[16] = { };
-    if (GetEnvironmentVariableA("ARLAND_MAX_FPS", value, sizeof(value))) {
-      requested = std::strtoul(value, nullptr, 10);
-    } else if (const char* path = configPath()) {
-      char iniValue[16] = { };
-      GetPrivateProfileStringA("Engine", "MaxFps", "\x01", iniValue,
-        sizeof(iniValue), path);
-      if (iniValue[0] == '\x01')            // absent: seed it for discovery
-        WritePrivateProfileStringA("Engine", "MaxFps", "100", path);
-      else
-        requested = std::strtoul(iniValue, nullptr, 10);
-    }
-    if (requested == 0)
-      return 0u;                          // explicitly uncapped
-    // Clamped to 100: the buzz appears above roughly 115 fps, so a higher
-    // ceiling would run straight back into the bug the cap exists to avoid.
-    if (requested < 30)
-      return 30u;
-    if (requested > 100) {
-      log("MaxFps ", std::dec, requested,
-        " exceeds the safe ceiling; using 100 (set 0 to remove the cap)");
-      return 100u;
-    }
-    return static_cast<UINT>(requested);
-  }();
-  return fps;
-}
-
 bool borderlessWindow() {
   static const bool enabled = [] {
     const char* env = std::getenv("ARLAND_BORDERLESS");

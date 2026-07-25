@@ -32,7 +32,7 @@ jobs:
           name: d3d11
           path: |
             build64/d3d11.dll
-            build64/arland-config.exe
+            build64/arland-fix-launcher.exe
 
   check-defaults:
     runs-on: ubuntu-latest
@@ -91,7 +91,7 @@ jobs:
           cp -r licenses dist/atelier-fix/LICENSES
           cd dist
           zip -r "../arland-fix-${GITHUB_REF_NAME}.zip" \
-            d3d11.dll msimg32.dll arland-fix.ini arland-config.exe atelier-fix
+            d3d11.dll msimg32.dll arland-fix.ini arland-fix-launcher.exe atelier-fix
       - name: Publish tagged release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -106,18 +106,18 @@ jobs:
           cat > release-notes.md <<'NOTES'
           ## Installing
 
-          Download `arland-fix-<version>.zip` below and extract all three files into the game's installation folder — the one containing the game executable (`A11R_x64_Release_en.exe` for Rorona, `A12V_x64_Release_en.exe` for Totori, `A13V_x64_Release_EN.exe` for Meruru):
+          Download `arland-fix-<version>.zip` below and extract all four files into the game's installation folder — the one containing the game executable (`A11R_x64_Release_en.exe` for Rorona, `A12V_x64_Release_en.exe` for Totori, `A13V_x64_Release_EN.exe` for Meruru):
 
           - `d3d11.dll` — the mod itself
-          - `msimg32.dll` — adds 1440p and 4K to the game's settings launcher
-          - `arland-fix.ini` — optional settings, documented inline
-          - `arland-config.exe` — optional settings editor; run it from the game folder
+          - `arland-fix-launcher.exe` — the launcher: every setting in one window, with a Start game button
+          - `msimg32.dll` — opens the launcher above when the game is started from Steam, and adds 1440p and 4K to Koei Tecmo's own settings editor
+          - `arland-fix.ini` — the settings themselves, documented inline and editable by hand
 
           The archive also contains an `atelier-fix` folder with the documentation and the licences for the embedded fonts. Nothing reads it at runtime, so keep it or delete it as you prefer.
 
-          Everything works with no configuration; the `.ini` only needs editing if you want the optional extras. To uninstall, delete the three files.
+          Everything works with no configuration; the `.ini` only needs editing if you want the optional extras. To uninstall, delete the four files.
 
-          **Upgrading from an earlier version**: replace the two DLLs, but keep the `arland-fix.ini` you already have. The bundled one contains nothing but the defaults, so overwriting it would silently discard your settings.
+          **Upgrading from an earlier version**: replace the two DLLs and the launcher, but keep the `arland-fix.ini` you already have. The bundled one contains nothing but the defaults, so overwriting it would silently discard your settings.
 
           **Steam Deck, Linux and anyone using Proton**: also add this to the game's Steam Launch Options:
 

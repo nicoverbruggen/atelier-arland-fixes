@@ -1,0 +1,33 @@
+// Resources for arland-fix-launcher.exe.
+//
+// The manifest is the modern-controls switch (see the file itself). Resource id
+// 1 is CREATEPROCESS_MANIFEST_RESOURCE_ID, which is what the loader looks for in
+// an executable; type 24 is RT_MANIFEST. Spelling both as numbers keeps this
+// working under windres and rc alike without pulling in winuser.h.
+1 24 "arland-fix-launcher.manifest"
+
+1 VERSIONINFO
+FILEVERSION     0,5,0,0
+PRODUCTVERSION  0,5,0,0
+FILEOS          0x4L
+FILETYPE        0x1L
+{
+  BLOCK "StringFileInfo"
+  {
+    BLOCK "040904b0"
+    {
+      VALUE "CompanyName",      "atelier-arland-fixes"
+      VALUE "FileDescription",  "Atelier Arland Fixes launcher"
+      VALUE "FileVersion",      "0.5.0.0"
+      VALUE "InternalName",     "arland-fix-launcher"
+      VALUE "LegalCopyright",   "MIT licensed"
+      VALUE "OriginalFilename", "arland-fix-launcher.exe"
+      VALUE "ProductName",      "Atelier Arland Fixes"
+      VALUE "ProductVersion",   "0.5.0.0"
+    }
+  }
+  BLOCK "VarFileInfo"
+  {
+    VALUE "Translation", 0x409, 1200
+  }
+}

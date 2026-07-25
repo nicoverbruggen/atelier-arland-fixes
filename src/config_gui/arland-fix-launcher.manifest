@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
+  <assemblyIdentity
+      type="win32"
+      name="nl.spatie.atelier-arland-fixes.launcher"
+      version="1.0.0.0"
+      processorArchitecture="*"/>
+  <description>Atelier Arland Fixes launcher</description>
+
+  <!-- The whole point of this manifest: without a dependency on ComCtl32
+       version 6 the process gets the 5.82 common controls, which are the flat
+       grey Windows-95 ones. With it, the tab control, buttons, checkboxes and
+       combo boxes are drawn by the visual style the OS is actually running. -->
+  <dependency>
+    <dependentAssembly>
+      <assemblyIdentity
+          type="win32"
+          name="Microsoft.Windows.Common-Controls"
+          version="6.0.0.0"
+          processorArchitecture="*"
+          publicKeyToken="6595b64144ccf1df"
+          language="*"/>
+    </dependentAssembly>
+  </dependency>
+
+  <!-- Declaring the versions of Windows this was tested against; without it
+       Windows applies compatibility shims aimed at much older software. -->
+  <compatibility xmlns="urn:schemas-microsoft-com:compatibility.v1">
+    <application>
+      <supportedOS Id="{8e0f7a12-bfb3-4fe8-b9a5-48fd50a15a9a}"/> <!-- 10 / 11 -->
+      <supportedOS Id="{1f676c76-80e1-4239-95bb-83d0f6d0da78}"/> <!-- 8.1 -->
+      <supportedOS Id="{4a2f28e3-53b9-4441-ba9c-d69d4a4a6e38}"/> <!-- 8 -->
+      <supportedOS Id="{35138b9a-5d96-4fbd-8e2d-a2440225f93a}"/> <!-- 7 -->
+    </application>
+  </compatibility>
+
+  <!-- Deliberately NOT declaring DPI awareness. The layout is in fixed pixels,
+       so claiming awareness would render it at a quarter size on a 200% display
+       instead of letting Windows scale it. Real awareness means laying the
+       window out in dialog units first; until then, being scaled is correct. -->
+</assembly>

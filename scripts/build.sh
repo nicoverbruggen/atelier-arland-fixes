@@ -3,9 +3,9 @@
 # (MSVC on PATH). Builds natively with meson into build_<arch>/.
 #
 # One developer prompt targets one architecture, so run this from an x64 prompt
-# (produces d3d11.dll) and again from an x86 prompt (produces msimg32.dll); CI
-# does both across two jobs. Optional first argument: the meson build type
-# (default: release).
+# (produces d3d11.dll and arland-fix-launcher.exe) and again from an x86 prompt
+# (produces msimg32.dll); CI does both across two jobs. Optional first argument:
+# the meson build type (default: release).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -17,4 +17,23 @@ meson setup "$builddir" --buildtype "$buildtype" --reconfigure >/dev/null 2>&1 \
   || meson setup "$builddir" --buildtype "$buildtype"
 meson compile -C "$builddir"
 
+# The compile above builds every target for this architecture; this only
+# confirms each one landed, so a silently dropped target cannot pass for a
+# good build. The GUI is 64-bit only.
+if [[ "$arch" == "x64" ]]; then
+  expected=("d3d11.dll" "arland-fix-launcher.exe")
+else
+  expected=("msimg32.dll")
+fi
+status=0
+for artifact in "${expected[@]}"; do
+  if [[ -f "$builddir/$artifact" ]]; then
+    echo "  ok      $builddir/$artifact"
+  else
+    echo "  MISSING $builddir/$artifact" >&2
+    status=1
+  fi
+done
+
 echo "Built ${arch} into ${builddir}/."
+exit "$status"

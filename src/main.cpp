@@ -111,77 +111,27 @@ bool menuTransitionTraceEnabled() {
     arland::battleShadowRestoreActive();
 }
 
-bool frameLimitActive();   // defined below, beside the pacing it gates
-
 // Present must be hooked whenever the transition trace, SMAA, the supersampling
-// downscale or the frame limiter needs it.
+// downscale or borderless mode needs it.
 bool presentHookNeeded() {
   return menuTransitionTraceEnabled() || atfix::smaaEnabled() ||
     atfix::presentTraceEnabled() || atfix::ssaaRequested() ||
-    frameLimitActive() || atfix::borderlessWindow();
+    atfix::borderlessWindow();
 }
 
 // Replace the game's present interval for a session: 0 turns vsync off so an
 // external limiter (MangoHud's fps_limit) can pace frames itself, 2/3 present
 // every Nth refresh. Diagnostic only — needed because the games expose no vsync
 // setting, so measuring behaviour at a frame rate that is not a divisor of the
-// display refresh is otherwise impossible. Unset leaves the game's own value.
+// display refresh is otherwise impossible. Unset leaves the game's own value,
+// which is what every normal run uses: presenting unsynchronized is what tears,
+// so nothing but an explicit opt-in may change it.
 UINT presentInterval(UINT gameInterval) {
   static const int override = [] {
     const char* value = std::getenv("ARLAND_PRESENT_INTERVAL");
     return value ? std::atoi(value) : -1;
   }();
-  if (override >= 0)
-    return UINT(override);
-  return frameLimitActive() ? 0u : gameInterval;
-}
-
-// Hold each frame to [Engine] MaxFps.
-//
-// The field-map character loses its footing above roughly 115 fps because the
-// engine discards frames in which it moves less than a fixed distance — a
-// constant that is only correct at 60. Pacing below that boundary avoids it
-// without modifying the game, and covers any other frame-rate assumption the
-// engine may have that we have not found.
-//
-// Vsync is turned off while pacing, because a target that is not a divisor of
-// the display refresh cannot be met with it on: frames would land on alternating
-// refresh boundaries and the frame time would swing between two values, which is
-// exactly the input the bug is sensitive to.
-bool frameLimitActive() {
-  static const bool active = atfix::maxFps() != 0;
-  return active;
-}
-
-void paceFrame() {
-  if (!frameLimitActive())
-    return;
-  static const int64_t period = 1'000'000'000LL / atfix::maxFps();
-  static int64_t nextFrame = 0;
-  const auto nowNanos = [] {
-    return std::chrono::duration_cast<std::chrono::nanoseconds>(
-      std::chrono::steady_clock::now().time_since_epoch()).count();
-  };
-  int64_t now = nowNanos();
-  // First frame, or a stall (loading, alt-tab): restart rather than burning
-  // through a backlog of missed deadlines.
-  if (nextFrame == 0 || now > nextFrame + period * 4) {
-    nextFrame = now + period;
-    return;
-  }
-  // Sleep the bulk, spin the last millisecond: Sleep alone overshoots badly at
-  // the default timer granularity, and spinning alone wastes a whole core.
-  while (true) {
-    now = nowNanos();
-    const int64_t remaining = nextFrame - now;
-    if (remaining <= 0)
-      break;
-    if (remaining > 2'000'000)
-      Sleep(static_cast<DWORD>((remaining - 1'000'000) / 1'000'000));
-    else
-      YieldProcessor();
-  }
-  nextFrame += period;
+  return override >= 0 ? UINT(override) : gameInterval;
 }
 
 HRESULT STDMETHODCALLTYPE tracedPresent(
@@ -215,7 +165,6 @@ HRESULT STDMETHODCALLTYPE tracedPresent(
   atfix::cutinDrawContactBlobs(swapChain);
   atfix::smaaApply(swapChain);        // Present-time path (only if pre-UI off)
   atfix::ssaaDownscale(swapChain);    // supersampling: render res -> backbuffer
-  paceFrame();
   const HRESULT result = originalPresent(
     swapChain, presentInterval(syncInterval), flags);
   // Record a lost device once — the post-mortem a present-time hang/TDR leaves.

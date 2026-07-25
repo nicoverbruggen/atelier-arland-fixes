@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 //
-// arland-config.exe: a small standalone Win32 GUI to view and edit the
+// arland-fix-launcher.exe: a small standalone Win32 GUI to view and edit the
 // atelier-arland-fixes mod's arland-fix.ini. It reads and writes the same keys
 // the DLL parses in src/config.cpp (and SMAA in smaa.cpp, AnisotropicFiltering
 // in sync_fix.cpp), using the exact same GetPrivateProfileStringA /
@@ -13,6 +13,7 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <commctrl.h>
+#include <shellapi.h>
 #include <shlobj.h>
 
 #include <cstdlib>
@@ -37,8 +38,10 @@ enum : int {
   IDC_BSHADOW,
   IDC_BCUTINSHADOW,
   IDC_BCUTINDIM,
-  IDC_MAXFPS,
   IDC_VERBOSE,
+  IDC_START,
+  IDC_OPENENV,       // Koei Tecmo's own settings editor
+  IDC_OPENLAUNCHER,  // Koei Tecmo's own launcher
   IDC_SAVE,
   IDC_CLOSE,
 };
@@ -47,6 +50,8 @@ enum : int {
 // via Browse.
 char g_iniPath[MAX_PATH] = {};        // arland-fix.ini, beside this exe
 char g_settingsPath[MAX_PATH] = {};   // ArlandDX_Settings.ini, same folder
+char g_gameExePath[MAX_PATH] = {};    // the recognised game exe, for Start game
+char g_gameDir[MAX_PATH] = {};        // its folder, used as the working directory
 const wchar_t* g_gameName = nullptr;  // null when no game was recognised
 
 // The executables the mod supports, matched in the folder this tool sits in.
@@ -69,7 +74,8 @@ HWND g_hDesc[20] = {};   // greyed one-line notes; drawn in COLOR_GRAYTEXT
 int  g_descCount = 0;
 HWND g_pageCtrls[3][40] = {};   // which controls belong to which tab page
 int  g_pageCount[3] = {};
-HWND g_hPreset, g_hWinMode, g_hLang, g_hMaxFps,
+HWND g_hStart = nullptr;   // focused at startup; see createControls
+HWND g_hPreset, g_hWinMode, g_hLang,
      g_hFont, g_hBase, g_hSS, g_hRendLbl, g_hMsaa, g_hShadow,
      g_hAniso, g_hSmaa, g_hBShadow, g_hBCutInShadow, g_hBCutInDim, g_hVerbose;
 
@@ -146,18 +152,6 @@ const MultItem kSSItems[] = {
 };
 const int kSSCount = 6;
 const unsigned kMaxDim = 16384;
-
-// Frame-rate ceiling. Above roughly 115 fps the field-map character loses its
-// footing on steps, so 100 is both the default and the maximum the mod accepts;
-// "uncapped" is offered but flagged, since it reinstates the problem.
-struct FpsItem { const wchar_t* label; unsigned fps; };
-const FpsItem kFpsItems[] = {
-  { L"100 (default)",         100 },
-  { L"72",                    72  },
-  { L"60",                    60  },
-  { L"Uncapped (not advised)", 0  },
-};
-const int kFpsCount = 4;
 
 // Quality presets. These set only the Image quality group -- resolution,
 // borderless, frame rate, the battle options and the UI font are preferences
@@ -443,16 +437,6 @@ void loadFromIni() {
     SendMessageW(g_hLang, CB_SETCURSEL, sel, 0);
   }
 
-  // [Engine] MaxFps, default 100. An unrecognised or out-of-range value falls
-  // back to the default entry rather than inventing one.
-  const unsigned fps = (unsigned)GetPrivateProfileIntA(
-    "Engine", "MaxFps", 100, g_iniPath);
-  int fpsSel = 0;
-  for (int i = 0; i < kFpsCount; ++i)
-    if (kFpsItems[i].fps == fps)
-      fpsSel = i;
-  SendMessageW(g_hMaxFps, CB_SETCURSEL, fpsSel, 0);
-
   // [Battle]: defaults match src/game.cpp (shadows on, cut-in shadows off,
   // cut-in dimming held on).
   SendMessageW(g_hBShadow, BM_SETCHECK,
@@ -535,14 +519,6 @@ void saveToIni() {
   WritePrivateProfileStringA("Lang", "Language",
     comboValue(g_hLang, kLangItems, kLangCount), g_settingsPath);
 
-  {
-    const int sel = (int)SendMessageW(g_hMaxFps, CB_GETCURSEL, 0, 0);
-    const unsigned fps = kFpsItems[sel < 0 || sel >= kFpsCount ? 0 : sel].fps;
-    char value[16];
-    wsprintfA(value, "%u", fps);
-    WritePrivateProfileStringA("Engine", "MaxFps", value, g_iniPath);
-  }
-
   iniWriteBool("Battle", "BattleShadows", isChecked(g_hBShadow));
   iniWriteBool("Battle", "BattleCutInShadows", isChecked(g_hBCutInShadow));
   iniWriteBool("Battle", "BattleCutInDimming", isChecked(g_hBCutInDim));
@@ -568,36 +544,81 @@ void iniPathInDir(const char* dir) {
   lstrcpynA(g_iniPath + len, "arland-fix.ini", (int)(MAX_PATH - len));
 }
 
-// Resolve the initial ini path: prefer one beside this exe, else one in the
-// current working directory, else fall back to beside the exe (Save will
-// create it).
-// Everything is resolved relative to this executable: the tool is meant to sit
-// in the game folder beside the DLLs, so there is nothing to choose. Returns
-// false when the folder is not a game folder, which the caller reports.
+// Index of the recognised game executable in `dir`, or -1 if it holds none.
+// `dir` must end in a separator.
+int gameInFolder(const char* dir) {
+  for (int i = 0; i < kGameExeCount; ++i) {
+    char candidate[MAX_PATH];
+    lstrcpynA(candidate, dir, MAX_PATH);
+    lstrcatA(candidate, kGameExes[i].exe);
+    if (GetFileAttributesA(candidate) != INVALID_FILE_ATTRIBUTES)
+      return i;
+  }
+  return -1;
+}
+
+// Point every path this tool works with at `dir`. `game` is an index into
+// kGameExes, or -1 when the folder holds no recognised game (the ini path is
+// still set, so Save can create one).
+void adoptFolder(const char* dir, int game) {
+  iniPathInDir(dir);
+  lstrcpynA(g_settingsPath, dir, MAX_PATH);
+  lstrcatA(g_settingsPath, "ArlandDX_Settings.ini");
+  lstrcpynA(g_gameDir, dir, MAX_PATH);   // keeps its trailing separator
+  if (game < 0)
+    return;
+  g_gameName = kGameExes[game].name;
+  lstrcpynA(g_gameExePath, dir, MAX_PATH);
+  lstrcatA(g_gameExePath, kGameExes[game].exe);
+}
+
+// Work out which game folder to configure.
+//
+// Normally that is simply the folder this executable sits in. The working
+// directory is consulted only as a fallback, and it matters: Wine resolves a
+// symlinked executable before reporting it, so an arland-fix-launcher.exe
+// symlinked into a game folder reports the link's TARGET as its own location
+// and would otherwise configure the build directory it was linked from. The
+// working directory stays the folder the tool was started in, which is the
+// folder the user means -- Explorer, our own launcher scripts and the
+// msimg32 redirect all set it that way.
+//
+// Returns false when neither folder holds a recognised game, which the caller
+// reports to the user.
 bool resolveGameFolder() {
-  char exe[MAX_PATH] = {};
-  const DWORD n = GetModuleFileNameA(nullptr, exe, MAX_PATH);
+  char exeDir[MAX_PATH] = {};
+  const DWORD n = GetModuleFileNameA(nullptr, exeDir, MAX_PATH);
   if (!n || n >= MAX_PATH)
     return false;
-  char* slash = std::strrchr(exe, '\\');
+  char* slash = std::strrchr(exeDir, '\\');
   if (!slash)
     return false;
   slash[1] = '\0';
 
-  iniPathInDir(exe);
-  lstrcpynA(g_settingsPath, exe, MAX_PATH);
-  lstrcatA(g_settingsPath, "ArlandDX_Settings.ini");
+  int game = gameInFolder(exeDir);
+  if (game >= 0) {
+    adoptFolder(exeDir, game);
+    return true;
+  }
 
-  for (int i = 0; i < kGameExeCount; ++i) {
-    char candidate[MAX_PATH];
-    lstrcpynA(candidate, exe, MAX_PATH);
-    lstrcatA(candidate, kGameExes[i].exe);
-    if (GetFileAttributesA(candidate) != INVALID_FILE_ATTRIBUTES) {
-      g_gameName = kGameExes[i].name;
-      break;
+  char cwd[MAX_PATH] = {};
+  const DWORD c = GetCurrentDirectoryA(MAX_PATH, cwd);
+  if (c && c < MAX_PATH - 1) {
+    if (cwd[c - 1] != '\\') {
+      cwd[c] = '\\';
+      cwd[c + 1] = '\0';
+    }
+    game = gameInFolder(cwd);
+    if (game >= 0) {
+      adoptFolder(cwd, game);
+      return true;
     }
   }
-  return g_gameName != nullptr;
+
+  // No game either side: keep configuring the folder this executable is in,
+  // which is where a user who put it somewhere odd would expect the ini.
+  adoptFolder(exeDir, -1);
+  return false;
 }
 
 
@@ -627,14 +648,99 @@ HWND mkCombo(HWND parent, int x, int y, int w, int id) {
     x, y, w, 200, parent, (HMENU)(INT_PTR)id, nullptr, nullptr);
 }
 
-HWND mkButton(HWND parent, const wchar_t* text, int x, int y, int w, int id) {
+// Start one of Koei Tecmo's own front-ends from the game folder.
+//
+// ARLAND_NO_REDIRECT is set for the child: msimg32.dll sends
+// ArlandDXLauncher.exe here in the first place, so without it that button would
+// only ever reopen this window. The variable is removed again immediately, so
+// it never reaches the game when Start game is pressed afterwards.
+bool runStockTool(const char* exeName) {
+  if (!g_gameDir[0])
+    return false;
+  char path[MAX_PATH];
+  lstrcpynA(path, g_gameDir, MAX_PATH);
+  lstrcatA(path, exeName);
+  if (GetFileAttributesA(path) == INVALID_FILE_ATTRIBUTES)
+    return false;
+
+  SetEnvironmentVariableA("ARLAND_NO_REDIRECT", "1");
+  STARTUPINFOA startup = {};
+  startup.cb = sizeof(startup);
+  PROCESS_INFORMATION process = {};
+  const BOOL started = CreateProcessA(path, nullptr, nullptr, nullptr, FALSE,
+    0, nullptr, g_gameDir, &startup, &process);
+  SetEnvironmentVariableA("ARLAND_NO_REDIRECT", nullptr);
+  if (!started)
+    return false;
+  CloseHandle(process.hThread);
+  CloseHandle(process.hProcess);
+  return true;
+}
+
+// True when the named executable sits in the game folder, so a button that
+// opens it can be greyed out rather than failing when pressed.
+bool stockToolPresent(const char* exeName) {
+  if (!g_gameDir[0])
+    return false;
+  char path[MAX_PATH];
+  lstrcpynA(path, g_gameDir, MAX_PATH);
+  lstrcatA(path, exeName);
+  return GetFileAttributesA(path) != INVALID_FILE_ATTRIBUTES;
+}
+
+HWND mkButton(HWND parent, const wchar_t* text, int x, int y, int w, int id,
+              bool isDefault = false) {
   return CreateWindowExW(0, L"BUTTON", text,
-    WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON, x, y, w, 26, parent,
-    (HMENU)(INT_PTR)id, nullptr, nullptr);
+    WS_CHILD | WS_VISIBLE | WS_TABSTOP |
+      (isDefault ? BS_DEFPUSHBUTTON : BS_PUSHBUTTON),
+    x, y, w, 26, parent, (HMENU)(INT_PTR)id, nullptr, nullptr);
+}
+
+// The font the running version of Windows actually uses for UI text, which is
+// Segoe UI on 10 and 11 and whatever succeeds it later. Asking the OS is the
+// only way that stays right across versions; DEFAULT_GUI_FONT is still the
+// 1990s bitmap face and is the single biggest reason a plain Win32 window looks
+// dated. Falls back to it only if the query fails.
+HFONT createUiFont() {
+  NONCLIENTMETRICSW metrics = {};
+  metrics.cbSize = sizeof(metrics);
+  if (SystemParametersInfoW(SPI_GETNONCLIENTMETRICS, sizeof(metrics),
+      &metrics, 0)) {
+    if (HFONT font = CreateFontIndirectW(&metrics.lfMessageFont))
+      return font;
+  }
+  return (HFONT)GetStockObject(DEFAULT_GUI_FONT);
+}
+
+// Whether this is running under Wine, which on the Steam Deck and on Linux
+// generally means Proton. The canonical test: Wine's ntdll exports a version
+// function no Windows one has. Used only to word a note, so a wrong answer
+// costs nothing.
+bool runningUnderWine() {
+  static const bool wine = [] {
+    HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
+    return ntdll && GetProcAddress(ntdll, "wine_get_version") != nullptr;
+  }();
+  return wine;
+}
+
+// Wear the icon of whichever game this folder holds. The window is about that
+// game, and on a taskbar with several of these open it is the only thing that
+// tells them apart. Nothing to clean up: the icons live as long as the process.
+void applyGameIcon(HWND w) {
+  if (!g_gameExePath[0])
+    return;
+  HICON large = nullptr;
+  HICON small = nullptr;
+  ExtractIconExA(g_gameExePath, 0, &large, &small, 1);
+  if (large)
+    SendMessageW(w, WM_SETICON, ICON_BIG, (LPARAM)large);
+  if (small)
+    SendMessageW(w, WM_SETICON, ICON_SMALL, (LPARAM)small);
 }
 
 void applyFont(HWND parent) {
-  // Use the standard shell dialog font on every child.
+  // Use the system UI font on every child.
   for (HWND c = GetWindow(parent, GW_CHILD); c; c = GetWindow(c, GW_HWNDNEXT))
     SendMessageW(c, WM_SETFONT, (WPARAM)g_uiFont, TRUE);
 }
@@ -701,24 +807,50 @@ void createControls(HWND w) {
   onPage(0, mkDesc(w,
     L"What reaches the screen. Also written to the game's own settings.", 94));
 
-  onPage(0, mkLabel(w, L"Frame rate limit:", L, 130, 140, 18));
-  g_hMaxFps = mkCombo(w, F, 126, 170, IDC_MAXFPS);
-  onPage(0, g_hMaxFps);
-  for (int i = 0; i < kFpsCount; ++i) {
-    int idx = (int)SendMessageW(g_hMaxFps, CB_ADDSTRING, 0, (LPARAM)kFpsItems[i].label);
-    SendMessageW(g_hMaxFps, CB_SETITEMDATA, idx, kFpsItems[i].fps);
-  }
-  onPage(0, mkDesc(w,
-    L"Above roughly 115 fps the field-map character stutters on steps.", 150));
-
-  onPage(0, mkLabel(w, L"Window mode:", L, 190, 140, 18));
-  g_hWinMode = mkCombo(w, F, 186, 200, IDC_WINMODE);
+  onPage(0, mkLabel(w, L"Window mode:", L, 130, 140, 18));
+  g_hWinMode = mkCombo(w, F, 126, 200, IDC_WINMODE);
   onPage(0, g_hWinMode);
   for (int i = 0; i < kWindowModeCount; ++i)
     SendMessageW(g_hWinMode, CB_ADDSTRING, 0, (LPARAM)kWindowModes[i].label);
   onPage(0, mkDesc(w,
     L"Borderless fills the monitor without taking over the display, so "
-    L"alt-tab is instant. Also written to the game's own settings.", 210));
+    L"alt-tab is instant. Also written to the game's own settings.", 150));
+
+  // The games present at the display's refresh rate and the mod does not pace
+  // frames, so this is a statement of fact rather than a setting. It is here
+  // because "is this capped?" is the question the removed frame-rate limit
+  // would otherwise leave open.
+  // A note rather than a setting, so it sits on its own row below the controls.
+  // mkDesc is two lines tall, so this has to clear the note above it and the
+  // group heading below it: rows here are pitched 56 apart and a note occupies
+  // 32 of that.
+  // Under Proton the obvious question is whether the mod fights the frame limit
+  // Steam or the compositor is applying. It cannot: it does not pace frames and
+  // passes the game's own presentation interval through untouched, so an
+  // outside limit is simply obeyed.
+  onPage(0, mkDesc(w,
+    runningUnderWine()
+      ? L"The game runs at your display's refresh rate, 120 Hz and 144 Hz "
+        L"included. The mod does not cap the frame rate, so a limit set by "
+        L"Steam or the compositor is respected."
+      : L"The game runs at your display's refresh rate, 120 Hz and 144 Hz "
+        L"included. The mod does not cap the frame rate.", 190));
+
+  // The stock front-ends are still reachable: this tool replaces them, it does
+  // not remove them. Greyed out when the executable is not in this folder.
+  onPage(0, mkLabel(w, L"The game's own tools", L, 240, 300, 18));
+  HWND openEnv = mkButton(w, L"Settings editor", 24, 264, 130, IDC_OPENENV);
+  HWND openLauncher = mkButton(w, L"Original launcher", 162, 264, 130,
+    IDC_OPENLAUNCHER);
+  onPage(0, openEnv);
+  onPage(0, openLauncher);
+  if (!stockToolPresent("ArlandDXEnv.exe"))
+    EnableWindow(openEnv, FALSE);
+  if (!stockToolPresent("ArlandDXLauncher.exe"))
+    EnableWindow(openLauncher, FALSE);
+  onPage(0, mkDesc(w,
+    L"Koei Tecmo's own settings editor and launcher, opened as they were "
+    L"before this tool was installed.", 296));
 
   // ---------------- page 1: Image quality ----------------
   onPage(1, mkLabel(w, L"Preset:", L, 74, 140, 18));
@@ -804,6 +936,18 @@ void createControls(HWND w) {
   onPage(2, mkDesc(w,
     L"Extra detail in arland-fix.log. Crash reports are always written.", 434));
 
+  // Bottom left, away from Save/Close so it cannot be hit by accident: saves
+  // first, then launches. Disabled when no game was recognised in this folder,
+  // since there would be nothing to run.
+  //
+  // It is also the default button and takes focus at startup: most of the time
+  // this window is opened on the way into the game, not to change something, so
+  // Enter should start playing. That matters most on a controller or a handheld,
+  // where the alternative is driving a cursor across the window.
+  g_hStart = mkButton(w, L"Start game", 24, 508, 110, IDC_START, true);
+  if (!g_gameExePath[0])
+    EnableWindow(g_hStart, FALSE);
+
   mkButton(w, L"Save", 280, 508, 90, IDC_SAVE);
   mkButton(w, L"Close", 378, 508, 90, IDC_CLOSE);
 
@@ -875,6 +1019,43 @@ LRESULT CALLBACK WndProc(HWND w, UINT msg, WPARAM wp, LPARAM lp) {
           MessageBoxW(w, saved, L"Configure Mod", MB_OK | MB_ICONINFORMATION);
           return 0;
         }
+        case IDC_START: {
+          // Save first: starting the game with the settings still only on
+          // screen is the one outcome nobody wants from this button.
+          saveToIni();
+          const INT_PTR result = (INT_PTR)ShellExecuteA(
+            w, "open", g_gameExePath, nullptr, g_gameDir, SW_SHOWNORMAL);
+          // ShellExecute reports failure as a value of 32 or less.
+          if (result <= 32) {
+            wchar_t failed[320];
+            wsprintfW(failed,
+              L"The configuration was saved, but %s could not be started "
+              L"(error %d). Launch the game as you normally would; the saved "
+              L"settings still apply.",
+              g_gameName ? g_gameName : L"the game", (int)result);
+            MessageBoxW(w, failed, L"Configure Mod", MB_OK | MB_ICONWARNING);
+            return 0;
+          }
+          // The game is running and owns the screen from here, so the
+          // configurator steps out of the way rather than sitting behind it.
+          DestroyWindow(w);
+          return 0;
+        }
+        case IDC_OPENENV:
+        case IDC_OPENLAUNCHER: {
+          const bool env = LOWORD(wp) == IDC_OPENENV;
+          const char* exeName =
+            env ? "ArlandDXEnv.exe" : "ArlandDXLauncher.exe";
+          if (!runStockTool(exeName)) {
+            wchar_t failed[256];
+            wsprintfW(failed,
+              L"%s could not be started. It may have been moved or removed "
+              L"from the game folder.",
+              env ? L"The settings editor" : L"The original launcher");
+            MessageBoxW(w, failed, L"Configure Mod", MB_OK | MB_ICONWARNING);
+          }
+          return 0;
+        }
         case IDC_CLOSE:
           DestroyWindow(w);
           return 0;
@@ -898,14 +1079,14 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int) {
   INITCOMMONCONTROLSEX icc = { sizeof(icc), ICC_STANDARD_CLASSES };
   InitCommonControlsEx(&icc);
 
-  g_uiFont = (HFONT)GetStockObject(DEFAULT_GUI_FONT);
+  g_uiFont = createUiFont();
 
   // This tool edits the files beside it, so both must be there. Saying which
   // one is missing is the whole of the diagnosis for a misplaced copy.
   if (!resolveGameFolder()) {
     MessageBoxW(nullptr,
       L"No Atelier Arland game was found in this folder.\n\n"
-      L"Put arland-config.exe in the game's installation folder, "
+      L"Put arland-fix-launcher.exe in the game's installation folder, "
       L"beside the game executable and d3d11.dll, and run it from there.",
       L"Atelier Arland Fixes", MB_OK | MB_ICONERROR);
     return 1;
@@ -934,12 +1115,41 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int) {
                       | WS_VISIBLE;
   RECT r = { 0, 0, 484, 548 };
   AdjustWindowRect(&r, style, FALSE);
+  const int width = r.right - r.left;
+  const int height = r.bottom - r.top;
+
+  // Centred rather than left to the default cascade position. This window is
+  // the first thing seen when the game is started, so it should arrive where
+  // the eye already is. Centred on the monitor holding the cursor, and on that
+  // monitor's work area rather than its full bounds, so a taskbar cannot push
+  // the lower buttons off-screen. Falls back to the default position if the
+  // monitor cannot be identified.
+  int x = CW_USEDEFAULT;
+  int y = CW_USEDEFAULT;
+  POINT cursor = {};
+  MONITORINFO monitor = {};
+  monitor.cbSize = sizeof(monitor);
+  if (GetCursorPos(&cursor) &&
+      GetMonitorInfoW(MonitorFromPoint(cursor, MONITOR_DEFAULTTOPRIMARY),
+                      &monitor)) {
+    x = monitor.rcWork.left +
+        ((monitor.rcWork.right - monitor.rcWork.left) - width) / 2;
+    y = monitor.rcWork.top +
+        ((monitor.rcWork.bottom - monitor.rcWork.top) - height) / 2;
+  }
+
   HWND w = CreateWindowExW(0, wc.lpszClassName,
     L"Configure Mod", style,
-    CW_USEDEFAULT, CW_USEDEFAULT, r.right - r.left, r.bottom - r.top,
+    x, y, width, height,
     nullptr, nullptr, hInst, nullptr);
   if (!w)
     return 1;
+  applyGameIcon(w);
+  // After the controls exist and the window is up, so nothing takes it back.
+  // Skipped when there is no game to start, since focus on a disabled control
+  // would leave the keyboard nowhere.
+  if (g_hStart && IsWindowEnabled(g_hStart))
+    SetFocus(g_hStart);
 
   MSG m;
   while (GetMessageW(&m, nullptr, 0, 0) > 0) {

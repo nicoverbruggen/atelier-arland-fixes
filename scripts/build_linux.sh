@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
-# Day-to-day local build. Cross-compiles both Windows DLLs with MinGW inside the
-# build container, producing:
-#   build64/d3d11.dll     (64-bit game DLL)
-#   build32/msimg32.dll   (32-bit settings-launcher proxy)
+# Day-to-day local build. Cross-compiles every Windows target with MinGW inside
+# the build container, producing:
+#   build64/d3d11.dll          (64-bit game DLL)
+#   build64/arland-fix-launcher.exe  (64-bit settings GUI)
+#   build32/msimg32.dll        (32-bit settings-launcher proxy)
 #
 # The container (default "atfix-build", override with $ATFIX_CONTAINER) provides
 # the MinGW-w64 toolchain, meson and ninja. Optional first argument: the meson
@@ -28,5 +29,16 @@ for pair in "build64 build-win64.txt" "build32 build-win32.txt"; do
 done
 EOSH
 
+# Every target is built by the meson compile above; this only confirms each one
+# actually landed, so a silently dropped target cannot pass for a good build.
 echo
-echo "Done:  build64/d3d11.dll  build32/msimg32.dll"
+status=0
+for artifact in build64/d3d11.dll build64/arland-fix-launcher.exe build32/msimg32.dll; do
+  if [[ -f "$repo/$artifact" ]]; then
+    echo "  ok      $artifact"
+  else
+    echo "  MISSING $artifact" >&2
+    status=1
+  fi
+done
+exit "$status"

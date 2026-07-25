@@ -1,5 +1,15 @@
-// Launcher-only 32-bit MSIMG32 proxy. Original project code under the MIT terms
-// in ../LICENSE; it modifies only the verified process image in memory.
+// 32-bit MSIMG32 proxy for the two Arland front-ends. Original project code
+// under the MIT terms in ../LICENSE; it modifies only the verified process
+// image in memory.
+//
+// Both ArlandDXLauncher.exe (what Steam runs) and ArlandDXEnv.exe (the settings
+// editor) import msimg32, so this one DLL is loaded into each and does a
+// different job in each:
+//
+//   ArlandDXLauncher.exe -> start arland-fix-launcher.exe instead, if it is installed
+//   ArlandDXEnv.exe      -> add 1440p and 4K to the resolution list
+//
+// Everything else that loads it just gets the two forwarded GDI entry points.
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 
@@ -113,17 +123,27 @@ PFN_TransparentBlt g_transparentBlt = nullptr;
 using PFN_ModeBuilder = void (__thiscall *)(void*);
 PFN_ModeBuilder g_modeBuilder = nullptr;
 
-bool isLauncher(HMODULE module) {
-  std::array<wchar_t, 32768> path = { };
-  const DWORD length = GetModuleFileNameW(module, path.data(), path.size());
+// Both 32-bit front-ends import msimg32, so one proxy is loaded into each and
+// has to tell them apart: ArlandDXEnv.exe is the settings editor (it gets the
+// resolution patch below), ArlandDXLauncher.exe is what Steam runs (it gets
+// redirected to our own configurator). Returns the host's file name, or an
+// empty string if it could not be determined.
+bool hostExeName(std::array<wchar_t, 32768>& path, const wchar_t** name) {
+  const DWORD length = GetModuleFileNameW(nullptr, path.data(), path.size());
   if (!length || length == path.size())
     return false;
-  const wchar_t* name = path.data();
+  *name = path.data();
   for (const wchar_t* cursor = path.data(); *cursor; cursor++) {
     if (*cursor == L'\\' || *cursor == L'/')
-      name = cursor + 1;
+      *name = cursor + 1;
   }
-  return _wcsicmp(name, L"ArlandDXEnv.exe") == 0;
+  return true;
+}
+
+bool isSettingsEditor() {
+  std::array<wchar_t, 32768> path = { };
+  const wchar_t* name = nullptr;
+  return hostExeName(path, &name) && _wcsicmp(name, L"ArlandDXEnv.exe") == 0;
 }
 
 void appendSupportedModesToList(std::uint32_t& count, DisplayMode* modes) {
@@ -246,10 +266,69 @@ bool installModeBuilderHook(std::uint8_t* target) {
   return true;
 }
 
+// Steam runs ArlandDXLauncher.exe. When our configurator is installed beside it
+// we start that instead and end the original before it puts a window on screen,
+// so a plain drop-in install replaces the stock launcher with no extra steps.
+//
+// Nothing here is destructive if the install is partial: with no
+// arland-fix-launcher.exe next to it this returns false and the stock launcher comes
+// up exactly as before.
+//
+// ARLAND_NO_REDIRECT stands the redirect down. The configurator sets it on the
+// original launcher and settings editor when its own buttons open them, which
+// is what stops those buttons from being bounced straight back here.
+bool redirectToConfigurator() {
+  std::array<wchar_t, 32768> path = { };
+  const wchar_t* name = nullptr;
+  if (!hostExeName(path, &name))
+    return false;
+  if (_wcsicmp(name, L"ArlandDXLauncher.exe") != 0)
+    return false;
+
+  if (GetEnvironmentVariableW(L"ARLAND_NO_REDIRECT", nullptr, 0) != 0 ||
+      GetLastError() != ERROR_ENVVAR_NOT_FOUND) {
+    launcherLog("redirect stood down by ARLAND_NO_REDIRECT");
+    return false;
+  }
+
+  // Directory of the launcher, which is also the game folder the configurator
+  // is dropped into. `name` points into `path`, so truncating there leaves the
+  // directory with its trailing backslash.
+  std::array<wchar_t, 32768> directory = { };
+  const std::size_t directoryLength = static_cast<std::size_t>(name - path.data());
+  std::memcpy(directory.data(), path.data(), directoryLength * sizeof(wchar_t));
+
+  std::array<wchar_t, 32768> configurator = { };
+  std::memcpy(configurator.data(), directory.data(),
+    directoryLength * sizeof(wchar_t));
+  std::memcpy(configurator.data() + directoryLength, L"arland-fix-launcher.exe",
+    sizeof(L"arland-fix-launcher.exe"));
+
+  if (GetFileAttributesW(configurator.data()) == INVALID_FILE_ATTRIBUTES) {
+    launcherLog("no configurator installed; leaving the stock launcher alone");
+    return false;
+  }
+
+  STARTUPINFOW startup = { };
+  startup.cb = sizeof(startup);
+  PROCESS_INFORMATION process = { };
+  // The configurator is 64-bit and this proxy is 32-bit; CreateProcess spans
+  // that difference, and the child inherits our environment either way.
+  if (!CreateProcessW(configurator.data(), nullptr, nullptr, nullptr, FALSE,
+      0, nullptr, directory.data(), &startup, &process)) {
+    launcherLog("configurator failed to start; leaving the stock launcher");
+    return false;
+  }
+  CloseHandle(process.hThread);
+  CloseHandle(process.hProcess);
+  launcherLog("configurator started; ending the stock launcher");
+  return true;
+}
+
 void installLauncherResolutionHook() {
   launcherLog("patch initialization entered");
   HMODULE module = GetModuleHandleW(nullptr);
-  if (!module || !isLauncher(module)) {
+  if (!module || !isSettingsEditor()) {
     launcherLog("process is forwarding-only");
     return;
   }
@@ -343,6 +422,13 @@ BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, LPVOID) {
   if (reason == DLL_PROCESS_ATTACH) {
     DisableThreadLibraryCalls(instance);
     launcherLog("msimg32 process attach");
+    if (redirectToConfigurator()) {
+      // TerminateProcess rather than ExitProcess: ExitProcess runs detach
+      // handlers for every loaded module while we are still inside the loader
+      // lock, which is a documented way to deadlock. Nothing of the launcher
+      // has run yet at process attach, so there is no state worth unwinding.
+      TerminateProcess(GetCurrentProcess(), 0);
+    }
     installLauncherResolutionHook();
   }
   return TRUE;
