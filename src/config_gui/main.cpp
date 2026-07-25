@@ -732,13 +732,15 @@ bool runningUnderWine() {
 void applyGameIcon(HWND w) {
   if (!g_gameExePath[0])
     return;
-  HICON large = nullptr;
-  HICON small = nullptr;
-  ExtractIconExA(g_gameExePath, 0, &large, &small, 1);
-  if (large)
-    SendMessageW(w, WM_SETICON, ICON_BIG, (LPARAM)large);
-  if (small)
-    SendMessageW(w, WM_SETICON, ICON_SMALL, (LPARAM)small);
+  // Not named "small": the Windows headers define that as a macro for char,
+  // which MinGW tolerates here and MSVC does not.
+  HICON largeIcon = nullptr;
+  HICON smallIcon = nullptr;
+  ExtractIconExA(g_gameExePath, 0, &largeIcon, &smallIcon, 1);
+  if (largeIcon)
+    SendMessageW(w, WM_SETICON, ICON_BIG, (LPARAM)largeIcon);
+  if (smallIcon)
+    SendMessageW(w, WM_SETICON, ICON_SMALL, (LPARAM)smallIcon);
 }
 
 void applyFont(HWND parent) {
