@@ -21,6 +21,11 @@ void smaaResetFrame();
    the game composites the frame directly into it (Scenario A) or into a separate
    texture copied in (Scenario B), which decides how supersampling downscales. */
 bool presentTraceEnabled();
+
+// Sample count of the MSAA twin attached to a resource, or 0 when it has none.
+// Lets the supersampling trace report whether MSAA is stacked on the render
+// target it downscales, which is otherwise invisible from that side.
+unsigned int msaaTwinSamples(ID3D11Resource* host);
 void notePresentBackbuffer(IDXGISwapChain* swapChain);
 
 /* lives in main.cpp */

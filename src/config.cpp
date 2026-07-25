@@ -6,6 +6,8 @@
 #include <atomic>
 #include <cstdlib>
 #include <cstring>
+#include <string>
+#include <cwchar>
 
 #include "config.h"
 #include "game.h"
@@ -273,6 +275,109 @@ bool modDisabled() {
     return value && value[0] != '0';
   }();
   return disabled;
+}
+
+// ---- the configuration block in the log ------------------------------------
+//
+// Every setting that shaped a run, written once at startup. This exists because
+// a log without it cannot be diagnosed alone: a report of "supersampling does
+// nothing" is indistinguishable from "supersampling was never configured"
+// unless the log says which. Three parts, because a setting can come from three
+// places and the last two are invisible from the ini alone:
+//
+//   CONFIG ini   -- the file as it reads on disk, comments stripped
+//   CONFIG env   -- every ARLAND_* variable, which override the ini
+//   CONFIG using -- the resolutions after clamping, which is what actually ran
+void logIniFile() {
+  const char* path = configPath();
+  if (!path) {
+    log("CONFIG no arland-fix.ini path could be resolved");
+    return;
+  }
+  log("CONFIG ini ", path);
+  HANDLE file = CreateFileA(path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE,
+    nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (file == INVALID_HANDLE_VALUE) {
+    log("CONFIG the ini could not be opened; every value below is a default");
+    return;
+  }
+  std::string text;
+  char chunk[4096];
+  DWORD read = 0;
+  while (ReadFile(file, chunk, sizeof(chunk), &read, nullptr) && read)
+    text.append(chunk, read);
+  CloseHandle(file);
+
+  // Comments and blank lines are the bulk of the shipped file and say nothing
+  // about this run, so only real content is kept.
+  size_t start = 0;
+  while (start <= text.size()) {
+    size_t end = text.find('\n', start);
+    if (end == std::string::npos)
+      end = text.size();
+    std::string line = text.substr(start, end - start);
+    while (!line.empty() && (line.back() == '\r' || line.back() == ' '))
+      line.pop_back();
+    size_t first = line.find_first_not_of(" \t");
+    if (first != std::string::npos && line[first] != '#' && line[first] != ';')
+      log("CONFIG ini   ", line.c_str() + first);
+    if (end == text.size())
+      break;
+    start = end + 1;
+  }
+}
+
+void logEnvironmentOverrides() {
+  wchar_t* block = GetEnvironmentStringsW();
+  if (!block)
+    return;
+  int found = 0;
+  for (const wchar_t* entry = block; *entry; entry += std::wcslen(entry) + 1) {
+    if (_wcsnicmp(entry, L"ARLAND_", 7) != 0)
+      continue;
+    char narrow[512] = { };
+    WideCharToMultiByte(CP_UTF8, 0, entry, -1, narrow, sizeof(narrow) - 1,
+      nullptr, nullptr);
+    log("CONFIG env   ", narrow);
+    ++found;
+  }
+  FreeEnvironmentStringsW(block);
+  if (!found)
+    log("CONFIG env   (none)");
+}
+
+void logConfiguration() {
+  static std::atomic<bool> written { false };
+  if (written.exchange(true))
+    return;
+
+  logIniFile();
+  logEnvironmentOverrides();
+
+  // What the mod resolved those inputs to. The resolutions are the ones worth
+  // stating outright, because both are clamped -- display to the panel, render
+  // to 8K -- so the number that ran is not always the number in the file.
+  UINT displayWidth = 0, displayHeight = 0;
+  UINT renderWidth = 0, renderHeight = 0;
+  const bool haveDisplay = displayResolution(&displayWidth, &displayHeight);
+  const bool haveRender = renderResolution(&renderWidth, &renderHeight);
+  if (haveDisplay)
+    log("CONFIG using display ", std::dec, displayWidth, "x", displayHeight);
+  else
+    log("CONFIG using display (the game's own, no override)");
+  if (haveRender && haveDisplay &&
+      (renderWidth > displayWidth || renderHeight > displayHeight))
+    log("CONFIG using render ", std::dec, renderWidth, "x", renderHeight,
+        " (supersampling)");
+  else
+    log("CONFIG using render (same as display, no supersampling)");
+  const UIFontMode font = uiFontMode();
+  log("CONFIG using msaa=", std::dec, msaaSamples(),
+      " shadowmap=", shadowMapResolution(),
+      " borderless=", borderlessWindow() ? 1 : 0,
+      " font=", font == UIFontMode::Original ? "original"
+              : font == UIFontMode::Upscaled ? "upscaled" : "replaced",
+      " disabled=", modDisabled() ? 1 : 0);
 }
 
 bool borderlessWindow() {

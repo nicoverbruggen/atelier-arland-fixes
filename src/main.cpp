@@ -65,6 +65,9 @@ D3D11Proc loadSystemD3D11() {
     log("ARLAND_DISABLE is set: forwarding Direct3D only, nothing installed");
   else
     installCrashLogger();
+  // Before any hook reports what it did, so the log opens with the settings
+  // that produced everything below it.
+  atfix::logConfiguration();
 
   HMODULE libD3D11 = LoadLibraryExA("d3d11_proxy.dll", nullptr, LOAD_LIBRARY_SEARCH_APPLICATION_DIR);
 

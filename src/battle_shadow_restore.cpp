@@ -384,6 +384,16 @@ struct BattleBuildAddrs {
   uintptr_t showAllRva;        // tactical-scene showAll(charaMgr)
   uintptr_t deferredHideArmRva; // per-actor deferred setVisible arm
   bool casterRestore;          // install the full caster-restoration hook set
+  // The battle game mode's constructor and destructor, and the vtable both of
+  // them install. This is the engine's own answer to "when does a battle begin
+  // and end": the mode is heap-allocated fresh per battle by the mode factory
+  // and destroyed by the mode manager's remove case, so each of these runs
+  // exactly once per battle. Crucially the destructor does not consult map or
+  // scene state, so it fires even when the battle returns to a field map that
+  // was never unloaded -- the case the frame watchdog below exists to cover.
+  uintptr_t battleModeCtorRva;
+  uintptr_t battleModeDtorRva;
+  uintptr_t battleModeVtable;
 };
 
 constexpr BattleBuildAddrs kRoronaAddrsEn = {
@@ -391,12 +401,14 @@ constexpr BattleBuildAddrs kRoronaAddrsEn = {
   0x74e598, 0x74eb70, 0x76e018, 0x74e3f8,
   0x10c73c8, 0xfe6e1, 0x397307,
   0x9d0, 0x68, 0x658, 0x2d0, 0x10c2c0, 0x10c270, 0xc5f80, true,
+  0xfde20, 0xfe120, 0x76d248,
 };
 constexpr BattleBuildAddrs kRoronaAddrsMulti = {
   kBtlCharaVtableRvasMulti, std::size(kBtlCharaVtableRvasMulti),
   0x76c138, 0x76c710, 0x78bc48, 0x76bf98,
   0x11044c8, 0x106781, 0x3ac8d7,
   0x9d0, 0x68, 0x658, 0x2d0, 0x1143c0, 0x114370, 0xce020, true,
+  0x105ec0, 0x1061c0, 0x78ae48,
 };
 // Meruru: managerSlot/helperSlotOffset read straight from the caster-group
 // build's prologue (EN 0x396f80: mov rax,[rip+...]=0xfe0b30; mov r10,[rax+0x960];
@@ -411,12 +423,14 @@ constexpr BattleBuildAddrs kMeruruAddrsEn = {
   0x6681e8, 0x667fe8, 0x66ffb8, 0x668048,
   0xfe0b30, 0x119a47, 0x392875,
   0x960, 0x68, 0x648, 0x2c0, 0x1369b0, 0x136940, 0x102cd0, false,
+  0x118780, 0x119070, 0x66df50,
 };
 constexpr BattleBuildAddrs kMeruruAddrsMulti = {
   kBtlCharaVtableRvasMeruruMulti, std::size(kBtlCharaVtableRvasMeruruMulti),
   0x664268, 0x664068, 0x66bfa8, 0x6640c8,
   0x1040410, 0x106e97, 0x38f925,
   0x960, 0x68, 0x648, 0x2c0, 0x124080, 0x124010, 0xf0070, false,
+  0x105bc0, 0x1064b0, 0x669f20,
 };
 // Totori (EN): static investigation + runtime probe 2026-07-23. Structural
 // outlier: the battle helper is EMBEDDED at gameMode+0x60 (not +0x68), there
@@ -442,6 +456,7 @@ constexpr BattleBuildAddrs kTotoriAddrsEn = {
   0x6d4350, 0x6d4240, 0x6dbc90, 0x6d4288,
   0, 0x1512f0, 0x94212,
   0, 0x60, 0x5f8, 0, 0x170cb0, 0x170c30, 0, false,
+  0x14d0e0, 0x14f790, 0x6d9620,
 };
 
 // Null until a battle-capable build is recognized; battle-shadow code paths
@@ -825,17 +840,30 @@ void registerBattleCharaShadows() {
   // it, so publish it into the global slot (saving the field helper to restore
   // on field re-entry). The global-helper target is already the rendered one.
   bool published = false;
+  bool republished = false;
   if (battleShadowTargetsBattleHelper()) {
     if (uintptr_t* slot = globalActiveHelperSlot()) {
-      g_savedGlobalHelper.store(*slot, std::memory_order_release);
+      // Save the displaced helper only on the FIRST publish of a battle. A
+      // second publish would otherwise record the battle helper as the thing to
+      // put back, and restoring that leaves the field rendering through a
+      // battle helper -- which is a field with no shadows, for the rest of the
+      // visit. Every later publish still updates the slot, just not the memory
+      // of what was there before it.
+      uintptr_t nothingSaved = 0;
+      if (g_savedGlobalHelper.compare_exchange_strong(nothingSaved, *slot,
+            std::memory_order_acq_rel, std::memory_order_acquire))
+        published = true;
+      else
+        republished = true;
       *slot = helper;
-      published = true;
     }
   }
   atfix::log("BATTLE_SHADOW_REGISTER_SUMMARY which=", which,
     " helper=", reinterpret_cast<void*>(helper),
     " scene=", reinterpret_cast<void*>(scene), " registered=", registered,
-    " published=", published);
+    " published=", published, " republished=", republished,
+    " saved=", reinterpret_cast<void*>(
+      g_savedGlobalHelper.load(std::memory_order_acquire)));
 }
 
 // Re-register the party's *current* render nodes. If an attack cut-in swaps a
@@ -1634,6 +1662,123 @@ bool installMeruruBattleStateHook(BYTE* base, const Game& game) {
     reinterpret_cast<void**>(&originalShadowHelperInit));
 }
 
+// ---- the battle gate: GameModeBattle construction and destruction ----------
+//
+// The engine allocates a GameModeBattle for each battle and deletes it when the
+// battle's own end states report finished, so its constructor and destructor
+// are exact, once-per-battle edges. They replace what used to be inferred: a
+// ShadowHelperInit observer that never fired when a battle returned to a field
+// map that was still loaded, plus a watchdog that declared the battle over once
+// the game mode stopped looking alive for twenty consecutive frames.
+//
+// The watchdog is left in place as a fallback. It costs nothing while this
+// works, because it only runs when the state it clears is still set.
+// ARLAND_BATTLE_MODE_GATE=0 stands this down to compare against the old
+// behaviour.
+
+// Defined with the rest of the state tracking below.
+void restorePublishedHelper(const char* reason);
+
+using BattleModeCtorProc = uintptr_t (*)(uintptr_t, uintptr_t, uintptr_t,
+                                         uintptr_t);
+using BattleModeDtorProc = uintptr_t (*)(uintptr_t);
+BattleModeCtorProc originalBattleModeCtor = nullptr;
+BattleModeDtorProc originalBattleModeDtor = nullptr;
+
+bool battleModeGateEnabled() {
+  static const bool enabled = [] {
+    const char* value = std::getenv("ARLAND_BATTLE_MODE_GATE");
+    return !value || value[0] != '0';
+  }();
+  return enabled;
+}
+
+uintptr_t tracedBattleModeCtor(uintptr_t self, uintptr_t a, uintptr_t b,
+                               uintptr_t c) {
+  const uintptr_t result = originalBattleModeCtor(self, a, b, c);
+  // After the original: the mode is fully built here, which is what the rest of
+  // the battle code expects to be able to read.
+  g_battleGameMode.store(self, std::memory_order_release);
+  g_battleSeenLiveMode.store(self, std::memory_order_release);
+  g_battleDeadFrames.store(0, std::memory_order_release);
+  g_battleActive.store(true, std::memory_order_release);
+  atfix::log("==== BATTLE_BEGIN ms=", GetTickCount64(),
+    " mode=", reinterpret_cast<void*>(self), " (mode ctor) ====");
+  return result;
+}
+
+uintptr_t tracedBattleModeDtor(uintptr_t self) {
+  // Before the original, while the object is still coherent and before anything
+  // it owns is freed. Everything the mod holds about this battle is dropped
+  // here, including the game-mode pointer itself: the watchdog dereferences it
+  // to test liveness, and one instruction after the original runs it is a
+  // pointer into freed memory.
+  const uintptr_t tracked = g_battleGameMode.load(std::memory_order_acquire);
+  if (!tracked || tracked == self) {
+    restorePublishedHelper("battle_mode_dtor");
+    g_battleActive.store(false, std::memory_order_release);
+    g_battleGameMode.store(0, std::memory_order_release);
+    g_lastBattleStateVt.store(0, std::memory_order_release);
+    g_battleStateSlot.store(0, std::memory_order_release);
+    g_battleSeenLiveMode.store(0, std::memory_order_release);
+    g_battleContainerFound.store(false, std::memory_order_release);
+    g_battleRegistered.store(false, std::memory_order_release);
+    g_battleDeadFrames.store(0, std::memory_order_release);
+    g_snodeRestoreDeadlineMs.store(0, std::memory_order_release);
+    atfix::log("==== BATTLE_END ms=", GetTickCount64(),
+      " mode=", reinterpret_cast<void*>(self), " (mode dtor) ====");
+  } else {
+    // Two live battle modes should be impossible. Say so rather than quietly
+    // tearing down state that belongs to a different one.
+    atfix::log("BATTLE_MODE_DTOR for an untracked mode=",
+      reinterpret_cast<void*>(self), " tracked=",
+      reinterpret_cast<void*>(tracked), "; leaving state alone");
+  }
+  return originalBattleModeDtor(self);
+}
+
+// Both functions start with a stock MSVC frame that matches thousands of others
+// in the same binary, so a prologue comparison would prove nothing. What
+// identifies them is that each installs the GameModeBattle vtable: find the
+// `lea rax, [rip+disp32]` in the prologue and require its target to be that
+// vtable. That is the identity claim itself rather than a proxy for it, and it
+// re-derives per build from the pack's own numbers.
+bool installsBattleModeVtable(BYTE* function, BYTE* base, uintptr_t vtableRva) {
+  for (size_t offset = 0; offset + 7 <= 0x60; ++offset) {
+    if (function[offset] != 0x48 || function[offset + 1] != 0x8d ||
+        function[offset + 2] != 0x05)
+      continue;
+    int32_t displacement = 0;
+    std::memcpy(&displacement, function + offset + 3, sizeof(displacement));
+    if (function + offset + 7 + displacement == base + vtableRva)
+      return true;
+  }
+  return false;
+}
+
+// Destructor first: a partial install has to leave the mod inert rather than
+// tracking battles it will never see the end of.
+bool installBattleModeGate(BYTE* base) {
+  if (!battleModeGateEnabled() || !g_battleAddrs ||
+      !g_battleAddrs->battleModeCtorRva || !g_battleAddrs->battleModeDtorRva)
+    return false;
+  auto* ctor = base + g_battleAddrs->battleModeCtorRva;
+  auto* dtor = base + g_battleAddrs->battleModeDtorRva;
+  if (!installsBattleModeVtable(ctor, base, g_battleAddrs->battleModeVtable) ||
+      !installsBattleModeVtable(dtor, base, g_battleAddrs->battleModeVtable)) {
+    atfix::log("BATTLE_MODE_GATE declined: the battle game mode's constructor"
+      " and destructor do not install the expected vtable");
+    return false;
+  }
+  if (!installMinHookDetour(dtor,
+      reinterpret_cast<void*>(&tracedBattleModeDtor),
+      reinterpret_cast<void**>(&originalBattleModeDtor)))
+    return false;
+  return installMinHookDetour(ctor,
+    reinterpret_cast<void*>(&tracedBattleModeCtor),
+    reinterpret_cast<void**>(&originalBattleModeCtor));
+}
+
 // Battle-shadow-restore installation: pick the per-game battle address/state
 // tables, then install the caster-registration, shadow-trace, cut-in and
 // battle-state hooks. Bundled so the menu hook dispatcher has a single battle
@@ -1675,6 +1820,10 @@ void installBattleShadowRestore(BYTE* base, const Game& game) {
   atfix::log("Battle-shadow hooks shadow_layers=", shadowLayerTraceInstalled,
     " shadow_constructors=", shadowConstructorTraceInstalled,
     " shadow_mapping=", shadowMappingTraceInstalled);
+  // Last, and reported on its own line: this is what decides whether battle
+  // start and end are known exactly or inferred from the frame watchdog.
+  atfix::log("Battle-mode gate installed=", installBattleModeGate(base),
+    " (0 = falling back to the frame watchdog)");
 }
 
 // ==== E: state tracking (was global ns) ====

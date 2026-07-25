@@ -22,6 +22,7 @@
 #include "config.h"
 #include "log.h"
 #include "supersample.h"
+#include "sync_fix.h"
 
 namespace atfix {
 
@@ -326,7 +327,8 @@ void ssaaDownscale(IDXGISwapChain* swapChain) {
   // renders into the backbuffer (the assumption the redirect rests on). Cheap,
   // and it is the line to read when checking a game the feature is new to.
   static std::atomic<bool> reported{false};
-  if (!reported.exchange(true, std::memory_order_relaxed)) {
+  const bool firstFrame = !reported.exchange(true, std::memory_order_relaxed);
+  if (firstFrame) {
     const uint32_t redirects = g_redirects.load(std::memory_order_relaxed);
     if (redirects)
       log("SSAA active: ", std::dec, redirects,
@@ -345,6 +347,35 @@ void ssaaDownscale(IDXGISwapChain* swapChain) {
   g_color->GetDevice(&device);
   if (device) device->GetImmediateContext(&context);
   if (!context) { if (device) device->Release(); return; }
+
+  // The rest of the picture, on the first downscaled frame, and unconditional:
+  // "supersampling is on but the edges are still jagged" cannot be answered
+  // from the lines above, because they only say the redirect happened. What
+  // decides whether the result is actually supersampled is how much of the
+  // target the engine drew into (the viewport it was still using when the frame
+  // ended) and how many source texels each output pixel averages. A viewport
+  // smaller than the render size means the engine drew a corner of the target
+  // and the downscale is magnifying it; taps=1 at a 2x ratio is the exact 2x2
+  // box filter and is correct, but at a larger ratio it is undersampling.
+  if (firstFrame) {
+    D3D11_VIEWPORT viewports[1] = { };
+    UINT viewportCount = 1;
+    context->RSGetViewports(&viewportCount, viewports);
+    const float ratio = float(g_renderHeight) / float(g_displayHeight);
+    log("SSAA frame: render=", std::dec, g_renderWidth, "x", g_renderHeight,
+        " display=", g_displayWidth, "x", g_displayHeight,
+        " ratio=", ratio,
+        " taps=", int(downscaleTaps()),
+        " msaa=", msaaTwinSamples(g_color),
+        " engine_viewport=", viewportCount ? int(viewports[0].Width) : 0,
+        "x", viewportCount ? int(viewports[0].Height) : 0);
+    if (viewportCount &&
+        (UINT(viewports[0].Width) < g_renderWidth ||
+         UINT(viewports[0].Height) < g_renderHeight))
+      log("SSAA WARNING: the engine's last viewport is smaller than the render"
+          " target, so only part of it holds the frame. The downscale is"
+          " magnifying that part rather than supersampling it.");
+  }
 
   DownscaleParams params;
   params.texel[0] = 1.0f / float(g_renderWidth);

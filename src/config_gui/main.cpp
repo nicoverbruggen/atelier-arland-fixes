@@ -353,6 +353,14 @@ double selectedMult() {
 // still fits. Anything that would render above 8K is left out rather than
 // offered and then silently clamped: a 4K panel can have 1.5x but not 3x, and
 // the difference matters enough to be visible in the list.
+// Set when the multiplier that was selected (or loaded from the ini) does not
+// fit the current base and was reduced to the largest one that does. Someone
+// who asked for 4x at 4K wants as much supersampling as they can have, not
+// none of it, so the cap lands them on 2x -- and it says so, because silently
+// changing a setting and then writing it back on Save is how a configuration
+// gets lost.
+bool g_ssReduced = false;
+
 void refillSupersampling() {
   const int wanted = ssIndex();
   unsigned bw = 0, bh = 0;
@@ -366,6 +374,17 @@ void refillSupersampling() {
     SendMessageW(g_hSS, CB_SETITEMDATA, at, i);
   }
   setSsIndex(wanted);
+  // setSsIndex lands on Off when the list does not hold what was asked for. The
+  // list is built in ascending order, so its last entry is the largest
+  // multiplier this base allows: take that instead.
+  g_ssReduced = false;
+  if (wanted > 0 && ssIndex() != wanted) {
+    const int count = (int)SendMessageW(g_hSS, CB_GETCOUNT, 0, 0);
+    if (count > 1) {
+      SendMessageW(g_hSS, CB_SETCURSEL, count - 1, 0);
+      g_ssReduced = true;
+    }
+  }
 }
 
 // Compute the render resolution (base x multiplier) into out. Returns false
@@ -426,7 +445,10 @@ void updateRenderResolution() {
 
   char text[96];
   unsigned rw, rh;
-  if (!haveBase)
+  if (g_ssReduced && computeRender(&rw, &rh))
+    wsprintfA(text, "Render resolution: %u x %u (reduced to the 8K limit)",
+      rw, rh);
+  else if (!haveBase)
     lstrcpyA(text, "Render resolution: base is Auto (supersampling off)");
   else if (!computeRender(&rw, &rh))
     lstrcpyA(text, "Render resolution: (off, renders at base)");

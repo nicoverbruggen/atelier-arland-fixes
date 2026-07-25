@@ -776,6 +776,22 @@ void resolveIfMSAA(ID3D11DeviceContext* context, ID3D11Resource* host) {
   multisampled->Release();
 }
 
+unsigned int msaaTwinSamplesImpl(ID3D11Resource* host) {
+  ID3D11Resource* multisampled = getMSAAObject<ID3D11Resource>(host);
+  if (!multisampled)
+    return 0;
+  unsigned int samples = 0;
+  ID3D11Texture2D* texture = nullptr;
+  if (SUCCEEDED(multisampled->QueryInterface(IID_PPV_ARGS(&texture)))) {
+    D3D11_TEXTURE2D_DESC desc = { };
+    texture->GetDesc(&desc);
+    samples = desc.SampleDesc.Count;
+    texture->Release();
+  }
+  multisampled->Release();
+  return samples;
+}
+
 void resolveBoundMSAA(ID3D11DeviceContext* context) {
   ID3D11Resource* host = nullptr;
   UINT size = sizeof(host);
@@ -837,6 +853,10 @@ bool presentTraceEnabled() {
     return value && value[0] != '0';
   }();
   return enabled;
+}
+
+unsigned int msaaTwinSamples(ID3D11Resource* host) {
+  return msaaTwinSamplesImpl(host);
 }
 
 std::atomic<void*> g_traceBackbuffer{nullptr};
