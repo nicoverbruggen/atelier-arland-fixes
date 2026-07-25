@@ -466,12 +466,39 @@ const uintptr_t kBtlCharaVtableRvasTotoriEn[] = {
   0x6dc518,  // BtlCharaParty
   0x6dc278,  // BtlCharaRemoteWeapon
 };
+// The multilingual homologues, RTTI-located. Every entry sits at the same
+// offset from BtlChara as its English counterpart (constant delta 0x2a2eb0).
+const uintptr_t kBtlCharaVtableRvasTotoriMulti[] = {
+  0x97eba8,  // BtlChara
+  0x97ed38,  // BtlCharaEffect
+  0x97ee88,  // BtlCharaDummy
+  0x97efd8,  // BtlCharaSynchro
+  0x97f278,  // BtlCharaMonster
+  0x97f3c8,  // BtlCharaParty
+  0x97f128,  // BtlCharaRemoteWeapon
+};
 constexpr BattleBuildAddrs kTotoriAddrsEn = {
   kBtlCharaVtableRvasTotoriEn, std::size(kBtlCharaVtableRvasTotoriEn),
   0x6d4350, 0x6d4240, 0x6dbc90, 0x6d4288,
   0, 0x1512f0, 0x94212,
   0, 0x60, 0x5f8, 0, 0x170cb0, 0x170c30, 0, false,
   0x14d0e0, 0x14f790, 0x6d9620, 0, 0,
+};
+
+// Totori multilingual, observation only. The battle gate (mode constructor,
+// destructor and vtable) and both vtable tables are RTTI-derived and verified
+// against the English build; everything that touches shadows is deliberately
+// left zero until a playtest confirms the gate fires and the state names come
+// out right. So this build reports battles and states and manipulates nothing:
+// no tactical caster clear, no ShadowHelperInit publish/re-entry gate, no
+// caster restoration. The struct offsets are shared with the English build,
+// which is the same source compiled twice.
+constexpr BattleBuildAddrs kTotoriAddrsMulti = {
+  kBtlCharaVtableRvasTotoriMulti, std::size(kBtlCharaVtableRvasTotoriMulti),
+  0, 0, 0, 0,
+  0, 0, 0,
+  0, 0x60, 0x5f8, 0, 0, 0, 0, false,
+  0x369f40, 0x36c5f0, 0x97b7f0, 0, 0,
 };
 
 // Null until a battle-capable build is recognized; battle-shadow code paths
@@ -548,6 +575,20 @@ const BattleStateEntry kBattleStatesTotoriEn[] = {
   {0x6db270, "EndCheck"}, {0x6db360, "TurnEventWait"}, {0x6db3b0, "EndWait"},
   {0x6db540, "AfterBattle"}, {0x6db2c0, "DeadBoss"}, {0x6db400, "Result"},
   {0x6db450, "AddPay"}, {0x6db4f0, "DropItem"}, {0x6db4a0, "LvUp"},
+};
+// Totori multilingual, same locator and the same 22 states in the same order.
+// Every entry sits at the same offset from Enter as its English homologue
+// (constant delta 0x2a2ed0), so the table is one relocation of one layout.
+const BattleStateEntry kBattleStatesTotoriMulti[] = {
+  {0x97dd80, "Enter"}, {0x97e1e0, "StartWait"}, {0x97de20, "SelectCommand"},
+  {0x97df10, "SelectTarget"}, {0x97de70, "SelectSkill"},
+  {0x97dec0, "SelectItem"}, {0x97e050, "WaitAction"},
+  {0x97df60, "ExecCommand"}, {0x97e0f0, "Reaction"},
+  {0x97e000, "ReactionSkillBefore"}, {0x97dfb0, "HelpSkillBefore"},
+  {0x97e0a0, "HelpSkillAfter"}, {0x97ddd0, "ChangeActiveChara"},
+  {0x97e140, "EndCheck"}, {0x97e230, "TurnEventWait"}, {0x97e280, "EndWait"},
+  {0x97e410, "AfterBattle"}, {0x97e190, "DeadBoss"}, {0x97e2d0, "Result"},
+  {0x97e320, "AddPay"}, {0x97e3c0, "DropItem"}, {0x97e370, "LvUp"},
 };
 const BattleStateEntry* g_battleStates = nullptr;
 size_t g_battleStateCount = 0;
@@ -1870,11 +1911,13 @@ void installBattleShadowRestore(BYTE* base, const Game& game) {
       ? kBattleStatesMeruruMulti : kBattleStatesMeruruEn;
     g_battleStateCount = game.exeBuild == BuildMultilingual
       ? std::size(kBattleStatesMeruruMulti) : std::size(kBattleStatesMeruruEn);
-  } else if (game.atlasVariant == AtlasTotori &&
-             game.exeBuild == BuildEnglish) {
-    g_battleAddrs = &kTotoriAddrsEn;
-    g_battleStates = kBattleStatesTotoriEn;
-    g_battleStateCount = std::size(kBattleStatesTotoriEn);
+  } else if (game.atlasVariant == AtlasTotori) {
+    g_battleAddrs = game.exeBuild == BuildMultilingual
+      ? &kTotoriAddrsMulti : &kTotoriAddrsEn;
+    g_battleStates = game.exeBuild == BuildMultilingual
+      ? kBattleStatesTotoriMulti : kBattleStatesTotoriEn;
+    g_battleStateCount = game.exeBuild == BuildMultilingual
+      ? std::size(kBattleStatesTotoriMulti) : std::size(kBattleStatesTotoriEn);
   }
   const bool shadowLayerTraceInstalled = installShadowLayerTrace(base, game);
   const bool shadowConstructorTraceInstalled =
@@ -2008,8 +2051,14 @@ void trackBattleStateTick() {
     return;
   g_lastBattleStateVt.store(vt, std::memory_order_release);
   const char* name = battleStateName(vt);
+  // The RVA travels with the name, and an unrecognized vtable prints as
+  // <unknown> rather than as a null const char*: streaming null sets badbit and
+  // would take the rest of the log with it, turning "this state is not in the
+  // table" into "logging stopped". The RVA is what identifies the missing entry.
   atfix::log("BATTLE_STATE ms=", GetTickCount64(), " state=",
-    name, " obj=", reinterpret_cast<void*>(stateObj));
+    name ? name : "<unknown>", " vt_rva=0x", std::hex,
+    gameBase ? vt - reinterpret_cast<uintptr_t>(gameBase) : vt, std::dec,
+    " obj=", reinterpret_cast<void*>(stateObj));
 
   // On entering the overview (SelectCommand) or the attack cut-in (WaitAction),
   // snapshot the first party character's render node so the two can be diffed to
