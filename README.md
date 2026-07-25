@@ -9,7 +9,7 @@ The mod ships with a 64-bit `d3d11.dll` for the games, a 64-bit `arland-fix-laun
 
 ## How it works
 
-Everything above works out of the box with default settings by simply dropping `d3d11.dll` into your game folders. Optional, off-by-default enhancements (supersampling, MSAA, higher-resolution shadows, anisotropic filtering, borderless windowed mode) are documented in [ADVANCED.md](ADVANCED.md).
+Everything above works out of the box with default settings by simply dropping `d3d11.dll` into your game folders. Anisotropic filtering is on by default too, since it costs nothing per frame. Optional, off-by-default enhancements (supersampling, MSAA, higher-resolution shadows, borderless windowed mode) are documented in [ADVANCED.md](ADVANCED.md).
 
 The mod is intended for the Steam versions of the games. See [TECHNICAL.md](TECHNICAL.md) for implementation details and tested executable fingerprints.
 
@@ -73,7 +73,7 @@ When the multilingual build runs in Japanese on a non-UTF-8 system locale (commo
 
 ### Advanced options
 
-The release archive includes an `arland-fix.ini` listing every option with its default and a short explanation; if none is present the mod creates a minimal one on first launch. Everything optional is disabled by default. MSAA, supersampling, higher-resolution shadow maps, battle shadows, restored cut-in shadows, cut-in brightness, the resolution settings, a suggested best-experience configuration, and troubleshooting are documented in [ADVANCED.md](ADVANCED.md). The drop-in installation never enables the optional features.
+The release archive includes an `arland-fix.ini` listing every option with its default and a short explanation; if none is present the mod creates a minimal one on first launch. The costly options are disabled by default; the ones that are free (SMAA, anisotropic filtering, the high-resolution UI text) are on. MSAA, supersampling, higher-resolution shadow maps, battle shadows, restored cut-in shadows, cut-in brightness, the resolution settings, a suggested best-experience configuration, and troubleshooting are documented in [ADVANCED.md](ADVANCED.md). The drop-in installation never enables the optional features.
 
 ## Build
 
