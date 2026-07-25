@@ -767,6 +767,45 @@ void saveToIni() {
   WritePrivateProfileStringA(nullptr, nullptr, nullptr, g_settingsPath);
 }
 
+// ---- unsaved-change tracking -----------------------------------------------
+
+// Settings reach the ini when the game is started, not when the window closes,
+// so closing after an edit would silently discard it. Rather than watching for
+// change notifications, which means remembering every control, this snapshots
+// what saveToIni reads and compares on close: no control can be missed, and
+// changing a setting back to its old value correctly counts as unchanged.
+struct UiState {
+  int font, base, ss, msaa, shadow, aniso, winMode, lang;
+  int smaa, battleShadows, cutInShadows, cutInDimming, verbose;
+};
+UiState g_savedState;
+
+UiState currentState() {
+  UiState s = {};
+  s.font = (int)SendMessageW(g_hFont, CB_GETCURSEL, 0, 0);
+  s.base = (int)SendMessageW(g_hBase, CB_GETCURSEL, 0, 0);
+  s.ss = ssIndex();
+  s.msaa = (int)SendMessageW(g_hMsaa, CB_GETCURSEL, 0, 0);
+  s.shadow = (int)SendMessageW(g_hShadow, CB_GETCURSEL, 0, 0);
+  s.aniso = (int)SendMessageW(g_hAniso, CB_GETCURSEL, 0, 0);
+  s.winMode = (int)SendMessageW(g_hWinMode, CB_GETCURSEL, 0, 0);
+  s.lang = (int)SendMessageW(g_hLang, CB_GETCURSEL, 0, 0);
+  s.smaa = isChecked(g_hSmaa);
+  s.battleShadows = isChecked(g_hBShadow);
+  s.cutInShadows = isChecked(g_hBCutInShadow);
+  s.cutInDimming = isChecked(g_hBCutInDim);
+  s.verbose = isChecked(g_hVerbose);
+  return s;
+}
+
+// Every member is an int, so there is no padding for memcmp to trip over.
+void markSaved() { g_savedState = currentState(); }
+
+bool hasUnsavedChanges() {
+  const UiState now = currentState();
+  return std::memcmp(&now, &g_savedState, sizeof(now)) != 0;
+}
+
 // ---- ini location ----------------------------------------------------------
 
 // Fill g_iniPath with dir + "arland-fix.ini". dir may or may not end in a slash.
@@ -956,6 +995,8 @@ bool startGame(HWND w, bool standDownMod) {
   // much without the mod, since resolution and language live in the game's own
   // settings file and it reads them either way.
   saveToIni();
+  // Nothing is pending any more, so a failed launch leaves no close prompt.
+  markSaved();
 
   // Which executable to run follows the language that was just saved, exactly
   // as the game's own launcher decides it. Read from the control rather than
@@ -1625,6 +1666,7 @@ LRESULT CALLBACK WndProc(HWND w, UINT msg, WPARAM wp, LPARAM lp) {
     case WM_CREATE:
       createControls(w);
       loadFromIni();
+      markSaved();
       return 0;
 
     case WM_NOTIFY: {
@@ -1708,6 +1750,7 @@ LRESULT CALLBACK WndProc(HWND w, UINT msg, WPARAM wp, LPARAM lp) {
             return 0;
           resetToDefaults();
           saveToIni();
+          markSaved();
           // Name the game back to the user: this tool configures whichever
           // folder it sits in, and saying which one closes that loop.
           wchar_t saved[320];
@@ -1740,14 +1783,29 @@ LRESULT CALLBACK WndProc(HWND w, UINT msg, WPARAM wp, LPARAM lp) {
         }
         case IDC_CLOSE:
         // IsDialogMessage turns Escape into IDCANCEL, so this is the Escape
-        // key. Closing without saving matches every other dialog-shaped window.
+        // key. Both go through WM_CLOSE so the unsaved-changes check sits in
+        // one place, shared with the window's own close button.
         case IDCANCEL:
-          DestroyWindow(w);
+          SendMessageW(w, WM_CLOSE, 0, 0);
           return 0;
       }
       return 0;
 
     case WM_CLOSE:
+      // Settings are written when the game starts, so closing after an edit
+      // would throw it away with no sign that it happened. Cancel is the
+      // default: of the three answers it is the only one that loses nothing.
+      if (hasUnsavedChanges()) {
+        const int answer = MessageBoxW(w,
+          L"Save the changes you made to the settings before closing? They "
+          L"are normally written when you start the game.",
+          L"Atelier Arland Fixes",
+          MB_YESNOCANCEL | MB_ICONQUESTION | MB_DEFBUTTON3);
+        if (answer == IDCANCEL)
+          return 0;
+        if (answer == IDYES)
+          saveToIni();
+      }
       DestroyWindow(w);
       return 0;
 
