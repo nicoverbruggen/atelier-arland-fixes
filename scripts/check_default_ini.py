@@ -10,6 +10,8 @@ Checked in both directions:
   * every option the code reads appears in default.ini
   * every option in default.ini is actually read by the code
   * where the default is a literal in the source, the values match
+  * the settings launcher's own fallbacks agree with default.ini, since it has
+    to show a value before the DLL has ever written one
 
 Run from the repository root, or via `python3 scripts/check_default_ini.py`.
 """
@@ -33,13 +35,6 @@ VALUE_NOT_EXTRACTABLE = {
     ("Battle", "BattleCutInDimming"),
 }
 
-# Values the code treats as interchangeable with its own default, so the file
-# can use whichever reads better. AnisotropicFiltering enables only on 2/4/8/16,
-# so 0 and 1 both mean off, and the file uses 1 to match the MSAA=1 beside it.
-EQUIVALENT_VALUES = {
-    ("Rendering", "AnisotropicFiltering"): {"0", "1"},
-}
-
 SECTION_ALT = "|".join(SECTIONS)
 PATTERNS = (
     # arlandConfigBool("Section", "Key", true)
@@ -57,6 +52,23 @@ PATTERNS = (
 KEY_ONLY = (
     re.compile(rf'GetPrivateProfile\w+A\("({SECTION_ALT})",\s*"(\w+)"'),
     re.compile(rf'"ARLAND_\w+",\s*"({SECTION_ALT})",\s*"(\w+)"'),
+)
+
+# The launcher keeps its own copy of every default, because it has to show a
+# value before the DLL has ever run. That copy drifts silently: it is a separate
+# file with a separate idiom, and a launcher that disagrees does not just
+# display the wrong thing, it writes the wrong thing back on the next Save.
+LAUNCHER_PATTERNS = (
+    # iniBool("Section", "Key", true)
+    re.compile(rf'iniBool\("({SECTION_ALT})",\s*"(\w+)",\s*(true|false)\)'),
+    # iniString("Section", "Key", buf, sizeof(buf));
+    #   comboSelectByValue(ctrl, items, n, buf[0] ? buf : "8", 0);
+    # The default sits in the fallback of the ternary, one or more statements
+    # later, and is tied to the read by the buffer name.
+    re.compile(
+        rf'iniString\("({SECTION_ALT})",\s*"(\w+)",\s*(\w+),[^;]*;'
+        rf'[^;]*\?\s*\3\s*:\s*"([^"]*)"'
+    ),
 )
 
 
@@ -90,10 +102,23 @@ def parse_source():
     return defaults
 
 
+def parse_launcher():
+    """(section, key) -> default value the settings launcher falls back to."""
+    defaults = {}
+    text = (ROOT / "src" / "config_gui" / "main.cpp").read_text()
+    for pattern in LAUNCHER_PATTERNS:
+        for match in pattern.finditer(text):
+            defaults.setdefault(
+                (match.group(1), match.group(2)), match.groups()[-1]
+            )
+    return defaults
+
+
 def main():
     ini_path = ROOT / "default.ini"
     ini = parse_ini(ini_path)
     source = parse_source()
+    launcher = parse_launcher()
     problems = []
 
     for entry in sorted(set(source) - set(ini) - UNDOCUMENTED):
@@ -112,12 +137,19 @@ def main():
         if expected is None:
             continue
         actual = ini[entry]
-        equivalent = EQUIVALENT_VALUES.get(entry, set())
-        if actual.lower() != expected.lower() and not (
-                {actual, expected} <= equivalent):
+        if actual.lower() != expected.lower():
             problems.append(
                 f"{entry[0]}/{entry[1]}: default.ini says {actual!r}, "
                 f"the code defaults to {expected!r}"
+            )
+
+    for entry in sorted(set(ini) & set(launcher)):
+        actual = ini[entry]
+        expected = launcher[entry]
+        if actual.lower() != expected.lower():
+            problems.append(
+                f"{entry[0]}/{entry[1]}: default.ini says {actual!r}, "
+                f"the settings launcher falls back to {expected!r}"
             )
 
     if problems:

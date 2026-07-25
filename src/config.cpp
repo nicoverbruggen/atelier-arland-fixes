@@ -42,6 +42,10 @@ const char* configPath() {
       WritePrivateProfileStringA("Rendering", "RenderWidth", "", result.data());
       WritePrivateProfileStringA("Rendering", "RenderHeight", "", result.data());
       WritePrivateProfileStringA("Rendering", "ShadowMultiplier", "1", result.data());
+      // Written out even though it matches the built-in default, so the key is
+      // discoverable and so the launcher reads a value rather than inferring
+      // one. Anisotropic filtering ships on: it costs nothing per frame.
+      WritePrivateProfileStringA("Rendering", "AnisotropicFiltering", "8", result.data());
       WritePrivateProfileStringA("Battle", "BattleShadows", "true", result.data());
       // The cut-in keys (BattleCutInShadows / BattleCutInDimming) are seeded
       // lazily by featureEnabled() using their per-game matrix defaults, so they

@@ -127,7 +127,7 @@ The games sample their textures with plain linear filtering, so surfaces seen at
 AnisotropicFiltering=16
 ```
 
-Accepted values are `2`, `4`, `8`, and `16` (the maximum-anisotropy level); `0`, `1` (the shipped value), any other number, or the setting removed all leave the game's original filtering in place. The mod upgrades the game's texture samplers at creation, so all world and character textures benefit with no per-frame cost; shadow-comparison samplers are left untouched. Off by default. `ARLAND_ANISO` overrides the INI.
+Accepted values are `2`, `4`, `8`, and `16` (the maximum-anisotropy level); `0`, `1`, or any other number leaves the game's original filtering in place. The mod upgrades the game's texture samplers at creation, so all world and character textures benefit with no per-frame cost; shadow-comparison samplers are left untouched. On by default at `8`, which is also what you get if the setting is removed entirely, so use `1` to turn it off. `ARLAND_ANISO` overrides the INI.
 
 ## Shadow resolution multiplier
 
