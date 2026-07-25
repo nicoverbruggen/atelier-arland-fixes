@@ -102,33 +102,6 @@ jobs:
             found { print }
             END { if (!found) exit 1 }
           ' CHANGELOG.md > changes.md
-          # Install instructions first, then this version's changelog section.
-          cat > release-notes.md <<'NOTES'
-          ## Installing
-
-          Download `arland-fix-<version>.zip` below and extract all four files into the game's installation folder — the one containing the game executable (`A11R_x64_Release_en.exe` for Rorona, `A12V_x64_Release_en.exe` for Totori, `A13V_x64_Release_EN.exe` for Meruru):
-
-          - `d3d11.dll` — the mod itself
-          - `arland-fix-launcher.exe` — the launcher: every setting in one window, with a Start game button
-          - `msimg32.dll` — opens the launcher above when the game is started from Steam, and adds 1440p and 4K to Koei Tecmo's own settings editor
-          - `arland-fix.ini` — the settings themselves, documented inline and editable by hand
-
-          The archive also contains an `arland-fix` folder with the documentation and the licences for the embedded fonts. Nothing reads it at runtime, so keep it or delete it as you prefer.
-
-          Everything works with no configuration; the `.ini` only needs editing if you want the optional extras. To uninstall, delete the four files.
-
-          **Upgrading from an earlier version**: replace the two DLLs and the launcher, but keep the `arland-fix.ini` you already have. The bundled one contains nothing but the defaults, so overwriting it would silently discard your settings.
-
-          **Steam Deck, Linux and anyone using Proton**: also add this to the game's Steam Launch Options:
-
-          ```
-          WINEDLLOVERRIDES="d3d11,msimg32=n,b" %command%
-          ```
-
-          ## Changes
-
-          NOTES
-          cat changes.md >> release-notes.md
           # Tags containing "pre" (e.g. v0.5-pre) publish as a GitHub pre-release.
           if echo "${GITHUB_REF_NAME}" | grep -qi 'pre'; then
             PRERELEASE="--prerelease"
@@ -136,8 +109,8 @@ jobs:
             PRERELEASE="--latest"
           fi
           if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
-            gh release edit "${GITHUB_REF_NAME}" --notes-file release-notes.md $PRERELEASE
+            gh release edit "${GITHUB_REF_NAME}" --notes-file changes.md $PRERELEASE
             gh release upload "${GITHUB_REF_NAME}" "arland-fix-${GITHUB_REF_NAME}.zip" --clobber
           else
-            gh release create "${GITHUB_REF_NAME}" "arland-fix-${GITHUB_REF_NAME}.zip" --verify-tag --notes-file release-notes.md --title "${GITHUB_REF_NAME}" $PRERELEASE
+            gh release create "${GITHUB_REF_NAME}" "arland-fix-${GITHUB_REF_NAME}.zip" --verify-tag --notes-file changes.md --title "${GITHUB_REF_NAME}" $PRERELEASE
           fi

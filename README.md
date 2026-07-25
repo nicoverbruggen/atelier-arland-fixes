@@ -67,7 +67,13 @@ All performance and text-correctness fixes are enabled automatically. No configu
 
 ### Wine and Proton
 
-The mod works under Wine and Proton; the required launch options are documented in [ADVANCED.md](ADVANCED.md).
+Copy the files in exactly as above, then add this to the game's Steam Launch Options (Properties → General → Launch Options):
+
+```text
+WINEDLLOVERRIDES="d3d11,msimg32=n,b" %command%
+```
+
+Without it Wine loads its own `d3d11` and ignores the mod's, so the files sit in the folder doing nothing and the game looks entirely unmodified. If nothing seems to have changed after installing, check this first. `arland-fix.log` appearing in the game directory is the sign the mod loaded.
 
 When the multilingual build runs in Japanese on a non-UTF-8 system locale (common under Wine and Proton), its title bar would otherwise show mojibake, and the engine's ANSI window cannot display Japanese on such a locale at all. In that case the mod substitutes a readable romanized title, for example `Rorona no Atelier ~Arland no Renkinjutsushi~ DX`. The Chinese and English builds, and correctly configured Japanese or UTF-8 locales, are unaffected.
 
