@@ -54,7 +54,9 @@ Unlike MSAA and SMAA, which smooth edges after the fact, this resolves detail th
 
 It is the most expensive option in this file, and cost scales with pixels drawn: 3840×2160 into a 2560×1440 window is 2.25× the pixels of 1440p, and 4× if the window is 1080p. Exact integer ratios (a 1080p window rendering at 4K) resolve with a true box filter and are the sharpest; other ratios use a bilinear resolve. Because supersampling already anti-aliases geometry, there is little reason to combine it with MSAA — that multiplies the cost of an already larger render target — so prefer raising the render resolution over stacking the two.
 
-The render resolution is capped at **7680×4320** (8K), and a larger value is reduced to it with the ratio kept and a line in the log. Above that the engine's own render targets stop fitting in video memory on real hardware — a 4K panel at 4× is 15360×8640, over half a gigabyte for a single target, and the games allocate many. That does not fail cleanly: some targets are created and some are not, so the game runs but conversations draw black and the frame rate hitches every few seconds as video memory is paged. The launcher does not offer multipliers that would exceed the cap.
+The render resolution is capped at **7680×4320** (8K), and a larger value is reduced to it with the ratio kept and a line in the log. The launcher does not offer multipliers that would exceed the cap; where one is configured that no longer fits, it drops to the largest that does rather than switching supersampling off.
+
+The cap is about diminishing returns rather than a hard limit. These games' assets date from 2010, and the sub-pixel detail supersampling recovers is exhausted well before 8K, while the cost keeps scaling with the pixels drawn: a 4K display at 4× is 15360×8640, over half a gigabyte for a single render target, and the games allocate many.
 
 ### Deprecated: `Width` / `Height`
 

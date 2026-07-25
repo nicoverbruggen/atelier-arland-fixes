@@ -190,13 +190,19 @@ bool renderResolution(UINT* width, UINT* height) {
   if (!readResPair("RenderWidth", "RenderHeight", width, height))
     return displayResolution(width, height);
 
-  // 8K is where this stops being a quality setting and starts being a way to
-  // run out of video memory. The engine derives a large family of render
-  // targets from this size, so a 4K panel at 4x asks for over half a gigabyte
-  // each; what that looks like in play is not a clean failure but a game that
-  // runs with some of its targets missing -- conversations drawing black, and
-  // a hitch every few seconds as video memory is paged. The ratio is kept, so
-  // the frame stays the shape the display asked for.
+  // 8K is where this stops buying anything. These are 2010-era assets: past
+  // roughly 8K there is no sub-pixel detail left for more samples to resolve,
+  // while the cost keeps scaling with pixels drawn -- the engine derives a
+  // large family of render targets from this size, and a 4K panel at 4x asks
+  // for over half a gigabyte each. So the limit is diminishing returns first
+  // and memory second. The ratio is kept, so the frame stays the shape the
+  // display asked for.
+  //
+  // Nothing structural stops this being raised later if a reason appears; it
+  // is a judgement about these games, not a constraint of the code. Note the
+  // black conversations that once looked like evidence for a memory ceiling
+  // were a render-target classification bug (see sync_fix.cpp, the 1920x1080
+  // full-size vs half-size tie-break) and are NOT an argument for this limit.
   const UINT maxWidth = 7680;
   const UINT maxHeight = 4320;
   if (*width > maxWidth || *height > maxHeight) {

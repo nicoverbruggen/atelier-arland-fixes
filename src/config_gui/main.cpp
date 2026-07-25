@@ -168,13 +168,15 @@ const MultItem kSSItems[] = {
 const int kSSCount = 6;
 
 // The ceiling on the internal render resolution: 8K, four times the pixels of
-// 4K. Above it the engine's own render targets stop fitting in video memory on
-// real hardware -- a 4K panel at 4x is 15360x8640, over half a gigabyte for a
-// single target, and the games allocate many. What that looks like in play is
-// not a clean failure: some targets still allocate and some do not, so the
-// game runs but a conversation draws black and the frame rate hitches every
-// few seconds as video memory is paged. Multipliers that would exceed this are
-// not offered (see refillSupersampling), and the mod clamps the ini as well.
+// 4K. Past this there is nothing left to resolve -- these are 2010-era assets,
+// and the sub-pixel detail that supersampling recovers is exhausted well before
+// 8K -- while the cost keeps scaling with pixels drawn: a 4K panel at 4x is
+// 15360x8640, over half a gigabyte for a single render target, and the games
+// allocate many. Multipliers that would exceed it are not offered (see
+// refillSupersampling), and the mod clamps the ini as well.
+//
+// This could be raised if a reason to ever appears. It is a judgement about
+// what these games can use, not a limit of the implementation.
 const unsigned kMaxRenderWidth = 7680;
 const unsigned kMaxRenderHeight = 4320;
 
