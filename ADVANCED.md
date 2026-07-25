@@ -163,7 +163,7 @@ BattleCutInDimming=false
 
 `BattleCutInShadows` (default `false`) restores the ground shadows during cut-ins; set it to `true` to enable them.
 
-`BattleCutInDimming` (default `true`) keeps the original close-up dimming; set it to `false` to hold the cut-in at full brightness. The two options are independent and apply to all three games.
+`BattleCutInDimming` (default `true`) keeps the original close-up dimming; set it to `false` to hold the cut-in at full brightness. The two options are independent. They apply to all three games, except that Totori's cut-in support is limited to its English build: the multilingual build has no battle-state addresses mapped yet, so both options resolve to unsupported there and the cut-ins stay as the game renders them.
 
 ## Suggested "best experience" configuration
 
