@@ -399,6 +399,8 @@ void ssaaDownscale(IDXGISwapChain* swapChain) {
   if (!g_redirects.load(std::memory_order_relaxed))
     return;   // nothing of the frame is in our target; leave the backbuffer be
 
+  // Deliberately the hooked context: this pass relies on re-entering the proxy
+  // (see the PSSetShaderResources note below, and AGENTS.md).
   ID3D11Device* device = nullptr;
   ID3D11DeviceContext* context = nullptr;
   g_color->GetDevice(&device);
@@ -484,6 +486,8 @@ void ssaaDownscale(IDXGISwapChain* swapChain) {
   context->PSSetShader(g_ps, nullptr, 0);
   context->PSSetConstantBuffers(0, 1, &g_cb);
   context->PSSetSamplers(0, 1, &g_sampler);
+  // The hook behind this bind runs resolveIfMSAA on g_color, which is how the
+  // MSAA twin reaches the host we sample. Not a getContextProcs call.
   context->PSSetShaderResources(0, 1, &g_colorSRV);
   context->Draw(3, 0);
 

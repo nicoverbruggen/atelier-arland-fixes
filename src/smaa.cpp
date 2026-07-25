@@ -386,6 +386,9 @@ namespace {
 // writing the antialiased result back into it via `colorRTV`. `allowDebug`
 // enables the edge/weight debug views (backbuffer path only). Does not own or
 // release dev/ctx/color/colorRTV. Returns false on any setup failure.
+//
+// `ctx` is the hooked context by design; re-entering the proxy is what resolves
+// MSAA twins on bind. Not a getContextProcs path (see AGENTS.md).
 bool smaaRun(ID3D11Device* dev, ID3D11DeviceContext* ctx,
              ID3D11Texture2D* color, ID3D11RenderTargetView* colorRTV,
              bool allowDebug) {
