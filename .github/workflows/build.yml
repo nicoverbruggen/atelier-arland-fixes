@@ -69,9 +69,14 @@ jobs:
           name: msimg32
           path: build32/msimg32.dll
 
-  release:
-    needs: [build-x64, build-x86, check-defaults]
-    if: startsWith(github.ref, 'refs/tags/v')
+  # Assembles the archive on EVERY build, not only on a tag. The per-target
+  # artifacts above are loose binaries: usable, but they leave whoever is testing
+  # to work out which files go where and to remember the .ini. This is the thing
+  # people are actually given, so it is also the thing worth testing -- and a
+  # release should be the same archive that has already been exercised, not one
+  # first assembled at tag time.
+  package:
+    needs: [build-x64, build-x86]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -83,7 +88,7 @@ jobs:
         with:
           name: msimg32
           path: dist
-      - name: Assemble the release archive
+      - name: Assemble the archive
         run: |
           # Shipped under its final name so the archive extracts straight into
           # the game directory with nothing to rename.
@@ -96,8 +101,24 @@ jobs:
           cp README.md CHANGELOG.md ADVANCED.md dist/arland-fix/
           cp -r licenses dist/arland-fix/LICENSES
           cd dist
-          zip -r "../arland-fix-${GITHUB_REF_NAME}.zip" \
+          zip -r ../arland-fix.zip \
             d3d11.dll msimg32.dll arland-fix.ini arland-fix-launcher.exe arland-fix
+      - uses: actions/upload-artifact@v4
+        with:
+          name: arland-fix
+          path: arland-fix.zip
+
+  release:
+    needs: [package, check-defaults]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: arland-fix
+      - name: Name the archive for this tag
+        run: mv arland-fix.zip "arland-fix-${GITHUB_REF_NAME}.zip"
       - name: Publish tagged release
         env:
           GH_TOKEN: ${{ github.token }}

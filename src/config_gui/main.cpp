@@ -518,6 +518,7 @@ void refreshPreset() {
 
 // Defined with the rest of the drawing code below.
 void repaintUnder(HWND ctrl);
+LRESULT CALLBACK TabProc(HWND, UINT, WPARAM, LPARAM, UINT_PTR, DWORD_PTR);
 
 void updateRenderResolution() {
   unsigned bw, bh;
@@ -1392,6 +1393,7 @@ void createControls(HWND w) {
   g_hTabs = CreateWindowExW(0, WC_TABCONTROLW, nullptr,
     WS_CHILD | WS_VISIBLE | WS_TABSTOP, S(12), S(12), S(676), S(376),
     w, (HMENU)(INT_PTR)IDC_TABS, nullptr, nullptr);
+  SetWindowSubclass(g_hTabs, TabProc, 0, 0);
   TCITEMW tab = {};
   tab.mask = TCIF_TEXT;
   const wchar_t* pageNames[4] = {
@@ -1589,6 +1591,31 @@ void createControls(HWND w) {
   showPage(0);
 
   applyFont(w);
+}
+
+// The tab control paints its own page background from the visual style: white
+// under Wine, but a light grey on Windows. Everything sitting on that page is
+// painted white (see kBackground), so on Windows the controls appeared as white
+// patches on a grey panel.
+//
+// This paints the page white and leaves the tab strip alone. The default
+// handler runs first, so the tabs, their selected state and the border are all
+// still drawn by the theme; only the display area is then filled.
+// TCM_ADJUSTRECT is what says where that area is, rather than guessing at the
+// header height.
+LRESULT CALLBACK TabProc(HWND tabs, UINT msg, WPARAM wp, LPARAM lp,
+                         UINT_PTR, DWORD_PTR) {
+  if (msg == WM_ERASEBKGND) {
+    const LRESULT handled = DefSubclassProc(tabs, msg, wp, lp);
+    RECT page = {};
+    GetClientRect(tabs, &page);
+    SendMessageW(tabs, TCM_ADJUSTRECT, FALSE, (LPARAM)&page);
+    FillRect((HDC)wp, &page, g_backgroundBrush);
+    return handled;
+  }
+  if (msg == WM_NCDESTROY)
+    RemoveWindowSubclass(tabs, TabProc, 0);
+  return DefSubclassProc(tabs, msg, wp, lp);
 }
 
 LRESULT CALLBACK WndProc(HWND w, UINT msg, WPARAM wp, LPARAM lp) {
