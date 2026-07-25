@@ -485,19 +485,23 @@ constexpr BattleBuildAddrs kTotoriAddrsEn = {
   0x14d0e0, 0x14f790, 0x6d9620, 0, 0,
 };
 
-// Totori multilingual, observation only. The battle gate (mode constructor,
-// destructor and vtable) and both vtable tables are RTTI-derived and verified
-// against the English build; everything that touches shadows is deliberately
-// left zero until a playtest confirms the gate fires and the state names come
-// out right. So this build reports battles and states and manipulates nothing:
-// no tactical caster clear, no ShadowHelperInit publish/re-entry gate, no
-// caster restoration. The struct offsets are shared with the English build,
-// which is the same source compiled twice.
+// Totori multilingual. Every vtable here is RTTI-located and every function
+// homologue-matched from the English build; both methods were checked by
+// reproducing this game's committed English values exactly before being pointed
+// at this binary. The battle gate was then confirmed live in-game: mode ctor and
+// dtor both fired, the vtable check passed, and the states logged by name.
+//
+// The ShadowHelperInit publish/re-entry gate is deliberately absent (the three
+// zeros on the third row). It is redundant here: the mode gate already marks
+// battles begin and end, and with managerSlot and helperSlotOffset zero on
+// Totori there is no published helper to put back, so the English build's copy
+// only duplicates a log line. Struct offsets are shared, being one source
+// compiled twice.
 constexpr BattleBuildAddrs kTotoriAddrsMulti = {
   kBtlCharaVtableRvasTotoriMulti, std::size(kBtlCharaVtableRvasTotoriMulti),
-  0, 0, 0, 0,
+  0x976518, 0x976408, 0x97eb40, 0x976450,
   0, 0, 0,
-  0, 0x60, 0x5f8, 0, 0, 0, 0, false,
+  0, 0x60, 0x5f8, 0, 0x38db20, 0x38daa0, 0, false,
   0x369f40, 0x36c5f0, 0x97b7f0, 0, 0,
 };
 
