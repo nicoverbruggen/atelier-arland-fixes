@@ -394,6 +394,14 @@ struct BattleBuildAddrs {
   uintptr_t battleModeCtorRva;
   uintptr_t battleModeDtorRva;
   uintptr_t battleModeVtable;
+  // The field game mode's per-frame update (nspFM::clsFMCore, IGameMode vtable
+  // slot 1), and the vtable it comes from. Only the active mode is ticked, so
+  // this runs exactly when the field is the thing on screen -- which is the
+  // condition under which the field's own shadow helper belongs in the global
+  // slot, whether a battle ended a frame ago or an hour ago. Zero on games that
+  // never publish a battle helper, since there is nothing to put back.
+  uintptr_t fmCoreUpdateRva;
+  uintptr_t fmCoreVtable;
 };
 
 constexpr BattleBuildAddrs kRoronaAddrsEn = {
@@ -401,14 +409,14 @@ constexpr BattleBuildAddrs kRoronaAddrsEn = {
   0x74e598, 0x74eb70, 0x76e018, 0x74e3f8,
   0x10c73c8, 0xfe6e1, 0x397307,
   0x9d0, 0x68, 0x658, 0x2d0, 0x10c2c0, 0x10c270, 0xc5f80, true,
-  0xfde20, 0xfe120, 0x76d248,
+  0xfde20, 0xfe120, 0x76d248, 0x2d5fd0, 0x9be9b0,
 };
 constexpr BattleBuildAddrs kRoronaAddrsMulti = {
   kBtlCharaVtableRvasMulti, std::size(kBtlCharaVtableRvasMulti),
   0x76c138, 0x76c710, 0x78bc48, 0x76bf98,
   0x11044c8, 0x106781, 0x3ac8d7,
   0x9d0, 0x68, 0x658, 0x2d0, 0x1143c0, 0x114370, 0xce020, true,
-  0x105ec0, 0x1061c0, 0x78ae48,
+  0x105ec0, 0x1061c0, 0x78ae48, 0x2eac20, 0x9b2298,
 };
 // Meruru: managerSlot/helperSlotOffset read straight from the caster-group
 // build's prologue (EN 0x396f80: mov rax,[rip+...]=0xfe0b30; mov r10,[rax+0x960];
@@ -423,14 +431,14 @@ constexpr BattleBuildAddrs kMeruruAddrsEn = {
   0x6681e8, 0x667fe8, 0x66ffb8, 0x668048,
   0xfe0b30, 0x119a47, 0x392875,
   0x960, 0x68, 0x648, 0x2c0, 0x1369b0, 0x136940, 0x102cd0, false,
-  0x118780, 0x119070, 0x66df50,
+  0x118780, 0x119070, 0x66df50, 0, 0,
 };
 constexpr BattleBuildAddrs kMeruruAddrsMulti = {
   kBtlCharaVtableRvasMeruruMulti, std::size(kBtlCharaVtableRvasMeruruMulti),
   0x664268, 0x664068, 0x66bfa8, 0x6640c8,
   0x1040410, 0x106e97, 0x38f925,
   0x960, 0x68, 0x648, 0x2c0, 0x124080, 0x124010, 0xf0070, false,
-  0x105bc0, 0x1064b0, 0x669f20,
+  0x105bc0, 0x1064b0, 0x669f20, 0, 0,
 };
 // Totori (EN): static investigation + runtime probe 2026-07-23. Structural
 // outlier: the battle helper is EMBEDDED at gameMode+0x60 (not +0x68), there
@@ -456,7 +464,7 @@ constexpr BattleBuildAddrs kTotoriAddrsEn = {
   0x6d4350, 0x6d4240, 0x6dbc90, 0x6d4288,
   0, 0x1512f0, 0x94212,
   0, 0x60, 0x5f8, 0, 0x170cb0, 0x170c30, 0, false,
-  0x14d0e0, 0x14f790, 0x6d9620,
+  0x14d0e0, 0x14f790, 0x6d9620, 0, 0,
 };
 
 // Null until a battle-capable build is recognized; battle-shadow code paths
@@ -1756,6 +1764,63 @@ bool installsBattleModeVtable(BYTE* function, BYTE* base, uintptr_t vtableRva) {
   return false;
 }
 
+// ---- the field-tick restore -----------------------------------------------
+//
+// The global active-helper slot is NOT read per frame: the engine hands that
+// pointer out once, at map load, into a tree the scene pass owns and into a
+// render-context field. So a battle helper published into it is not something
+// the field re-reads and recovers from -- and putting the field's helper back
+// at some moment after the battle is a race whose deadline nobody knows.
+//
+// This makes the restore a state rather than an edge. The field mode's update
+// runs only while the field is the active mode, which is exactly when the
+// field's own helper belongs in that slot, so every tick simply asserts it.
+// There is no battle-end detection, no window, and running it a thousand times
+// costs a comparison each.
+using FmCoreUpdateProc = void (*)(uintptr_t, float);
+FmCoreUpdateProc originalFmCoreUpdate = nullptr;
+
+void tracedFmCoreUpdate(uintptr_t self, float delta) {
+  const uintptr_t saved = g_savedGlobalHelper.load(std::memory_order_acquire);
+  if (saved) {
+    if (uintptr_t* slot = globalActiveHelperSlot()) {
+      if (*slot != saved) {
+        *slot = saved;
+        // Logged for the first few, with the battle flag: if this ever fires
+        // while a battle is genuinely in progress it would be taking the battle
+        // helper away mid-fight, and the log is what would show that.
+        static std::atomic<uint32_t> restores{0};
+        const uint32_t seen = restores.fetch_add(1, std::memory_order_relaxed);
+        if (seen < 8)
+          atfix::log("BATTLE_SHADOW_FIELD_RESTORE helper=",
+            reinterpret_cast<void*>(saved), " battle_active=",
+            g_battleActive.load(std::memory_order_acquire));
+      }
+    }
+  }
+  originalFmCoreUpdate(self, delta);
+}
+
+// Identified the same way as the battle mode's pair: the prologue is a stock
+// MSVC frame, so what proves this is the field mode's update is that the
+// address is what sits in slot 1 of the clsFMCore vtable.
+bool installFieldTickRestore(BYTE* base) {
+  if (!g_battleAddrs || !g_battleAddrs->fmCoreUpdateRva ||
+      !g_battleAddrs->fmCoreVtable || !g_battleAddrs->casterRestore)
+    return false;
+  const uintptr_t slot1 = *reinterpret_cast<uintptr_t*>(
+    base + g_battleAddrs->fmCoreVtable + sizeof(uintptr_t));
+  if (slot1 != reinterpret_cast<uintptr_t>(base) +
+        g_battleAddrs->fmCoreUpdateRva) {
+    atfix::log("FIELD_TICK_RESTORE declined: clsFMCore vtable slot 1 is not the"
+      " expected update");
+    return false;
+  }
+  return installMinHookDetour(base + g_battleAddrs->fmCoreUpdateRva,
+    reinterpret_cast<void*>(&tracedFmCoreUpdate),
+    reinterpret_cast<void**>(&originalFmCoreUpdate));
+}
+
 // Destructor first: a partial install has to leave the mod inert rather than
 // tracking battles it will never see the end of.
 bool installBattleModeGate(BYTE* base) {
@@ -1824,6 +1889,9 @@ void installBattleShadowRestore(BYTE* base, const Game& game) {
   // start and end are known exactly or inferred from the frame watchdog.
   atfix::log("Battle-mode gate installed=", installBattleModeGate(base),
     " (0 = falling back to the frame watchdog)");
+  if (g_battleAddrs && g_battleAddrs->fmCoreUpdateRva)
+    atfix::log("Field-tick helper restore installed=",
+      installFieldTickRestore(base));
 }
 
 // ==== E: state tracking (was global ns) ====

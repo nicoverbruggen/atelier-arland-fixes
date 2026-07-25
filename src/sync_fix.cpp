@@ -776,6 +776,18 @@ void resolveIfMSAA(ID3D11DeviceContext* context, ID3D11Resource* host) {
   multisampled->Release();
 }
 
+std::atomic<UINT> g_largestViewportWidth{0};
+std::atomic<UINT> g_largestViewportHeight{0};
+
+void noteViewportExtent(UINT width, UINT height) {
+  UINT seen = g_largestViewportWidth.load(std::memory_order_relaxed);
+  while (width > seen && !g_largestViewportWidth.compare_exchange_weak(
+      seen, width, std::memory_order_relaxed)) {}
+  seen = g_largestViewportHeight.load(std::memory_order_relaxed);
+  while (height > seen && !g_largestViewportHeight.compare_exchange_weak(
+      seen, height, std::memory_order_relaxed)) {}
+}
+
 unsigned int msaaTwinSamplesImpl(ID3D11Resource* host) {
   ID3D11Resource* multisampled = getMSAAObject<ID3D11Resource>(host);
   if (!multisampled)
@@ -857,6 +869,11 @@ bool presentTraceEnabled() {
 
 unsigned int msaaTwinSamples(ID3D11Resource* host) {
   return msaaTwinSamplesImpl(host);
+}
+
+void largestViewportSeen(unsigned int* width, unsigned int* height) {
+  *width = g_largestViewportWidth.load(std::memory_order_relaxed);
+  *height = g_largestViewportHeight.load(std::memory_order_relaxed);
 }
 
 std::atomic<void*> g_traceBackbuffer{nullptr};
@@ -1841,14 +1858,28 @@ HRESULT STDMETHODCALLTYPE ID3D11Device_CreateTexture2D(
       const bool gameHalfSized = gameWidth && gameHeight &&
         (gameWidth != mainWidth || gameHeight != mainHeight) &&
         desc.Width == gameWidth / 2 && desc.Height == gameHeight / 2;
+      // 1920x1080 is the engine's hard-coded FULL-size target. It is also
+      // exactly half of 3840x2160 -- so on a copy whose own resolution is 4K,
+      // a full-size target matches the half-size rule too, and the half branch
+      // below would allocate it at half the render size. What that looks like
+      // in play is a conversation with the scene in the top-left quarter and
+      // black everywhere else, because the snapshot copy into it can only crop.
+      //
+      // The literal wins the tie. The engine hard-codes 960x540 for its blur
+      // targets and creates them at that size even when the game runs at 4K
+      // (observed in logs from a 4K copy), so gameHalfSized is not what
+      // identifies a blur target in practice, and deferring to the literal
+      // costs nothing.
+      const bool literalFullSize = desc.Width == 1920 && desc.Height == 1080;
       const bool fullSizeTarget =
         (desc.BindFlags & (D3D11_BIND_RENDER_TARGET | D3D11_BIND_DEPTH_STENCIL)) &&
-        ((desc.Width == 1920 && desc.Height == 1080) || gameSized);
+        (literalFullSize || gameSized);
       const bool halfSizeBlurTarget =
         (desc.BindFlags & D3D11_BIND_RENDER_TARGET) &&
         (desc.BindFlags & D3D11_BIND_SHADER_RESOURCE) &&
         desc.Format == DXGI_FORMAT_B8G8R8A8_TYPELESS &&
-        ((desc.Width == 960 && desc.Height == 540) || gameHalfSized) &&
+        ((desc.Width == 960 && desc.Height == 540) ||
+         (gameHalfSized && !literalFullSize)) &&
         desc.MipLevels == 1 && desc.ArraySize == 1 &&
         desc.SampleDesc.Count == 1;
       if (fullSizeTarget || halfSizeBlurTarget) {
@@ -1998,6 +2029,10 @@ void STDMETHODCALLTYPE ID3D11DeviceContext_RSSetViewports(
   if (NumViewports && pViewports) {
     state->viewportWidth.store(static_cast<UINT>(pViewports[0].Width), std::memory_order_relaxed);
     state->viewportHeight.store(static_cast<UINT>(pViewports[0].Height), std::memory_order_relaxed);
+    // Deliberately NOT recorded for the supersampling report here: this is the
+    // size the game asked for, and the resolution override rewrites it at draw
+    // time (see the resizeViewport path), so it is the pre-override value.
+    // The applied size is recorded where that substitution happens.
   }
   procs->RSSetViewports(pContext, NumViewports, pViewports);
 }
@@ -2134,8 +2169,15 @@ void updateViewportScissor(ID3D11DeviceContext* pContext) {
   }
 
   auto procs = getContextProcs(pContext);
-  if (resizeViewport)
+  if (resizeViewport) {
+    // Recorded HERE, not in the RSSetViewports hook. The hook sees what the
+    // game asked for, which is the pre-override size; this is the size the
+    // draw actually happens at, which is the only one that answers whether
+    // supersampling is doing anything.
+    noteViewportExtent(static_cast<UINT>(viewport.Width),
+                       static_cast<UINT>(viewport.Height));
     procs->RSSetViewports(pContext, 1, &viewport);
+  }
   if (resizeScissor)
     procs->RSSetScissorRects(pContext, 1, &scissor);
 }
@@ -2460,12 +2502,25 @@ void STDMETHODCALLTYPE ID3D11DeviceContext_CopySubresourceRegion(
       pSrcBox->back == 1) {
     D3D11_TEXTURE2D_DESC dstDesc = { };
     D3D11_TEXTURE2D_DESC srcDesc = { };
+    // The format is matched by family, not exactly. The engine's own textures
+    // are TYPELESS, but under supersampling the source can be the mod's own
+    // render-resolution colour target, which is created with the backbuffer's
+    // format (UNORM) instead. Demanding TYPELESS therefore rejected exactly the
+    // case that needs expanding most, and the copy stayed at the display size:
+    // a dialogue whose scene fills the top-left quarter of the frame and is
+    // black everywhere else.
+    const auto isBgra8 = [](DXGI_FORMAT format) {
+      return format == DXGI_FORMAT_B8G8R8A8_TYPELESS ||
+             format == DXGI_FORMAT_B8G8R8A8_UNORM ||
+             format == DXGI_FORMAT_B8G8R8A8_UNORM_SRGB;
+    };
     if (texture2DDesc(pDstResource, &dstDesc) &&
         texture2DDesc(pSrcResource, &srcDesc) &&
         dstDesc.Width == mainWidth && dstDesc.Height == mainHeight &&
         srcDesc.Width == mainWidth && srcDesc.Height == mainHeight &&
-        dstDesc.Format == DXGI_FORMAT_B8G8R8A8_TYPELESS &&
-        srcDesc.Format == DXGI_FORMAT_B8G8R8A8_TYPELESS) {
+        isBgra8(dstDesc.Format) && isBgra8(srcDesc.Format)) {
+      const UINT fromWidth = pSrcBox->right;
+      const UINT fromHeight = pSrcBox->bottom;
       scaledBox = *pSrcBox;
       scaledBox.right = mainWidth;
       scaledBox.bottom = mainHeight;
@@ -2473,8 +2528,19 @@ void STDMETHODCALLTYPE ID3D11DeviceContext_CopySubresourceRegion(
       const UINT marker = 1;
       pDstResource->SetPrivateData(
         IID_DialogSnapshotResource, sizeof(marker), &marker);
-      log("Expanded hard-coded dialogue snapshot copy from 1920x1080 to ",
-          std::dec, mainWidth, "x", mainHeight);
+      log("Expanded dialogue snapshot copy from ", std::dec, fromWidth, "x",
+          fromHeight, " to ", mainWidth, "x", mainHeight);
+    } else if (texture2DDesc(pDstResource, &dstDesc) &&
+               texture2DDesc(pSrcResource, &srcDesc)) {
+      // A copy that looked like the dialogue snapshot but failed one of the
+      // checks above. Logged once, with the values, because the symptom of a
+      // missed expansion is a mostly black screen and nothing else says why.
+      static std::atomic<bool> reported { false };
+      if (!reported.exchange(true))
+        log("Dialogue snapshot copy NOT expanded: src ", std::dec,
+            srcDesc.Width, "x", srcDesc.Height, " fmt ", srcDesc.Format,
+            ", dst ", dstDesc.Width, "x", dstDesc.Height, " fmt ",
+            dstDesc.Format, ", main ", mainWidth, "x", mainHeight);
     }
   }
 

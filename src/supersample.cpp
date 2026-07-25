@@ -5,17 +5,26 @@
 // supersample.h for the shape of the redirect; this file owns the render-res
 // colour target, the downscale pass, and the one-time setup.
 //
-// The downscale is a box filter built out of bilinear taps: one bilinear tap
-// centred on a source texel corner already averages 2x2 source texels, so a
-// tap grid of n = round(scale/2) per axis covers a 2n x 2n box. Integer scales
-// 2x and 4x therefore come out as exact 2x2 and 4x4 box filters, which is what
-// supersampling wants; other ratios land close.
+// The downscale is a box filter: each output pixel averages the source texels
+// its own footprint covers, sampled on a grid spread across that footprint.
+// At an integer ratio the samples land exactly on texel centres and the result
+// is an exact box, which is what supersampling wants; other ratios sample the
+// footprint evenly and land close.
+//
+// This replaced a scheme that placed bilinear taps on texel corners to average
+// 2x2 for free. That is a real optimisation, but only for EVEN ratios: at 3x
+// the output pixel centre falls on a texel centre rather than a corner, so
+// every tap collapsed to a single texel and the filter read four corners of
+// the 3x3 block while skipping the middle -- undersampled and soft at once.
+// Correctness at every ratio is worth more here than the saved samples, and
+// this pass runs once per frame at display resolution.
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <d3d11.h>
 #include <d3dcompiler.h>
 
 #include <atomic>
+#include <cmath>
 #include <cstdint>
 #include <cstring>
 
@@ -48,31 +57,43 @@ VSOut VSMain(uint id : SV_VertexID) {
 
 cbuffer Params : register(b0) {
   float2 texel;    // 1 / render size
-  float  taps;     // bilinear taps per axis
-  float  padding;
+  float2 ratio;    // render size / display size, per axis
+  float  samples;  // samples per axis
+  float3 padding;
 };
 
 Texture2D    src  : register(t0);
 SamplerState samp : register(s0);
 
+// Average the source texels this output pixel actually covers.
+//
+// The footprint of output pixel p spans source texels [p*ratio, (p+1)*ratio].
+// i.uv * sourceSize is the CENTRE of that footprint, so backing off half a
+// ratio gives its top-left corner; samples are then spread evenly across it.
+// For an integer ratio with samples == ratio this lands exactly on texel
+// centres and the result is an exact box filter -- for odd ratios as well as
+// even ones, which the earlier corner-tap scheme could not do.
 float4 PSMain(VSOut i) : SV_TARGET {
-  int n = (int) taps;
-  float centre = (taps - 1.0) * 0.5;
+  int n = (int) samples;
+  float2 sourceSize = 1.0 / texel;
+  float2 origin = i.uv * sourceSize - 0.5 * ratio;
+  float2 step = ratio / samples;
   float3 sum = 0.0;
   for (int y = 0; y < n; ++y) {
     for (int x = 0; x < n; ++x) {
-      float2 offset = (float2(x, y) - centre) * 2.0 * texel;
-      sum += src.SampleLevel(samp, i.uv + offset, 0).rgb;
+      float2 position = origin + (float2(x, y) + 0.5) * step;
+      sum += src.SampleLevel(samp, position * texel, 0).rgb;
     }
   }
-  return float4(sum / (taps * taps), 1.0);
+  return float4(sum / (samples * samples), 1.0);
 }
 )HLSL";
 
 struct DownscaleParams {
   float texel[2] = {0.0f, 0.0f};
-  float taps = 1.0f;
-  float padding = 0.0f;
+  float ratio[2] = {1.0f, 1.0f};
+  float samples = 1.0f;
+  float padding[3] = {0.0f, 0.0f, 0.0f};
 };
 
 template <typename T> void release(T*& p) { if (p) { p->Release(); p = nullptr; } }
@@ -190,15 +211,18 @@ bool initPass(ID3D11Device* device) {
   return true;
 }
 
-// Bilinear taps per axis for the configured ratio: each tap covers 2x2 source
-// texels, so n taps cover 2n. Clamped so an extreme ratio cannot make the pass
-// expensive.
-float downscaleTaps() {
+// Samples per axis: enough to cover every source texel the output pixel spans,
+// so a 3x ratio takes 3 and averages all nine rather than four corners of them.
+// Rounded up, because covering slightly more than the footprint is a mild blur
+// while covering less is aliasing. Clamped at 8, which no supported ratio
+// reaches (the render resolution is capped at 8K), so the pass cannot become
+// arbitrarily expensive if that ever changes.
+float downscaleSamples() {
   const float scale = float(g_renderHeight) / float(g_displayHeight);
-  float taps = scale * 0.5f + 0.5f;   // round(scale / 2)
-  if (taps < 1.0f) taps = 1.0f;
-  if (taps > 4.0f) taps = 4.0f;
-  return float(int(taps));
+  float samples = std::ceil(scale);
+  if (samples < 1.0f) samples = 1.0f;
+  if (samples > 8.0f) samples = 8.0f;
+  return samples;
 }
 
 }  // namespace
@@ -309,7 +333,7 @@ void ssaaNoteSwapChain(IDXGISwapChain* swapChain) {
     g_active.store(true, std::memory_order_relaxed);
     log("Supersampling ", std::dec, renderWidth, "x", renderHeight,
         " -> ", backDesc.Width, "x", backDesc.Height,
-        " (", int(downscaleTaps()), " taps/axis, format ", backDesc.Format, ")");
+        " (", int(downscaleSamples()), " samples/axis, format ", backDesc.Format, ")");
   } else {
     releaseAll();
     log("Supersampling setup failed; rendering at the backbuffer resolution");
@@ -357,30 +381,39 @@ void ssaaDownscale(IDXGISwapChain* swapChain) {
   // smaller than the render size means the engine drew a corner of the target
   // and the downscale is magnifying it; taps=1 at a 2x ratio is the exact 2x2
   // box filter and is correct, but at a larger ratio it is undersampling.
-  if (firstFrame) {
-    D3D11_VIEWPORT viewports[1] = { };
-    UINT viewportCount = 1;
-    context->RSGetViewports(&viewportCount, viewports);
+  // Reported a few hundred frames in, not on the first one. The first frames
+  // are a loading screen drawn at swap-chain size, so "the largest viewport so
+  // far" is not yet the answer to what the engine draws the game at -- asking
+  // then produces a confident report of a problem that does not exist.
+  static std::atomic<uint32_t> framesSeen{0};
+  const uint32_t frame = framesSeen.fetch_add(1, std::memory_order_relaxed);
+  if (frame == 300) {
+    // The largest viewport the engine has set on ANY context. Sampling the
+    // immediate context here reads back nothing, because these games record
+    // their frames on deferred contexts -- so this is tracked from the
+    // viewport hook instead.
+    unsigned int drawnWidth = 0, drawnHeight = 0;
+    largestViewportSeen(&drawnWidth, &drawnHeight);
     const float ratio = float(g_renderHeight) / float(g_displayHeight);
     log("SSAA frame: render=", std::dec, g_renderWidth, "x", g_renderHeight,
         " display=", g_displayWidth, "x", g_displayHeight,
         " ratio=", ratio,
-        " taps=", int(downscaleTaps()),
+        " samples/axis=", int(downscaleSamples()),
         " msaa=", msaaTwinSamples(g_color),
-        " engine_viewport=", viewportCount ? int(viewports[0].Width) : 0,
-        "x", viewportCount ? int(viewports[0].Height) : 0);
-    if (viewportCount &&
-        (UINT(viewports[0].Width) < g_renderWidth ||
-         UINT(viewports[0].Height) < g_renderHeight))
-      log("SSAA WARNING: the engine's last viewport is smaller than the render"
-          " target, so only part of it holds the frame. The downscale is"
-          " magnifying that part rather than supersampling it.");
+        " largest_viewport=", drawnWidth, "x", drawnHeight);
+    if (drawnWidth && (drawnWidth < g_renderWidth ||
+                       drawnHeight < g_renderHeight))
+      log("SSAA WARNING: the engine never drew at the full render size, so only"
+          " part of the target holds the frame. The downscale is magnifying"
+          " that part rather than supersampling it.");
   }
 
   DownscaleParams params;
   params.texel[0] = 1.0f / float(g_renderWidth);
   params.texel[1] = 1.0f / float(g_renderHeight);
-  params.taps = downscaleTaps();
+  params.ratio[0] = float(g_renderWidth) / float(g_displayWidth);
+  params.ratio[1] = float(g_renderHeight) / float(g_displayHeight);
+  params.samples = downscaleSamples();
   D3D11_MAPPED_SUBRESOURCE mapped = {};
   if (SUCCEEDED(context->Map(g_cb, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped))) {
     std::memcpy(mapped.pData, &params, sizeof(params));
