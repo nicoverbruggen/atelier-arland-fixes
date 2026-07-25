@@ -16,6 +16,24 @@ repo="$(cd "$(dirname "$0")/.." && pwd)"
 container="${ATFIX_CONTAINER:-atfix-build}"
 buildtype="${1:-release}"
 
+# Start the container if it is not already running. It is a build environment,
+# not a service, so it is normal for it to be stopped between sessions -- and
+# "can only create exec sessions on running containers" is a poor way to find
+# that out mid-build.
+if ! podman container exists "$container"; then
+    echo "Container '$container' does not exist. See BUILDING.md for how to create it." >&2
+    exit 1
+fi
+if [[ "$(podman inspect -f '{{.State.Running}}' "$container" 2>/dev/null)" != "true" ]]; then
+    echo "Starting container '$container'"
+    podman start "$container" >/dev/null
+    # podman start returns before the container is ready to take exec sessions.
+    for _ in $(seq 1 20); do
+        podman exec "$container" true 2>/dev/null && break
+        sleep 0.5
+    done
+fi
+
 echo "Building in container '$container' ($buildtype) — $repo"
 podman exec -i -w "$repo" "$container" bash -s "$buildtype" <<'EOSH'
 set -e

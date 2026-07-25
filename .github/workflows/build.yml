@@ -25,7 +25,13 @@ jobs:
       - uses: ilammy/msvc-dev-cmd@v1
         with:
           arch: x64
-      - run: meson setup build64 --buildtype release
+      # b_vscrt=static_from_buildtype links the CRT statically for a release
+      # build. Without it MSVC links it dynamically and the binaries need the
+      # Visual C++ redistributable installed on the player's machine -- which
+      # most will not have, and Windows then refuses to start the process with
+      # no useful message. A mod is dropped into a game folder, not installed,
+      # so it cannot ask for a runtime first.
+      - run: meson setup build64 --buildtype release -Db_vscrt=static_from_buildtype
       - run: meson compile -C build64
       - uses: actions/upload-artifact@v4
         with:
@@ -56,7 +62,7 @@ jobs:
       - uses: ilammy/msvc-dev-cmd@v1
         with:
           arch: x86
-      - run: meson setup build32 --buildtype release
+      - run: meson setup build32 --buildtype release -Db_vscrt=static_from_buildtype
       - run: meson compile -C build32
       - uses: actions/upload-artifact@v4
         with:
