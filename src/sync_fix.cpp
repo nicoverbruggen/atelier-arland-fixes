@@ -1250,12 +1250,31 @@ uint32_t getFormatPixelSize(
     { DXGI_FORMAT_R8_TYPELESS,            DXGI_FORMAT_A8_UNORM,             1u  },
   }};
 
+  // Buffers report DXGI_FORMAT_UNKNOWN and measure their box in bytes rather
+  // than in texels, so one byte per element is the correct answer here, not a
+  // miss. This is by far the most common call: left in the miss path below it
+  // logged on every buffer copy, over 300k identical lines in one session,
+  // rotating every useful diagnostic out of the file.
+  if (Format == DXGI_FORMAT_UNKNOWN)
+    return 1u;
+
   for (const auto& range : s_ranges) {
     if (Format >= range.MinFormat && Format <= range.MaxFormat)
       return range.FormatSize;
   }
 
-  log("Unhandled format ", Format);
+  // A genuine miss, worth reporting, but once per format: the callers are copy
+  // and byte-estimate paths that run per resource per frame. Block-compressed
+  // formats land here and 1 is wrong for them (BC1 is half a byte per texel,
+  // BC2/BC3 one byte, and their rows are counted in 4x4 blocks), so the log
+  // line is the useful part -- the number is a fallback, not an answer.
+  // Static storage zero-initializes, so every slot starts false.
+  static std::array<std::atomic<bool>, 256> s_logged;
+  const size_t slot = size_t(Format);
+  if (slot >= s_logged.size() ||
+      !s_logged[slot].exchange(true, std::memory_order_relaxed))
+    log("Unhandled format ", Format);
+
   return 1u;
 }
 
@@ -2450,6 +2469,16 @@ HRESULT tryCpuCopy(
 
   if (!isCpuReadableResource(&srcInfo)) {
     shadowResource = getOrCreateShadowResource(pContext, pSrcResource);
+
+    /* Null means creation failed (out of memory, device removed, or a
+     * dimension we do not handle) and has already been logged. Failing here
+     * is the graceful path: the caller falls back to a real GPU copy, which
+     * costs the stall this function exists to avoid but is still correct. */
+    if (!shadowResource) {
+      procs->Unmap(pContext, pDstResource, DstSubresource);
+      return E_FAIL;
+    }
+
     hr = procs->Map(pContext, shadowResource, SrcSubresource, D3D11_MAP_READ, 0, &srcSr);
 
     if (FAILED(hr)) {
