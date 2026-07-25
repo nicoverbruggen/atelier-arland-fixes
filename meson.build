@@ -28,6 +28,12 @@ else
     input : 'vendor/font/Nunito-Regular.ttf',
     output : 'embedded_font_nunito.cpp',
     command : [py, embed_font, '@INPUT@', '@OUTPUT@', 'kEmbeddedFontNunito'])
+  # The launcher's own UI font (see src/config_gui/main.cpp createUiFont),
+  # subset to Latin because that is all that window shows.
+  embedded_inter = custom_target('embedded_font_inter',
+    input : 'vendor/font/Inter-Regular.ttf',
+    output : 'embedded_font_inter.cpp',
+    command : [py, embed_font, '@INPUT@', '@OUTPUT@', 'kEmbeddedFontInter'])
   embedded_mgopen = custom_target('embedded_font_mgopen',
     input : 'vendor/font/Cosmetica-Medium.ttf',
     output : 'embedded_font_mgopen.cpp',
@@ -78,11 +84,19 @@ else
     ['src/config_gui/main.cpp',
      # Carries the ComCtl32 v6 manifest, which is what gets the themed common
      # controls rather than the flat 5.82 ones. See the manifest for the rest.
-     windows.compile_resources('src/config_gui/arland-fix-launcher.rc')],
+     windows.compile_resources('src/config_gui/arland-fix-launcher.rc'),
+     # Inter, subset to Latin, so the launcher renders identically on Windows
+     # and under Wine instead of inheriting whichever UI face each happens to
+     # default to. See createUiFont.
+     embedded_inter],
     win_subsystem : 'windows',
+    # The generated font source includes src/embedded_font.h by name.
+    include_directories : include_directories('src'),
     dependencies : [
       cpp.find_library('comctl32'),
       cpp.find_library('shell32'),
+      # GetFileVersionInfo, for reading the installed mod's version off d3d11.dll
+      cpp.find_library('version'),
       cpp.find_library('ole32'),
     ],
     cpp_args : common_cpp_args,

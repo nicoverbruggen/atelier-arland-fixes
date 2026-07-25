@@ -1729,7 +1729,7 @@ UINT anisotropyLevel() {
     if (len && len < sizeof(value))
       v = std::strtoul(value, nullptr, 10);
     else
-      v = GetPrivateProfileIntA("Rendering", "AnisotropicFiltering", 0,
+      v = GetPrivateProfileIntA("Rendering", "AnisotropicFiltering", 8,
         configPath() ? configPath() : "");
     if (v == 2 || v == 4 || v == 8 || v == 16)
       return UINT(v);

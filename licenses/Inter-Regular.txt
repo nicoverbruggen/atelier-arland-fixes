@@ -1,0 +1,16 @@
+Inter Regular
+Used as the UI font for arland-fix-launcher.exe, so the launcher renders the
+same on Windows and under Wine/Proton rather than inheriting whichever face
+each platform defaults to.
+
+Copyright 2020 The Inter Project Authors (https://github.com/rsms/inter)
+Version 3.012.
+
+Subset to Basic Latin, Latin-1 Supplement and common punctuation, which is all
+the launcher displays; this reduces the embedded font from 288 KB to 37 KB. The
+SIL Open Font License permits this and Inter reserves no font name, so the
+family is still named "Inter".
+
+This Font Software is licensed under the SIL Open Font License, Version 1.1.
+The full license text is in OFL-1.1.txt in this directory, and is also
+available with a FAQ at: https://scripts.sil.org/OFL

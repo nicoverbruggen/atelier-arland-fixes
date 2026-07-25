@@ -32,7 +32,7 @@ const char* configPath() {
 
     if (result[0] &&
         GetFileAttributesA(result.data()) == INVALID_FILE_ATTRIBUTES) {
-      WritePrivateProfileStringA("Rendering", "MSAA", "1", result.data());
+      WritePrivateProfileStringA("Rendering", "MSAA", "2", result.data());
       // Display = backbuffer / panel resolution (blank uses the game's own,
       // i.e. the old launcher's, resolution). Render = internal render target
       // (blank equals Display). A Render larger than Display supersamples the
@@ -337,9 +337,26 @@ void logEnvironmentOverrides() {
   wchar_t* block = GetEnvironmentStringsW();
   if (!block)
     return;
+  // A short allowlist of Steam's own markers alongside our variables. These say
+  // how the game was started -- Big Picture, a Deck, the desktop client -- which
+  // is not visible anywhere else and decides whether the launcher should offer a
+  // controller-friendly layout. Named explicitly rather than by a Steam* prefix
+  // because the rest of that namespace carries the account name and install
+  // paths, and these logs get sent to us.
+  static const wchar_t* const kSteamMarkers[] = {
+    L"SteamTenfoot", L"SteamDeck", L"SteamOS", L"SteamClientLaunch",
+    L"SteamGameId", L"SteamAppId",
+  };
+
   int found = 0;
   for (const wchar_t* entry = block; *entry; entry += std::wcslen(entry) + 1) {
-    if (_wcsnicmp(entry, L"ARLAND_", 7) != 0)
+    bool wanted = _wcsnicmp(entry, L"ARLAND_", 7) == 0;
+    for (const wchar_t* marker : kSteamMarkers) {
+      const std::size_t length = std::wcslen(marker);
+      if (_wcsnicmp(entry, marker, length) == 0 && entry[length] == L'=')
+        wanted = true;
+    }
+    if (!wanted)
       continue;
     char narrow[512] = { };
     WideCharToMultiByte(CP_UTF8, 0, entry, -1, narrow, sizeof(narrow) - 1,
@@ -407,7 +424,7 @@ UINT msaaSamples() {
       requested = std::strtoul(value, nullptr, 10);
     } else if (path) {
       requested = GetPrivateProfileIntA(
-        "Rendering", "MSAA", 1, path);
+        "Rendering", "MSAA", 2, path);
     }
     if (requested < 2)
       return 1u;

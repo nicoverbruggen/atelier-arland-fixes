@@ -25,7 +25,11 @@
 #include <shlobj.h>
 
 #include <cstdlib>
+#include <algorithm>
 #include <cstring>
+#include <vector>
+
+#include "../embedded_font.h"
 
 namespace {
 
@@ -51,8 +55,9 @@ enum : int {
   IDC_OPENENV,       // Koei Tecmo's own settings editor
   IDC_OPENLAUNCHER,  // Koei Tecmo's own launcher
   IDC_PLAYVANILLA,   // the game with the mod stood down
-  IDC_SAVE,
+  IDC_RESET,
   IDC_CLOSE,
+  IDC_REPOLINK,
 };
 
 // Absolute path to the arland-fix.ini we edit. Resolved at startup, changeable
@@ -85,25 +90,80 @@ int g_game = -1;   // index into kGames, -1 when the folder holds no game
 
 // Handles to the controls we read from and write to.
 HWND g_hTabs = nullptr;
-HWND g_hDesc[20] = {};   // greyed one-line notes; drawn in COLOR_GRAYTEXT
+HWND g_hDesc[32] = {};   // greyed notes; drawn in kSecondaryText
 int  g_descCount = 0;
-HWND g_pageCtrls[3][40] = {};   // which controls belong to which tab page
-int  g_pageCount[3] = {};
+HWND g_pageCtrls[4][40] = {};   // which controls belong to which tab page
+int  g_pageCount[4] = {};
 HWND g_hStart = nullptr;   // focused at startup; see createControls
+HWND g_hGameLabel = nullptr;   // sits on the tab strip; painted transparent
+HWND g_hRepoLink = nullptr;    // SysLink at the bottom of the Display page
+
+// Shown in full and opened on click, so it is the one string in this window
+// that has to be right: it is where the window sends people.
+const wchar_t* const kRepositoryUrl =
+  L"https://github.com/nicoverbruggen/atelier-arland-fixes";
 HWND g_hPreset, g_hWinMode, g_hLang,
      g_hFont, g_hBase, g_hSS, g_hRendLbl, g_hMsaa, g_hShadow,
      g_hAniso, g_hSmaa, g_hBShadow, g_hBCutInShadow, g_hBCutInDim, g_hVerbose;
 
 HFONT g_uiFont = nullptr;
 
+// The window paints itself white rather than taking the system's colours.
+//
+// Windows draws dialogs on COLOR_BTNFACE, a light grey, while a themed tab page
+// is white -- so a window that mixes the two has a grey surround and a white
+// panel, and every label has to be told which one it is standing on. Wine
+// happens to render the dialog face white, so the same build looked coherent
+// there and mismatched on Windows. Choosing white everywhere makes the two
+// platforms agree and removes the distinction entirely.
+//
+// The text colours are fixed for the same reason: with the background pinned,
+// a system text colour from a dark scheme would be white on white.
+const COLORREF kBackground = RGB(255, 255, 255);
+const COLORREF kText = RGB(0, 0, 0);
+const COLORREF kSecondaryText = RGB(102, 102, 102);
+HBRUSH g_backgroundBrush = nullptr;
+
+// Every coordinate in this file is a logical unit at 100%, and the control
+// helpers scale on the way to CreateWindow -- so the layout is written once and
+// the scale is decided once, rather than each literal having to know about it.
+//
+// The base layout is 484x548, chosen to fit a 1280x720 screen with its frame
+// and a taskbar, because that is the smallest screen this has to work on: a
+// 720p TV, a handheld, or Big Picture on either. Scaling up (for a controller
+// at TV distance) is therefore always optional and always clamped to the
+// monitor's work area, so no scale can push the buttons off-screen.
+const int kBaseWidth = 700;
+const int kBaseHeight = 440;
+
+// Two separate factors, because they do not apply to the same things.
+//
+// g_dpiScale is the display's own scaling. The process is DPI aware, so the
+// system metrics we ask for -- notably the UI font in createUiFont -- ALREADY
+// come back at that scale. Only the coordinates in this file, which are written
+// at 100%, still need it applied.
+//
+// g_userScale is our own enlargement, for a controller at TV distance. Nothing
+// else knows about it, so it applies to the layout AND to the font.
+//
+// Multiplying the font by both is the mistake this split exists to prevent: it
+// would scale the DPI contribution twice and give giant text in a window sized
+// for normal text.
+int g_dpiScale = 100;    // percent, from the display
+int g_userScale = 100;   // percent, ours
+
+int S(int value) { return value * g_dpiScale / 100 * g_userScale / 100; }
+
 // The dropdown entries. The first column is the label shown to the user, the
 // second is the exact string written to the ini.
 struct ComboItem { const wchar_t* label; const char* value; };
 
+// The second column is the exact string written to the ini and must not change;
+// only the labels are worded for the person reading them.
 const ComboItem kFontItems[] = {
-  { L"replaced (embedded scalable font, default)", "replaced" },
-  { L"upscaled (smooth the original glyphs)",      "upscaled" },
-  { L"original (untouched bitmap font)",           "original" },
+  { L"High quality alternatives",  "replaced" },
+  { L"Original upscaled",                   "upscaled" },
+  { L"Original",                            "original" },
 };
 // MSAA / ShadowMultiplier share the same 1/2/4/8 scale (1 = off). The labels
 // name what the number means, since the group labels above them are written in
@@ -180,7 +240,7 @@ const int kSSCount = 6;
 const unsigned kMaxRenderWidth = 7680;
 const unsigned kMaxRenderHeight = 4320;
 
-// Quality presets. These set only the Image quality group -- resolution,
+// Quality presets. These set only the Image Quality group -- resolution,
 // borderless, frame rate, the battle options and the UI font are preferences
 // rather than quality levels, and a preset that silently changed them would
 // surprise more than it helped. Selecting Custom changes nothing; any manual
@@ -193,19 +253,27 @@ struct Preset {
   int aniso;           // index into kAnisoItems
   int shadow;          // index into kShadowItems
 };
-// Balanced matches default.ini exactly, so a fresh install opens on a named
-// preset rather than on Custom. The higher tiers add the cheap wins first
-// (anisotropic filtering costs nothing per frame, shadows little) before
-// spending on supersampling, which costs the most.
+// The ladder spends in the order things are worth paying for: edge smoothing
+// first (SMAA is nearly free), then multisampling, then anisotropic filtering
+// and shadow maps, and only at the top supersampling, which costs the most by
+// a wide margin.
+//
+// Balanced matches what the mod ships with (default.ini and the literals in
+// src/), so a fresh install opens on a named preset rather than on Custom, and
+// the launcher and the drop-in DLL agree about what "default" means. Neither of
+// its settings is expensive on anything that runs these games -- anisotropic
+// filtering in particular costs nothing per frame.
 const Preset kPresets[] = {
   //                        SS  MSAA  SMAA  aniso  shadow
-  { L"Balanced (default)",   0,   0,  true,     0,      0 },
+  { L"Low",                  0,   0,  true,     0,      0 },
+  { L"Balanced (default)",   0,   1,  true,     3,      0 },
+  { L"Medium",               0,   2,  true,     3,      0 },
   { L"High",                 2,   0,  true,     4,      1 },
   { L"Maximum",              3,   0,  true,     4,      2 },
   { L"Custom",              -1,  -1,  true,    -1,     -1 },
 };
-const int kPresetCount = 4;
-const int kPresetCustom = 3;
+const int kPresetCount = 6;
+const int kPresetCustom = 5;
 
 // Window mode spans two files: Borderless in arland-fix.ini, FullScreen in the
 // game's own ArlandDX_Settings.ini. Borderless is a window as far as the game
@@ -371,8 +439,19 @@ void refillSupersampling() {
   for (int i = 0; i < kSSCount; ++i) {
     if (i && haveBase && !withinRenderLimit(bw, bh, kSSItems[i].mult))
       continue;
-    const int at =
-      (int)SendMessageW(g_hSS, CB_ADDSTRING, 0, (LPARAM)kSSItems[i].label);
+    // Each multiplier carries the resolution it produces, so the answer to
+    // "what does 2x actually render at?" is in the list being chosen from
+    // rather than somewhere else in the window. Off has no resolution of its
+    // own, and with an Auto base there is nothing to compute against.
+    wchar_t label[96];
+    if (i && haveBase) {
+      unsigned rw = 0, rh = 0;
+      renderFor(bw, bh, kSSItems[i].mult, &rw, &rh);
+      wsprintfW(label, L"%s  (%u x %u)", kSSItems[i].label, rw, rh);
+    } else {
+      lstrcpynW(label, kSSItems[i].label, 96);
+    }
+    const int at = (int)SendMessageW(g_hSS, CB_ADDSTRING, 0, (LPARAM)label);
     SendMessageW(g_hSS, CB_SETITEMDATA, at, i);
   }
   setSsIndex(wanted);
@@ -445,17 +524,14 @@ void updateRenderResolution() {
   if (!haveBase)
     SendMessageW(g_hSS, CB_SETCURSEL, 0, 0);   // force Off
 
-  char text[96];
-  unsigned rw, rh;
-  if (g_ssReduced && computeRender(&rw, &rh))
-    wsprintfA(text, "Render resolution: %u x %u (reduced to the 8K limit)",
-      rw, rh);
+  // The resolutions themselves are in the dropdown now, so this row says only
+  // what the dropdown cannot: why the multiplier that was configured is not the
+  // one selected. Empty the rest of the time.
+  char text[96] = "";
+  if (g_ssReduced)
+    lstrcpyA(text, "Reduced to fit the 8K limit.");
   else if (!haveBase)
-    lstrcpyA(text, "Render resolution: base is Auto (supersampling off)");
-  else if (!computeRender(&rw, &rh))
-    lstrcpyA(text, "Render resolution: (off, renders at base)");
-  else
-    wsprintfA(text, "Render resolution: %u x %u", rw, rh);
+    lstrcpyA(text, "Supersampling needs a fixed resolution above.");
   SetWindowTextA(g_hRendLbl, text);
   // The only label whose text changes while the window is up, so the only one
   // that has to clear what it said before.
@@ -565,6 +641,48 @@ void loadFromIni() {
 
   // Last, once every quality control holds its loaded value: show which preset
   // that combination is, or Custom.
+  refreshPreset();
+  updateRenderResolution();
+
+}
+
+// Put every setting back to a known-good starting point: the mod's own
+// defaults, plus 720p windowed.
+//
+// Language is the one exception, and deliberately so. It is not tuning that can
+// be wrong -- it is what the player reads the game in, and resetting someone to
+// English because they wanted their graphics settings back would be a hostile
+// reading of "defaults". saveToIni writes it back unchanged from its control.
+//
+// The values here are the same ones default.ini ships and src/ parses; the
+// Balanced preset is defined to match, which is why this leaves the preset box
+// reading Balanced rather than Custom.
+void resetToDefaults() {
+  // 720p windowed: the safe floor. It is the one resolution every display this
+  // runs on can show, including a handheld, so a reset from a configuration
+  // that does not display correctly always lands somewhere visible.
+  const int count = (int)SendMessageW(g_hBase, CB_GETCOUNT, 0, 0);
+  int base = 0;   // Auto, if 720p somehow is not in the list
+  for (int i = 0; i < count; ++i) {
+    if ((LPARAM)SendMessageW(g_hBase, CB_GETITEMDATA, i, 0) ==
+        packRes(1280, 720)) {
+      base = i;
+      break;
+    }
+  }
+  SendMessageW(g_hBase, CB_SETCURSEL, base, 0);
+  SendMessageW(g_hWinMode, CB_SETCURSEL, 0, 0);   // Windowed
+
+  SendMessageW(g_hFont, CB_SETCURSEL, 0, 0);      // replaced
+  setSsIndex(0);                                  // supersampling off
+  SendMessageW(g_hMsaa, CB_SETCURSEL, 0, 0);      // 1x
+  SendMessageW(g_hAniso, CB_SETCURSEL, 0, 0);     // off
+  SendMessageW(g_hShadow, CB_SETCURSEL, 0, 0);    // 1024 map
+  SendMessageW(g_hSmaa, BM_SETCHECK, BST_CHECKED, 0);
+  SendMessageW(g_hBShadow, BM_SETCHECK, BST_CHECKED, 0);
+  SendMessageW(g_hBCutInShadow, BM_SETCHECK, BST_UNCHECKED, 0);
+  SendMessageW(g_hBCutInDim, BM_SETCHECK, BST_CHECKED, 0);
+  SendMessageW(g_hVerbose, BM_SETCHECK, BST_UNCHECKED, 0);
   refreshPreset();
   updateRenderResolution();
 }
@@ -710,7 +828,7 @@ void adoptFolder(const char* dir, int game) {
   if (game < 0)
     return;
   g_gameName = kGames[game].name;
-  // For the icon and for whether Start game can do anything at all; which
+  // For the icon and for whether Play with mod can do anything at all; which
   // executable actually runs is decided at that point, from the language.
   char language[16] = {};
   GetPrivateProfileStringA("Lang", "Language", "2", language, sizeof(language),
@@ -772,21 +890,23 @@ bool resolveGameFolder() {
 // Let the user pick a game folder; we edit the arland-fix.ini inside it.
 // ---- window construction ---------------------------------------------------
 
-HWND mkLabel(HWND parent, const wchar_t* text, int x, int y, int w, int h) {
-  return CreateWindowExW(0, L"STATIC", text, WS_CHILD | WS_VISIBLE,
-    x, y, w, h, parent, nullptr, nullptr, nullptr);
+HWND mkLabel(HWND parent, const wchar_t* text, int x, int y, int w, int h,
+             DWORD extraStyle = 0) {
+  return CreateWindowExW(0, L"STATIC", text,
+    WS_CHILD | WS_VISIBLE | extraStyle,
+    S(x), S(y), S(w), S(h), parent, nullptr, nullptr, nullptr);
 }
 
 HWND mkCheck(HWND parent, const wchar_t* text, int x, int y, int w, int id) {
   return CreateWindowExW(0, L"BUTTON", text,
-    WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, x, y, w, 20, parent,
+    WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, S(x), S(y), S(w), S(20), parent,
     (HMENU)(INT_PTR)id, nullptr, nullptr);
 }
 
 HWND mkCombo(HWND parent, int x, int y, int w, int id) {
   return CreateWindowExW(0, L"COMBOBOX", nullptr,
     WS_CHILD | WS_VISIBLE | WS_TABSTOP | CBS_DROPDOWNLIST | WS_VSCROLL,
-    x, y, w, 200, parent, (HMENU)(INT_PTR)id, nullptr, nullptr);
+    S(x), S(y), S(w), S(200), parent, (HMENU)(INT_PTR)id, nullptr, nullptr);
 }
 
 // Start one of Koei Tecmo's own front-ends from the game folder.
@@ -794,7 +914,7 @@ HWND mkCombo(HWND parent, int x, int y, int w, int id) {
 // ARLAND_NO_REDIRECT is set for the child: msimg32.dll sends
 // ArlandDXLauncher.exe here in the first place, so without it that button would
 // only ever reopen this window. The variable is removed again immediately, so
-// it never reaches the game when Start game is pressed afterwards.
+// it never reaches the game when Play with mod is pressed afterwards.
 bool runStockTool(const char* exeName) {
   if (!g_gameDir[0])
     return false;
@@ -849,7 +969,7 @@ bool startGame(HWND w, bool standDownMod) {
   const BOOL started = have && CreateProcessA(exePath, nullptr, nullptr,
     nullptr, FALSE, 0, nullptr, g_gameDir, &startup, &process);
   const DWORD error = GetLastError();
-  // Removed immediately, so a later press of Start game in this same window
+  // Removed immediately, so a later press of Play with mod in this same window
   // cannot inherit it and quietly launch without the mod.
   if (standDownMod)
     SetEnvironmentVariableA("ARLAND_DISABLE", nullptr);
@@ -869,6 +989,38 @@ bool startGame(HWND w, bool standDownMod) {
   return true;
 }
 
+// The version of the mod installed beside this tool, read from d3d11.dll's own
+// version resource. That file IS the mod, so asking it is more truthful than
+// this launcher reporting its own version: the two ship together but nothing
+// stops someone updating one and not the other, and when that happens the
+// version worth knowing is the DLL's.
+const wchar_t* modVersion() {
+  static wchar_t version[64] = {};
+  if (version[0])
+    return version;
+  lstrcpynW(version, L"not detected", 64);
+
+  char dll[MAX_PATH] = {};
+  if (!fileInDir(g_gameDir, "d3d11.dll", dll))
+    return version;
+
+  const DWORD size = GetFileVersionInfoSizeA(dll, nullptr);
+  if (!size)
+    return version;
+  std::vector<BYTE> block(size);
+  if (!GetFileVersionInfoA(dll, 0, size, block.data()))
+    return version;
+  VS_FIXEDFILEINFO* info = nullptr;
+  UINT infoSize = 0;
+  if (!VerQueryValueW(block.data(), L"\\", (void**)&info, &infoSize) || !info)
+    return version;
+  // The build field is deliberately not shown: these are versioned major.minor
+  // and a trailing 0.0 reads as noise.
+  wsprintfW(version, L"%u.%u", HIWORD(info->dwFileVersionMS),
+    LOWORD(info->dwFileVersionMS));
+  return version;
+}
+
 // True when the named executable sits in the game folder, so a button that
 // opens it can be greyed out rather than failing when pressed.
 bool stockToolPresent(const char* exeName) {
@@ -885,7 +1037,7 @@ HWND mkButton(HWND parent, const wchar_t* text, int x, int y, int w, int id,
   return CreateWindowExW(0, L"BUTTON", text,
     WS_CHILD | WS_VISIBLE | WS_TABSTOP |
       (isDefault ? BS_DEFPUSHBUTTON : BS_PUSHBUTTON),
-    x, y, w, 26, parent, (HMENU)(INT_PTR)id, nullptr, nullptr);
+    S(x), S(y), S(w), S(26), parent, (HMENU)(INT_PTR)id, nullptr, nullptr);
 }
 
 // The font the running version of Windows actually uses for UI text, which is
@@ -893,15 +1045,128 @@ HWND mkButton(HWND parent, const wchar_t* text, int x, int y, int w, int id,
 // only way that stays right across versions; DEFAULT_GUI_FONT is still the
 // 1990s bitmap face and is the single biggest reason a plain Win32 window looks
 // dated. Falls back to it only if the query fails.
+// Register the bundled font with this process only. AddFontMemResourceEx makes
+// it available to CreateFont by family name without installing anything on the
+// system or touching a file, and it is released when the process exits.
+bool registerBundledFont() {
+  static const bool registered = [] {
+    DWORD faces = 0;
+    return AddFontMemResourceEx(
+      const_cast<unsigned char*>(atfix::kEmbeddedFontInter),
+      atfix::kEmbeddedFontInterSize, nullptr, &faces) != nullptr;
+  }();
+  return registered;
+}
+
+// The font the window draws in.
+//
+// Asking the OS (SPI_GETNONCLIENTMETRICS) gets Segoe UI on Windows, which is
+// right, and whatever Wine defaults to elsewhere -- usually Tahoma or a DejaVu
+// fallback. That is the whole reason this window looked considerably worse on
+// SteamOS than on Windows: same code, different face. Bundling one font and
+// using it on both makes them agree, and it is the same Nunito the DLL already
+// embeds, so it costs a licence we already ship and no new dependency.
+//
+// The system metrics are still consulted, for the SIZE: that is what carries
+// the display's DPI and the user's "make text bigger" preference, both of which
+// should still be obeyed. Only the face is replaced. If registration fails the
+// system font is used unchanged, so a missing font is a cosmetic fallback
+// rather than an unreadable window.
+//
+// Inter is the face because it was drawn for user interfaces at small sizes,
+// which is exactly this window: a tall x-height, open apertures, and shapes
+// that stay distinct at 12px where a text face goes muddy.
 HFONT createUiFont() {
   NONCLIENTMETRICSW metrics = {};
   metrics.cbSize = sizeof(metrics);
   if (SystemParametersInfoW(SPI_GETNONCLIENTMETRICS, sizeof(metrics),
       &metrics, 0)) {
-    if (HFONT font = CreateFontIndirectW(&metrics.lfMessageFont))
-      return font;
+    LOGFONTW font = metrics.lfMessageFont;
+    // g_userScale only: this height already carries the display's DPI, since
+    // the process is DPI aware. See the note on the two scale factors.
+    font.lfHeight = font.lfHeight * g_userScale / 100;
+    // ClearType explicitly rather than DEFAULT_QUALITY, which under Wine can
+    // resolve to unsmoothed rendering and is what makes small text look ragged
+    // there even with a good face.
+    font.lfQuality = CLEARTYPE_QUALITY;
+    if (registerBundledFont()) {
+      lstrcpynW(font.lfFaceName, L"Inter", LF_FACESIZE);
+      // Rendered a size up from what the system asked for. Not compensation --
+      // Inter's x-height is close to Segoe UI's, so it needs none -- but a
+      // deliberate choice: this window is read at arm's length on a handheld or
+      // across a room on a TV as often as it is at a desk, and the default
+      // desktop size is small for both. It scales WITH the user's text-size
+      // setting rather than replacing it, so someone who has already asked for
+      // larger text still gets larger text.
+      font.lfHeight = font.lfHeight * 115 / 100;
+    }
+    if (HFONT created = CreateFontIndirectW(&font))
+      return created;
   }
   return (HFONT)GetStockObject(DEFAULT_GUI_FONT);
+}
+
+// The DPI the window will be laid out at. GetDpiForSystem is Windows 10 and
+// later; the desktop DC gives the same answer everywhere else, including Wine.
+int systemDpi() {
+  if (HMODULE user32 = GetModuleHandleW(L"user32.dll")) {
+    using PFN_GetDpiForSystem = UINT (WINAPI*)();
+    if (auto getDpi = (PFN_GetDpiForSystem)GetProcAddress(user32,
+          "GetDpiForSystem"))
+      return (int)getDpi();
+  }
+  HDC screen = GetDC(nullptr);
+  const int dpi = screen ? GetDeviceCaps(screen, LOGPIXELSX) : 96;
+  if (screen) ReleaseDC(nullptr, screen);
+  return dpi > 0 ? dpi : 96;
+}
+
+// The work area of the monitor the window will open on (the one holding the
+// cursor), which is what the layout has to fit inside.
+bool cursorWorkArea(RECT* area) {
+  POINT cursor = {};
+  MONITORINFO monitor = {};
+  monitor.cbSize = sizeof(monitor);
+  if (!GetCursorPos(&cursor) ||
+      !GetMonitorInfoW(MonitorFromPoint(cursor, MONITOR_DEFAULTTOPRIMARY),
+                       &monitor))
+    return false;
+  *area = monitor.rcWork;
+  return true;
+}
+
+// Decide both scale factors, then reduce the enlargement until the window fits
+// the screen it is opening on. The base layout is sized for 720p, so this can
+// always fall back to no enlargement at all and still fit.
+//
+// ARLAND_UI_SCALE sets the enlargement directly, as a percentage. It is how the
+// large layout gets tested without a TV, and how someone on a TV that Steam has
+// not told us about can ask for it.
+void chooseScale(DWORD windowStyle) {
+  g_dpiScale = systemDpi() * 100 / 96;
+  if (g_dpiScale < 100)
+    g_dpiScale = 100;
+
+  g_userScale = 100;
+  if (const char* requested = std::getenv("ARLAND_UI_SCALE")) {
+    const int value = std::atoi(requested);
+    if (value >= 100 && value <= 200)
+      g_userScale = value;
+  }
+
+  RECT area = {};
+  if (!cursorWorkArea(&area))
+    return;
+  const int availableWidth = area.right - area.left;
+  const int availableHeight = area.bottom - area.top;
+  while (g_userScale > 100) {
+    RECT window = { 0, 0, S(kBaseWidth), S(kBaseHeight) };
+    AdjustWindowRect(&window, windowStyle, FALSE);
+    if (window.right - window.left <= availableWidth &&
+        window.bottom - window.top <= availableHeight)
+      break;
+    g_userScale -= 5;
+  }
 }
 
 // Whether this is running under Wine, which on the Steam Deck and on Linux
@@ -945,22 +1210,13 @@ void onPage(int page, HWND ctrl) {
     g_pageCtrls[page][g_pageCount[page]++] = ctrl;
 }
 
-// Whether a control sits on a tab page rather than on the dialog face around
-// it, which decides the background it has to be painted against.
-bool onTabPage(HWND ctrl) {
-  for (int p = 0; p < 3; ++p)
-    for (int i = 0; i < g_pageCount[p]; ++i)
-      if (g_pageCtrls[p][i] == ctrl)
-        return true;
-  return false;
-}
 
 // A one-line note under the control it explains: indented past the control's
 // label so it reads as subordinate, and drawn grey (see WM_CTLCOLORSTATIC).
-HWND mkDesc(HWND parent, const wchar_t* text, int y) {
+HWND mkDesc(HWND parent, const wchar_t* text, int x, int y, int width) {
   // Two lines' worth of height: a static word-wraps on its own, so a longer
   // note reflows instead of being clipped. Rows are pitched to suit.
-  HWND h = mkLabel(parent, text, 40, y, 412, 32);
+  HWND h = mkLabel(parent, text, x, y, width, 32);
   if (g_descCount < 20)
     g_hDesc[g_descCount++] = h;
   return h;
@@ -982,7 +1238,7 @@ void repaintUnder(HWND ctrl) {
 }
 
 void showPage(int page) {
-  for (int p = 0; p < 3; ++p)
+  for (int p = 0; p < 4; ++p)
     for (int i = 0; i < g_pageCount[p]; ++i)
       ShowWindow(g_pageCtrls[p][i], p == page ? SW_SHOW : SW_HIDE);
   // The outgoing page's labels leave their text behind them, so the page is
@@ -992,197 +1248,340 @@ void showPage(int page) {
     repaintUnder(g_hTabs);
 }
 
+
+// ---- layout ----------------------------------------------------------------
+//
+// Controls are stacked by a cursor instead of being placed at hand-picked
+// coordinates, and every note's height is MEASURED at the width it will be
+// drawn at.
+//
+// That measurement is the point of this. A static silently drops any line past
+// its height, so a note given a fixed two lines turns a third line into a
+// sentence ending mid-word -- with nothing in the build, the log or the code to
+// say so. It shipped that way twice. Measuring makes the row as tall as its
+// text, which also means notes can be reworded and settings reordered without
+// recomputing anything below them.
+//
+// Everything in here is DEVICE pixels. The logical constants go through S() on
+// the way in, so nothing downstream has to track which of the two it is
+// holding -- the other half of the same class of bug.
+struct Layout {
+  HWND parent;
+  int page;
+  int y;
+
+  Layout(HWND parentWindow, int tabPage)
+    : parent(parentWindow), page(tabPage), y(S(46)) {}
+
+  // Columns, in logical units. Checkbox rows use a nearer note column: a
+  // checkbox carries its own label, so leaving its note out at the combo note
+  // column strands it across a gap of empty space.
+  static int left()          { return S(24); }
+  static int labelWidth()    { return S(150); }
+  static int controlLeft()   { return S(180); }
+  static int controlWidth()  { return S(230); }
+  static int noteLeft()      { return S(430); }
+  static int noteWidth()     { return S(250); }
+  static int checkNoteLeft() { return S(300); }
+  static int checkNoteWidth(){ return S(376); }
+  static int fullWidth()     { return S(656); }
+
+  int measure(const wchar_t* text, int width) const {
+    HDC dc = GetDC(parent);
+    if (!dc)
+      return S(32);
+    HFONT previous = (HFONT)SelectObject(dc, g_uiFont);
+    RECT box = { 0, 0, width, 0 };
+    DrawTextW(dc, text, -1, &box, DT_CALCRECT | DT_WORDBREAK);
+    SelectObject(dc, previous);
+    ReleaseDC(parent, dc);
+    return box.bottom;
+  }
+
+  HWND place(const wchar_t* cls, const wchar_t* text, DWORD style,
+             int x, int top, int width, int height) {
+    HWND control = CreateWindowExW(0, cls, text, WS_CHILD | WS_VISIBLE | style,
+      x, top, width, height, parent, nullptr, nullptr, nullptr);
+    onPage(page, control);
+    return control;
+  }
+
+  // A note, at its measured height, remembered so WM_CTLCOLORSTATIC draws it in
+  // the secondary colour. Returns the height it took.
+  int note(const wchar_t* text, int x, int width, int top) {
+    const int height = measure(text, width);
+    HWND label = place(L"STATIC", text, 0, x, top, width, height);
+    if (g_descCount < 32)
+      g_hDesc[g_descCount++] = label;
+    return height;
+  }
+
+  // label + control + note. The row is as tall as whichever of the two sides
+  // needs more room.
+  void row(const wchar_t* labelText, HWND control, const wchar_t* noteText) {
+    place(L"STATIC", labelText, 0, left(), y + S(4), labelWidth(), S(18));
+    // Combos are moved with their dropdown extent, not their visible height:
+    // for a combo box the height passed here is how far the list drops.
+    MoveWindow(control, controlLeft(), y, controlWidth(), S(200), TRUE);
+    onPage(page, control);
+    int used = S(24);
+    if (noteText)
+      used = std::max(used, note(noteText, noteLeft(), noteWidth(), y));
+    y += used + S(12);
+  }
+
+  void checkRow(HWND check, const wchar_t* noteText) {
+    MoveWindow(check, left(), y + S(2), checkNoteLeft() - left() - S(16), S(20),
+      TRUE);
+    onPage(page, check);
+    int used = S(22);
+    if (noteText)
+      used = std::max(used, note(noteText, checkNoteLeft(), checkNoteWidth(), y));
+    y += used + S(12);
+  }
+
+  void heading(const wchar_t* text) {
+    y += S(8);
+    place(L"STATIC", text, 0, left(), y, fullWidth(), S(18));
+    y += S(24);
+  }
+
+  // Full-width text in the primary colour: a statement of fact rather than an
+  // explanation of a control, so it does not get the notes' grey.
+  void label(const wchar_t* text) {
+    const int height = measure(text, fullWidth());
+    place(L"STATIC", text, 0, left(), y, fullWidth(), height);
+    y += height + S(8);
+  }
+
+  // A note that belongs to the page rather than to one control.
+  void fullNote(const wchar_t* text) {
+    y += note(text, left(), fullWidth(), y) + S(12);
+  }
+
+  void buttons(HWND a, HWND b, HWND c) {
+    const int width = S(150);
+    const int gap = S(12);
+    MoveWindow(a, left(), y, width, S(26), TRUE);
+    MoveWindow(b, left() + width + gap, y, width, S(26), TRUE);
+    MoveWindow(c, left() + 2 * (width + gap), y, width, S(26), TRUE);
+    onPage(page, a); onPage(page, b); onPage(page, c);
+    y += S(26) + S(12);
+  }
+
+  // A line belonging to the control above it, so it starts at the control
+  // column rather than the label margin.
+  void under(HWND control) {
+    MoveWindow(control, controlLeft(), y,
+      fullWidth() - (controlLeft() - left()), S(18), TRUE);
+    onPage(page, control);
+    y += S(18) + S(10);
+  }
+
+  void link(HWND control) {
+    MoveWindow(control, left(), y, fullWidth(), S(20), TRUE);
+    onPage(page, control);
+    y += S(20) + S(12);
+  }
+};
+
 void createControls(HWND w) {
-  const int L = 24;    // left text column
-  const int F = 176;   // field column
-
-  // Which game this folder is, before anything else: the tool configures
-  // whatever it sits next to, so that is the first thing to confirm.
-  wchar_t heading[160];
-  wsprintfW(heading, L"Game: %s", g_gameName ? g_gameName : L"not detected");
-  mkLabel(w, heading, 16, 10, 452, 18);
-
   g_hTabs = CreateWindowExW(0, WC_TABCONTROLW, nullptr,
-    WS_CHILD | WS_VISIBLE | WS_TABSTOP, 12, 32, 456, 464,
+    WS_CHILD | WS_VISIBLE | WS_TABSTOP, S(12), S(12), S(676), S(376),
     w, (HMENU)(INT_PTR)IDC_TABS, nullptr, nullptr);
   TCITEMW tab = {};
   tab.mask = TCIF_TEXT;
-  const wchar_t* pageNames[3] = { L"Display", L"Image quality", L"Game" };
-  for (int i = 0; i < 3; ++i) {
+  const wchar_t* pageNames[4] = {
+    L"Display", L"Image Quality", L"Game", L"About" };
+  for (int i = 0; i < 4; ++i) {
     tab.pszText = (LPWSTR)pageNames[i];
     SendMessageW(g_hTabs, TCM_INSERTITEMW, i, (LPARAM)&tab);
   }
 
+  // Which game this folder is: the tool configures whatever it sits next to, so
+  // this is the one fact worth stating outright. It sits on the tab strip's own
+  // row, right-aligned, where it reads as a heading for the window rather than
+  // competing with the tabs. Created AFTER the tab control so it is above it in
+  // z-order, and painted transparently (see WM_CTLCOLORSTATIC) so the strip
+  // shows through instead of a white block sitting on it.
+  wchar_t heading[160];
+  wsprintfW(heading, L"%s", g_gameName ? g_gameName : L"No game detected");
+  g_hGameLabel = mkLabel(w, heading, 360, 18, 320, 18, SS_RIGHT);
+
   // ---------------- page 0: Display ----------------
-  onPage(0, mkLabel(w, L"Resolution:", L, 74, 140, 18));
-  g_hBase = mkCombo(w, F, 70, 200, IDC_BASE);
-  onPage(0, g_hBase);
-  unsigned maxW = 0, maxH = 0;
-  displayMaximum(&maxW, &maxH);
-  for (int i = 0; i < kBaseCount; ++i) {
-    // Skip anything the display cannot show. Auto (0x0) always stays.
-    if (maxW && maxH && kBaseItems[i].w &&
-        (kBaseItems[i].w > maxW || kBaseItems[i].h > maxH))
-      continue;
-    int idx = (int)SendMessageW(g_hBase, CB_ADDSTRING, 0, (LPARAM)kBaseItems[i].label);
-    SendMessageW(g_hBase, CB_SETITEMDATA, idx,
-      packRes(kBaseItems[i].w, kBaseItems[i].h));
-  }
-  onPage(0, mkDesc(w,
-    L"What reaches the screen. Also written to the game's own settings.", 94));
+  {
+    Layout page(w, 0);
+    g_hBase = mkCombo(w, 0, 0, 10, IDC_BASE);
+    unsigned maxW = 0, maxH = 0;
+    displayMaximum(&maxW, &maxH);
+    for (int i = 0; i < kBaseCount; ++i) {
+      // Skip anything the display cannot show. Auto (0x0) always stays.
+      if (maxW && maxH && kBaseItems[i].w &&
+          (kBaseItems[i].w > maxW || kBaseItems[i].h > maxH))
+        continue;
+      int idx = (int)SendMessageW(g_hBase, CB_ADDSTRING, 0,
+        (LPARAM)kBaseItems[i].label);
+      SendMessageW(g_hBase, CB_SETITEMDATA, idx,
+        packRes(kBaseItems[i].w, kBaseItems[i].h));
+    }
+    page.row(L"Resolution:", g_hBase,
+      L"What reaches the screen. Also written to the game's own settings.");
 
-  onPage(0, mkLabel(w, L"Window mode:", L, 130, 140, 18));
-  g_hWinMode = mkCombo(w, F, 126, 200, IDC_WINMODE);
-  onPage(0, g_hWinMode);
-  for (int i = 0; i < kWindowModeCount; ++i)
-    SendMessageW(g_hWinMode, CB_ADDSTRING, 0, (LPARAM)kWindowModes[i].label);
-  onPage(0, mkDesc(w,
-    L"Borderless fills the monitor without taking over the display, so "
-    L"alt-tab is instant. Also written to the game's own settings.", 150));
+    g_hWinMode = mkCombo(w, 0, 0, 10, IDC_WINMODE);
+    for (int i = 0; i < kWindowModeCount; ++i)
+      SendMessageW(g_hWinMode, CB_ADDSTRING, 0, (LPARAM)kWindowModes[i].label);
+    page.row(L"Window mode:", g_hWinMode,
+      L"Borderless fills the monitor without taking over the display, so "
+      L"alt-tab is instant.");
 
-  // The games present at the display's refresh rate and the mod does not pace
-  // frames, so this is a statement of fact rather than a setting. It is here
-  // because "is this capped?" is the question the removed frame-rate limit
-  // would otherwise leave open.
-  // A note rather than a setting, so it sits on its own row below the controls.
-  // mkDesc is two lines tall, so this has to clear the note above it and the
-  // group heading below it: rows here are pitched 56 apart and a note occupies
-  // 32 of that.
-  // Under Proton the obvious question is whether the mod fights the frame limit
-  // Steam or the compositor is applying. It cannot: it does not pace frames and
-  // passes the game's own presentation interval through untouched, so an
-  // outside limit is simply obeyed.
-  onPage(0, mkDesc(w,
-    runningUnderWine()
+    // A statement of fact rather than a setting, so it spans the width.
+    page.fullNote(runningUnderWine()
       ? L"The game runs at your display's refresh rate, 120 Hz and 144 Hz "
         L"included. The mod does not cap the frame rate, so a limit set by "
         L"Steam or the compositor is respected."
       : L"The game runs at your display's refresh rate, 120 Hz and 144 Hz "
-        L"included. The mod does not cap the frame rate.", 190));
+        L"included. The mod does not cap the frame rate.");
 
-  // The stock front-ends are still reachable: this tool replaces them, it does
-  // not remove them. Greyed out when the executable is not in this folder.
-  onPage(0, mkLabel(w, L"The game as it shipped", L, 240, 300, 18));
-  HWND openEnv = mkButton(w, L"Settings &editor", 24, 264, 124, IDC_OPENENV);
-  HWND openLauncher = mkButton(w, L"&Original launcher", 156, 264, 138,
-    IDC_OPENLAUNCHER);
-  HWND playVanilla = mkButton(w, L"Play &without the mod", 302, 264, 150,
-    IDC_PLAYVANILLA);
-  onPage(0, openEnv);
-  onPage(0, openLauncher);
-  onPage(0, playVanilla);
-  if (!stockToolPresent("ArlandDXEnv.exe"))
-    EnableWindow(openEnv, FALSE);
-  if (!stockToolPresent("ArlandDXLauncher.exe"))
-    EnableWindow(openLauncher, FALSE);
-  if (!g_gameExePath[0])
-    EnableWindow(playVanilla, FALSE);
-  onPage(0, mkDesc(w,
-    L"Koei Tecmo's own settings editor and launcher, unmodified. The third "
-    L"saves and starts the game with the mod stood down, changing nothing.",
-    296));
+    // The stock front-ends are still reachable: this tool replaces them, it
+    // does not remove them. Greyed out when the executable is not present.
+    page.heading(L"The game as it shipped");
+    HWND openEnv = mkButton(w, L"Settings &editor", 0, 0, 10, IDC_OPENENV);
+    HWND openLauncher = mkButton(w, L"&Original launcher", 0, 0, 10,
+      IDC_OPENLAUNCHER);
+    HWND playVanilla = mkButton(w, L"Play &without the mod", 0, 0, 10,
+      IDC_PLAYVANILLA);
+    page.buttons(openEnv, openLauncher, playVanilla);
+    if (!stockToolPresent("ArlandDXEnv.exe"))
+      EnableWindow(openEnv, FALSE);
+    if (!stockToolPresent("ArlandDXLauncher.exe"))
+      EnableWindow(openLauncher, FALSE);
+    if (!g_gameExePath[0])
+      EnableWindow(playVanilla, FALSE);
+    page.fullNote(
+      L"Koei Tecmo's own settings editor and launcher, unmodified. The third "
+      L"saves and starts the game with the mod stood down, changing nothing.");
+  }
 
-  // ---------------- page 1: Image quality ----------------
-  onPage(1, mkLabel(w, L"Preset:", L, 74, 140, 18));
-  g_hPreset = mkCombo(w, F, 70, 200, IDC_PRESET);
-  onPage(1, g_hPreset);
-  for (int i = 0; i < kPresetCount; ++i)
-    SendMessageW(g_hPreset, CB_ADDSTRING, 0, (LPARAM)kPresets[i].label);
-  onPage(1, mkDesc(w, L"Sets the four options below.", 94));
+  // ---------------- page 1: Image Quality ----------------
+  {
+    Layout page(w, 1);
+    g_hPreset = mkCombo(w, 0, 0, 10, IDC_PRESET);
+    for (int i = 0; i < kPresetCount; ++i)
+      SendMessageW(g_hPreset, CB_ADDSTRING, 0, (LPARAM)kPresets[i].label);
+    page.row(L"Preset:", g_hPreset, L"Sets the four options below.");
 
-  onPage(1, mkLabel(w, L"Supersampling:", L, 130, 140, 18));
-  g_hSS = mkCombo(w, F, 126, 170, IDC_SS);
-  onPage(1, g_hSS);
-  refillSupersampling();
-  onPage(1, mkDesc(w,
-    L"Renders higher, then scales down. Sharpest, and the most costly. "
-    L"Limited to 8K, which is as far as the engine's own targets stretch.",
-    150));
+    g_hSS = mkCombo(w, 0, 0, 10, IDC_SS);
+    refillSupersampling();
+    page.row(L"Supersampling:", g_hSS,
+      L"Renders higher, then scales down. The sharpest, and the costliest. "
+      L"Limited to 8K.");
 
-  g_hRendLbl = mkDesc(w, L"Render resolution:", 186);
-  onPage(1, g_hRendLbl);
+    // The live readout under the supersampling row. Registered as a note so it
+    // draws in the secondary colour, but it is not created by note(): its text
+    // changes at runtime, so it keeps a fixed height rather than being measured
+    // once against a string it will not be showing later.
+    g_hRendLbl = mkLabel(w, L"", 0, 0, 10, 10);
+    if (g_descCount < 32)
+      g_hDesc[g_descCount++] = g_hRendLbl;
+    page.under(g_hRendLbl);
 
-  onPage(1, mkLabel(w, L"Multisampling:", L, 226, 150, 18));
-  g_hMsaa = mkCombo(w, F, 222, 170, IDC_MSAA);
-  onPage(1, g_hMsaa);
-  comboFill(g_hMsaa, kMsaaItems, 4);
-  onPage(1, mkDesc(w,
-    L"MSAA. Smooths geometry edges; supersampling usually beats it.", 246));
+    g_hMsaa = mkCombo(w, 0, 0, 10, IDC_MSAA);
+    comboFill(g_hMsaa, kMsaaItems, 4);
+    page.row(L"Multisampling:", g_hMsaa,
+      L"MSAA. Smooths geometry edges; supersampling usually beats it.");
 
-  onPage(1, mkLabel(w, L"Texture sharpness:", L, 282, 150, 18));
-  g_hAniso = mkCombo(w, F, 278, 170, IDC_ANISO);
-  onPage(1, g_hAniso);
-  comboFill(g_hAniso, kAnisoItems, 5);
-  onPage(1, mkDesc(w,
-    L"Anisotropic filtering. Keeps floors and walls sharp when seen at a "
-    L"shallow angle; costs nothing per frame.", 302));
+    g_hAniso = mkCombo(w, 0, 0, 10, IDC_ANISO);
+    comboFill(g_hAniso, kAnisoItems, 5);
+    page.row(L"Texture sharpness:", g_hAniso,
+      L"Anisotropic filtering. Keeps floors and walls sharp at a shallow "
+      L"angle, and costs nothing per frame.");
 
-  onPage(1, mkLabel(w, L"Shadow detail:", L, 338, 150, 18));
-  g_hShadow = mkCombo(w, F, 334, 170, IDC_SHADOW);
-  onPage(1, g_hShadow);
-  comboFill(g_hShadow, kShadowItems, 4);
-  onPage(1, mkDesc(w,
-    L"Larger shadow maps, so sharper shadow edges. Costs video memory.", 358));
+    g_hShadow = mkCombo(w, 0, 0, 10, IDC_SHADOW);
+    comboFill(g_hShadow, kShadowItems, 4);
+    page.row(L"Shadow detail:", g_hShadow,
+      L"Larger shadow maps, so sharper shadow edges. Costs video memory.");
 
-  g_hSmaa = mkCheck(w, L"Edge smoothing", L, 394, 300, IDC_SMAA);
-  onPage(1, g_hSmaa);
-  onPage(1, mkDesc(w,
-    L"SMAA post-process. Cheap, and catches edges MSAA cannot.", 414));
+    g_hSmaa = mkCheck(w, L"Edge smoothing", 0, 0, 10, IDC_SMAA);
+    page.checkRow(g_hSmaa,
+      L"SMAA post-process. Cheap, and catches edges MSAA cannot.");
+  }
 
   // ---------------- page 2: Game ----------------
-  onPage(2, mkLabel(w, L"UI font:", L, 74, 90, 18));
-  g_hFont = mkCombo(w, F, 70, 280, IDC_FONT);
-  onPage(2, g_hFont);
-  comboFill(g_hFont, kFontItems, 3);
-  onPage(2, mkDesc(w,
-    L"Replaced re-renders every string from a bundled scalable font. "
-    L"English builds only; Japanese and Chinese keep the original.", 94));
+  {
+    Layout page(w, 2);
+    g_hFont = mkCombo(w, 0, 0, 10, IDC_FONT);
+    comboFill(g_hFont, kFontItems, 3);
+    page.row(L"UI font:", g_hFont,
+      L"Re-renders the game's UI text from a bundled font. English builds "
+      L"only.");
 
-  onPage(2, mkLabel(w, L"Language:", L, 134, 140, 18));
-  g_hLang = mkCombo(w, F, 130, 200, IDC_LANG);
-  onPage(2, g_hLang);
-  comboFill(g_hLang, kLangItems, kLangCount);
-  onPage(2, mkDesc(w,
-    L"Written to the game's own settings. Which languages a copy actually "
-    L"has depends on the executable it ships with.", 154));
+    g_hLang = mkCombo(w, 0, 0, 10, IDC_LANG);
+    comboFill(g_hLang, kLangItems, kLangCount);
+    page.row(L"Language:", g_hLang,
+      L"Written to the game's own settings, and decides which of the game's "
+      L"two executables starts.");
 
-  onPage(2, mkLabel(w, L"Battle", L, 198, 200, 18));
-  g_hBShadow = mkCheck(w, L"Character shadows in battle", L, 222, 400, IDC_BSHADOW);
-  onPage(2, g_hBShadow);
-  onPage(2, mkDesc(w, L"Restores the shadows Rorona is missing while fighting.",
-    242));
-  g_hBCutInShadow = mkCheck(w, L"Ground shadows during cut-ins", L, 278, 400,
-    IDC_BCUTINSHADOW);
-  onPage(2, g_hBCutInShadow);
-  onPage(2, mkDesc(w, L"Off by default; the vanilla cut-ins have no shadows.",
-    298));
-  g_hBCutInDim = mkCheck(w, L"Dim the scene during cut-ins", L, 334, 400,
-    IDC_BCUTINDIM);
-  onPage(2, g_hBCutInDim);
-  onPage(2, mkDesc(w, L"Uncheck to hold close-ups at full brightness.", 354));
+    page.heading(L"Battle");
+    g_hBShadow = mkCheck(w, L"Character shadows in battle", 0, 0, 10,
+      IDC_BSHADOW);
+    page.checkRow(g_hBShadow,
+      L"Restores the shadows Rorona is missing while fighting.");
+    g_hBCutInShadow = mkCheck(w, L"Ground shadows during cut-ins", 0, 0, 10,
+      IDC_BCUTINSHADOW);
+    page.checkRow(g_hBCutInShadow,
+      L"Off by default; the vanilla cut-ins have no shadows.");
+    g_hBCutInDim = mkCheck(w, L"Dim the scene during cut-ins", 0, 0, 10,
+      IDC_BCUTINDIM);
+    page.checkRow(g_hBCutInDim,
+      L"Uncheck to hold close-ups at full brightness.");
 
-  onPage(2, mkLabel(w, L"Diagnostics", L, 390, 200, 18));
-  g_hVerbose = mkCheck(w, L"Verbose logging", L, 414, 300, IDC_VERBOSE);
-  onPage(2, g_hVerbose);
-  onPage(2, mkDesc(w,
-    L"Extra detail in arland-fix.log. Crash reports are always written.", 434));
+    page.heading(L"Diagnostics");
+    g_hVerbose = mkCheck(w, L"Verbose logging", 0, 0, 10, IDC_VERBOSE);
+    page.checkRow(g_hVerbose,
+      L"Extra detail in arland-fix.log. Crash reports are always written.");
+  }
+
+  // ---------------- page 3: About ----------------
+  // What is installed, where it came from, and what it is not.
+  {
+    Layout page(w, 3);
+    wchar_t installed[160];
+    wsprintfW(installed, L"Mod version: %s", modVersion());
+    page.label(installed);
+    page.fullNote(
+      L"Read from d3d11.dll in this folder, which is the mod itself. "
+      L"\u201cNot detected\u201d there means the game is running unmodified.");
+    page.fullNote(
+      L"Free and open source, and not affiliated with or endorsed by Koei "
+      L"Tecmo or Gust. It is an unofficial attempt to fix bugs in the "
+      L"original games, and it is never sold.");
+
+    // A SysLink rather than a static: it is focusable, so it can be reached
+    // with the keyboard or a controller, and it draws in the system's link
+    // colour instead of an imitation of one.
+    wchar_t markup[320];
+    wsprintfW(markup, L"<a href=\"%s\">%s</a>", kRepositoryUrl, kRepositoryUrl);
+    g_hRepoLink = CreateWindowExW(0, WC_LINK, markup,
+      WS_CHILD | WS_VISIBLE | WS_TABSTOP, 0, 0, 10, 10, w,
+      (HMENU)(INT_PTR)IDC_REPOLINK, nullptr, nullptr);
+    page.link(g_hRepoLink);
+  }
 
   // Bottom left, away from Save/Close so it cannot be hit by accident: saves
-  // first, then launches. Disabled when no game was recognised in this folder,
-  // since there would be nothing to run.
+  // first, then launches. Disabled when no game was recognised in this folder.
   //
   // It is also the default button and takes focus at startup: most of the time
   // this window is opened on the way into the game, not to change something, so
-  // Enter should start playing. That matters most on a controller or a handheld,
-  // where the alternative is driving a cursor across the window.
-  g_hStart = mkButton(w, L"&Start game", 24, 508, 110, IDC_START, true);
+  // Enter should start playing. That matters most on a controller or a
+  // handheld, where the alternative is driving a cursor across the window.
+  g_hStart = mkButton(w, L"&Play with mod", 24, 400, 130, IDC_START, true);
   if (!g_gameExePath[0])
     EnableWindow(g_hStart, FALSE);
 
-  // Distinct mnemonics across the whole window: S start, A save, C close,
-  // E editor, O original launcher.
-  mkButton(w, L"S&ave", 280, 508, 90, IDC_SAVE);
-  mkButton(w, L"&Close", 378, 508, 90, IDC_CLOSE);
+  // Distinct mnemonics across the whole window: P play, R reset, C close,
+  // E editor, O original launcher, W play without the mod.
+  mkButton(w, L"&Reset to defaults", 456, 400, 130, IDC_RESET);
+  mkButton(w, L"&Close", 594, 400, 90, IDC_CLOSE);
 
   showPage(0);
 
@@ -1198,6 +1597,12 @@ LRESULT CALLBACK WndProc(HWND w, UINT msg, WPARAM wp, LPARAM lp) {
 
     case WM_NOTIFY: {
       const NMHDR* note = (const NMHDR*)lp;
+      if (note && note->hwndFrom == g_hRepoLink &&
+          (note->code == NM_CLICK || note->code == NM_RETURN)) {
+        ShellExecuteW(w, L"open", kRepositoryUrl, nullptr, nullptr,
+          SW_SHOWNORMAL);
+        return 0;
+      }
       if (note && note->hwndFrom == g_hTabs && note->code == TCN_SELCHANGE) {
         showPage((int)SendMessageW(g_hTabs, TCM_GETCURSEL, 0, 0));
         return 0;
@@ -1210,23 +1615,28 @@ LRESULT CALLBACK WndProc(HWND w, UINT msg, WPARAM wp, LPARAM lp) {
     // is actually painted in.
     case WM_CTLCOLORBTN:
     case WM_CTLCOLORSTATIC: {
-      // Controls on a tab page sit on the page, which is lighter than
-      // COLOR_BTNFACE -- so answering with the dialog face draws a grey box
-      // behind each one. Controls outside the tab really are on the dialog
-      // face, and are left to the default handling.
-      if (!onTabPage((HWND)lp))
-        break;
-      SetBkColor((HDC)wp, GetSysColor(COLOR_WINDOW));
+      // One background for the whole window, so there is no on-the-page versus
+      // off-the-page distinction to get wrong. Checkboxes answer here through
+      // WM_CTLCOLORBTN rather than WM_CTLCOLORSTATIC, which is why both are
+      // handled together.
+      // The game name lies on top of the tab control's own header strip, which
+      // is not the window background, so it takes no background of its own.
+      if ((HWND)lp == g_hGameLabel) {
+        SetBkMode((HDC)wp, TRANSPARENT);
+        SetTextColor((HDC)wp, kSecondaryText);
+        return (LRESULT)GetStockObject(NULL_BRUSH);
+      }
+      SetBkColor((HDC)wp, kBackground);
+      SetTextColor((HDC)wp, kText);
       // The one-line notes under each control are secondary text, so they are
-      // drawn in the system's grey rather than competing with the labels they
-      // explain.
+      // drawn grey rather than competing with the labels they explain.
       for (int i = 0; i < g_descCount; ++i) {
         if ((HWND)lp == g_hDesc[i]) {
-          SetTextColor((HDC)wp, GetSysColor(COLOR_GRAYTEXT));
+          SetTextColor((HDC)wp, kSecondaryText);
           break;
         }
       }
-      return (LRESULT)GetSysColorBrush(COLOR_WINDOW);
+      return (LRESULT)g_backgroundBrush;
     }
     case WM_COMMAND:
       // Base or supersampling changed: recompute the render label and the
@@ -1251,14 +1661,27 @@ LRESULT CALLBACK WndProc(HWND w, UINT msg, WPARAM wp, LPARAM lp) {
         return 0;
       }
       switch (LOWORD(wp)) {
-        case IDC_SAVE: {
+        case IDC_RESET: {
+          // Destructive and not undoable, so it asks first, and the question
+          // names what it will and will not touch. Defaulting to No: this sits
+          // next to Close, and the cost of a mis-click is someone's whole
+          // configuration.
+          const int answer = MessageBoxW(w,
+            L"Reset the configuration of the mod back to the defaults? This "
+            L"will also set your game resolution back to 1280x720 in windowed "
+            L"mode.",
+            L"Atelier Arland Fixes",
+            MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2);
+          if (answer != IDYES)
+            return 0;
+          resetToDefaults();
           saveToIni();
           // Name the game back to the user: this tool configures whichever
           // folder it sits in, and saying which one closes that loop.
           wchar_t saved[320];
           wsprintfW(saved,
-            L"The configuration has been saved successfully. The next time "
-            L"you launch %s these settings will be used.",
+            L"The settings have been reset to the mod's defaults and saved. "
+            L"The next time you launch %s they will be used.",
             g_gameName ? g_gameName : L"the game");
           MessageBoxW(w, saved, L"Atelier Arland Fixes", MB_OK | MB_ICONINFORMATION);
           return 0;
@@ -1306,10 +1729,17 @@ LRESULT CALLBACK WndProc(HWND w, UINT msg, WPARAM wp, LPARAM lp) {
 }  // namespace
 
 int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int) {
-  INITCOMMONCONTROLSEX icc = { sizeof(icc), ICC_STANDARD_CLASSES };
+  INITCOMMONCONTROLSEX icc = { sizeof(icc),
+    ICC_STANDARD_CLASSES | ICC_LINK_CLASS };
   InitCommonControlsEx(&icc);
 
+  // Fixed-size dialog-style window (no maximize / resize). Declared here
+  // because the scale has to know the frame it will be measured with.
+  const DWORD windowStyle =
+    (WS_OVERLAPPEDWINDOW & ~(WS_MAXIMIZEBOX | WS_THICKFRAME)) | WS_VISIBLE;
+  chooseScale(windowStyle);
   g_uiFont = createUiFont();
+  g_backgroundBrush = CreateSolidBrush(kBackground);
 
   // This tool edits the files beside it, so both must be there. Saying which
   // one is missing is the whole of the diagnosis for a misplaced copy.
@@ -1336,14 +1766,12 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int) {
   wc.lpfnWndProc = WndProc;
   wc.hInstance = hInst;
   wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
-  wc.hbrBackground = (HBRUSH)(COLOR_BTNFACE + 1);
+  wc.hbrBackground = g_backgroundBrush;
   wc.lpszClassName = L"ArlandConfigWindow";
   RegisterClassExW(&wc);
 
-  // Fixed-size dialog-style window (no maximize / resize).
-  const DWORD style = (WS_OVERLAPPEDWINDOW & ~(WS_MAXIMIZEBOX | WS_THICKFRAME))
-                      | WS_VISIBLE;
-  RECT r = { 0, 0, 484, 548 };
+  const DWORD style = windowStyle;
+  RECT r = { 0, 0, S(kBaseWidth), S(kBaseHeight) };
   AdjustWindowRect(&r, style, FALSE);
   const int width = r.right - r.left;
   const int height = r.bottom - r.top;

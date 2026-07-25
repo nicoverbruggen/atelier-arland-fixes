@@ -34,8 +34,22 @@
     </application>
   </compatibility>
 
-  <!-- Deliberately NOT declaring DPI awareness. The layout is in fixed pixels,
-       so claiming awareness would render it at a quarter size on a 200% display
-       instead of letting Windows scale it. Real awareness means laying the
-       window out in dialog units first; until then, being scaled is correct. -->
+  <!-- System DPI awareness. The layout is no longer fixed pixels: every
+       coordinate goes through a scale factor (see S() in main.cpp), so the
+       window can be laid out at the real DPI instead of being drawn small and
+       bitmap-stretched by Windows, which is what produced a soft, blurry
+       window on a 150% or 200% display.
+
+       System rather than per-monitor: the scale is decided once, when the
+       controls are created, and changing it afterwards would mean destroying
+       and rebuilding every control while the user has unsaved edits in them.
+       With system awareness, moving the window to a monitor at a different
+       scale gets Windows' bitmap scaling -- slightly soft, but correctly sized
+       and without losing what is on screen. For a settings window that is open
+       for a minute, that is the right trade. -->
+  <asmv3:application xmlns:asmv3="urn:schemas-microsoft-com:asm.v3">
+    <asmv3:windowsSettings>
+      <dpiAware xmlns="http://schemas.microsoft.com/SMI/2005/WindowsSettings">true</dpiAware>
+    </asmv3:windowsSettings>
+  </asmv3:application>
 </assembly>

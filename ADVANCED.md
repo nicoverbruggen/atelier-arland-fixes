@@ -8,7 +8,7 @@ All settings live in `arland-fix.ini` beside the DLLs (created on first launch).
 
 `arland-fix-launcher.exe` holds every setting the mod has in one window, writes both `arland-fix.ini` and the game's own `ArlandDX_Settings.ini`, and starts the game. It configures whichever game folder it is run from, so it needs no configuration of its own.
 
-Starting the game normally opens it. Both of the games' own front-ends load `msimg32.dll`, so the mod's copy recognises Koei Tecmo's launcher among them and opens this one in its place before the original appears. Pressing Play in Steam therefore lands you here, and pressing Start game continues into the game as usual. This has been tested through Steam under Proton: the Steam session, the overlay and playtime tracking all behave as they would without the mod.
+Starting the game normally opens it. Both of the games' own front-ends load `msimg32.dll`, so the mod's copy recognises Koei Tecmo's launcher among them and opens this one in its place before the original appears. Pressing Play in Steam therefore lands you here, and pressing Play with mod continues into the game as usual. This has been tested through Steam under Proton: the Steam session, the overlay and playtime tracking all behave as they would without the mod.
 
 If `arland-fix-launcher.exe` is not installed, the original launcher opens exactly as before, so an incomplete install cannot leave the game unstartable.
 
@@ -109,7 +109,7 @@ To supply your own replacement font instead, drop a `arland-hires-font.ttf` next
 
 ## MSAA
 
-Multisample anti-aliasing is disabled by default. `MSAA` in the `[Rendering]` section requests a sample count of `2`, `4`, or `8`:
+Multisample anti-aliasing defaults to **2x**. `MSAA` in the `[Rendering]` section requests a sample count of `1` (off), `2`, `4`, or `8`:
 
 ```ini
 [Rendering]
@@ -189,7 +189,7 @@ BattleCutInDimming=false
 
 Supersampling is left blank here because it costs more than everything else in this file combined. On hardware with real headroom it is the single biggest image-quality win available: set `DisplayWidth`/`DisplayHeight` to your monitor and `RenderWidth`/`RenderHeight` one step higher, and drop `MSAA` back to `1` rather than paying for both.
 
-Raise `MSAA` to `8` and `ShadowMultiplier` to `4` on strong hardware. (The high-resolution UI font, SMAA, and the restored fighting battle shadows (`BattleShadows`) are on by default and listed here only for completeness. The cut-in restorations (`BattleCutInShadows` and `BattleCutInDimming`) and `AnisotropicFiltering` are off by default; they cost little, so they are worth enabling.)
+Raise `MSAA` to `8` and `ShadowMultiplier` to `4` on strong hardware. (The high-resolution UI font, SMAA, and the restored fighting battle shadows (`BattleShadows`) are on by default and listed here only for completeness. The cut-in restorations (`BattleCutInShadows` and `BattleCutInDimming`) are off by default; they cost little, so they are worth enabling.)
 
 ## Diagnostic switches
 
