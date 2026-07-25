@@ -90,8 +90,13 @@ mkdir -p "$stage/arland-fix"
 cp "$repo/build64/d3d11.dll" "$repo/build64/arland-fix-launcher.exe" \
    "$repo/build32/msimg32.dll" "$stage/"
 cp "$repo/default.ini" "$stage/arland-fix.ini"
-cp "$repo/README.md" "$repo/CHANGELOG.md" "$repo/ADVANCED.md" "$stage/arland-fix/"
+cp "$repo/README.md" "$repo/CHANGELOG.md" "$repo/ADVANCED.md" "$repo/LICENSE" \
+   "$stage/arland-fix/"
 cp -r "$repo/licenses" "$stage/arland-fix/LICENSES"
+# Named for what they cover: LICENSE points at them and there is no vendor/
+# tree in the archive.
+cp "$repo/vendor/minhook/LICENSE.txt" "$stage/arland-fix/LICENSES/MinHook.txt"
+cp "$repo/vendor/smaa/LICENSE.txt" "$stage/arland-fix/LICENSES/SMAA.txt"
 
 archive="$out/arland-fix-$version.zip"
 rm -f "$archive"

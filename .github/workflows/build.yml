@@ -93,13 +93,15 @@ jobs:
           # Shipped under its final name so the archive extracts straight into
           # the game directory with nothing to rename.
           cp default.ini dist/arland-fix.ini
-          # Documentation and licences go in a subfolder so the four files that
-          # actually have to sit beside the executable stay at the top level. The
-          # fonts are embedded in d3d11.dll, so their copyright notices and
-          # licence texts have to travel with the binary, not just live in the repo.
+          # Documentation and the required licences go in a subfolder so the four
+          # files that actually have to sit beside the executable stay at the top
+          # level. The vendored texts are named for what they cover, since
+          # LICENSE points at them and there is no vendor/ tree here.
           mkdir -p dist/arland-fix
-          cp README.md CHANGELOG.md ADVANCED.md dist/arland-fix/
+          cp README.md CHANGELOG.md ADVANCED.md LICENSE dist/arland-fix/
           cp -r licenses dist/arland-fix/LICENSES
+          cp vendor/minhook/LICENSE.txt dist/arland-fix/LICENSES/MinHook.txt
+          cp vendor/smaa/LICENSE.txt dist/arland-fix/LICENSES/SMAA.txt
           cd dist
           zip -r ../arland-fix.zip \
             d3d11.dll msimg32.dll arland-fix.ini arland-fix-launcher.exe arland-fix
@@ -123,12 +125,31 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          awk -v heading="## ${GITHUB_REF_NAME}" '
-            $0 == heading { found = 1; next }
-            found && /^## v/ { exit }
-            found { print }
-            END { if (!found) exit 1 }
-          ' CHANGELOG.md > changes.md
+          # Release notes are the CHANGELOG section for the tag. A pre-release
+          # tag (v0.5-pre, v0.5-pre2) rarely has a heading of its own, so it
+          # falls back to the release it leads up to: v0.5-pre2 -> ## v0.5.
+          # That way cutting a pre-release needs no CHANGELOG edit.
+          extract_notes() {
+            awk -v heading="## $1" '
+              $0 == heading { found = 1; next }
+              found && /^## v/ { exit }
+              found { print }
+              END { if (!found) exit 1 }
+            ' CHANGELOG.md
+          }
+          BASE_TAG="$(echo "${GITHUB_REF_NAME}" | sed -E 's/-?pre[0-9]*$//I')"
+          if extract_notes "${GITHUB_REF_NAME}" > changes.md; then
+            echo "Release notes from ## ${GITHUB_REF_NAME}"
+          elif [ "${BASE_TAG}" != "${GITHUB_REF_NAME}" ] && \
+               extract_notes "${BASE_TAG}" > changes.md; then
+            echo "No ## ${GITHUB_REF_NAME} heading; using ## ${BASE_TAG}"
+          elif [ "${BASE_TAG}" != "${GITHUB_REF_NAME}" ]; then
+            echo "CHANGELOG.md has neither a ## ${GITHUB_REF_NAME} nor a ## ${BASE_TAG} heading" >&2
+            exit 1
+          else
+            echo "CHANGELOG.md has no ## ${GITHUB_REF_NAME} heading" >&2
+            exit 1
+          fi
           # Tags containing "pre" (e.g. v0.5-pre) publish as a GitHub pre-release.
           if echo "${GITHUB_REF_NAME}" | grep -qi 'pre'; then
             PRERELEASE="--prerelease"
