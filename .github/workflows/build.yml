@@ -82,16 +82,16 @@ jobs:
           # Shipped under its final name so the archive extracts straight into
           # the game directory with nothing to rename.
           cp default.ini dist/arland-fix.ini
-          # Documentation and licences go in a subfolder so the three files that
+          # Documentation and licences go in a subfolder so the four files that
           # actually have to sit beside the executable stay at the top level. The
           # fonts are embedded in d3d11.dll, so their copyright notices and
           # licence texts have to travel with the binary, not just live in the repo.
-          mkdir -p dist/atelier-fix
-          cp README.md CHANGELOG.md ADVANCED.md dist/atelier-fix/
-          cp -r licenses dist/atelier-fix/LICENSES
+          mkdir -p dist/arland-fix
+          cp README.md CHANGELOG.md ADVANCED.md dist/arland-fix/
+          cp -r licenses dist/arland-fix/LICENSES
           cd dist
           zip -r "../arland-fix-${GITHUB_REF_NAME}.zip" \
-            d3d11.dll msimg32.dll arland-fix.ini arland-fix-launcher.exe atelier-fix
+            d3d11.dll msimg32.dll arland-fix.ini arland-fix-launcher.exe arland-fix
       - name: Publish tagged release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -113,7 +113,7 @@ jobs:
           - `msimg32.dll` — opens the launcher above when the game is started from Steam, and adds 1440p and 4K to Koei Tecmo's own settings editor
           - `arland-fix.ini` — the settings themselves, documented inline and editable by hand
 
-          The archive also contains an `atelier-fix` folder with the documentation and the licences for the embedded fonts. Nothing reads it at runtime, so keep it or delete it as you prefer.
+          The archive also contains an `arland-fix` folder with the documentation and the licences for the embedded fonts. Nothing reads it at runtime, so keep it or delete it as you prefer.
 
           Everything works with no configuration; the `.ini` only needs editing if you want the optional extras. To uninstall, delete the four files.
 

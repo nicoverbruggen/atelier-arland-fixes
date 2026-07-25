@@ -65,20 +65,20 @@ fi
 out="$repo/out"
 stage="$out/stage"
 rm -rf "$stage"
-mkdir -p "$stage/atelier-fix"
+mkdir -p "$stage/arland-fix"
 
 # Shipped under its final name so the archive extracts straight into the game
 # directory with nothing to rename.
 cp "$repo/build64/d3d11.dll" "$repo/build64/arland-fix-launcher.exe" \
    "$repo/build32/msimg32.dll" "$stage/"
 cp "$repo/default.ini" "$stage/arland-fix.ini"
-cp "$repo/README.md" "$repo/CHANGELOG.md" "$repo/ADVANCED.md" "$stage/atelier-fix/"
-cp -r "$repo/licenses" "$stage/atelier-fix/LICENSES"
+cp "$repo/README.md" "$repo/CHANGELOG.md" "$repo/ADVANCED.md" "$stage/arland-fix/"
+cp -r "$repo/licenses" "$stage/arland-fix/LICENSES"
 
 archive="$out/arland-fix-$version.zip"
 rm -f "$archive"
 ( cd "$stage" && zip -qr "$archive" \
-    d3d11.dll msimg32.dll arland-fix.ini arland-fix-launcher.exe atelier-fix )
+    d3d11.dll msimg32.dll arland-fix.ini arland-fix-launcher.exe arland-fix )
 rm -rf "$stage"
 
 echo
