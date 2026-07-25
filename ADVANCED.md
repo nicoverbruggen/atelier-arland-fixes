@@ -200,6 +200,7 @@ These are environment variables, not INI keys: they are for narrowing down a pro
 | `ARLAND_FIELD_TRACE=1` | Logs the field-map character's state around each loss of footing. |
 | `ARLAND_PRESENT_INTERVAL=0` | Forces vsync off (`1`, `2`, `3` present every Nth refresh). Useful with an external frame limiter. Unset, the game's own vsync is left alone; `0` will tear in exclusive fullscreen. |
 | `ARLAND_NO_REDIRECT=1` | Opens Koei Tecmo's own launcher instead of the mod's. |
+| `ARLAND_DISABLE=1` | Stands the whole mod down for one launch: `d3d11.dll` still loads and still forwards Direct3D, but installs no hooks and changes nothing, so the game runs as it shipped. This is what the launcher's **Play without the mod** button passes to the game, and it is the quickest way to tell a problem apart from a problem the mod is causing without moving files out of the game folder. |
 | `ARLAND_FIELD_ENGINE_FIX=0` | Restores the game's own minimum-movement distance, reinstating the high-refresh field-map problems. For comparing against unmodified behaviour. |
 | `ARLAND_FIELD_STABILIZER=0` | Stops holding the character still at rest, leaving a small residual movement at high frame rates. Ignored unless the option above is also on. |
 | `ARLAND_RESOLUTION_TRACE=1` | Traces the resolution override's effect on render targets. |

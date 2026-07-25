@@ -50,6 +50,7 @@ enum : int {
   IDC_START,
   IDC_OPENENV,       // Koei Tecmo's own settings editor
   IDC_OPENLAUNCHER,  // Koei Tecmo's own launcher
+  IDC_PLAYVANILLA,   // the game with the mod stood down
   IDC_SAVE,
   IDC_CLOSE,
 };
@@ -793,6 +794,57 @@ bool runStockTool(const char* exeName) {
   return true;
 }
 
+// Save, then start the game. `standDownMod` passes ARLAND_DISABLE to the child,
+// which makes d3d11.dll forward Direct3D and install nothing: the game as it
+// shipped, from the same window, without moving files out of the folder and
+// having to remember to move them back.
+//
+// Returns true when the game started, which is the caller's cue to close.
+bool startGame(HWND w, bool standDownMod) {
+  // Save first: starting the game with the settings still only on screen is the
+  // one outcome nobody wants from either of these buttons. It matters just as
+  // much without the mod, since resolution and language live in the game's own
+  // settings file and it reads them either way.
+  saveToIni();
+
+  // Which executable to run follows the language that was just saved, exactly
+  // as the game's own launcher decides it. Read from the control rather than
+  // the file so it is the selection in front of the user, not a stale one.
+  char exePath[MAX_PATH] = {};
+  const bool have = gameExeForLanguage(
+    comboValue(g_hLang, kLangItems, kLangCount), exePath);
+
+  if (standDownMod)
+    SetEnvironmentVariableA("ARLAND_DISABLE", "1");
+  // CreateProcess rather than ShellExecute: the game has to be a child of this
+  // process for Steam to keep counting the session as running, which is what
+  // keeps the overlay and Steam Input attached to it.
+  STARTUPINFOA startup = {};
+  startup.cb = sizeof(startup);
+  PROCESS_INFORMATION process = {};
+  const BOOL started = have && CreateProcessA(exePath, nullptr, nullptr,
+    nullptr, FALSE, 0, nullptr, g_gameDir, &startup, &process);
+  const DWORD error = GetLastError();
+  // Removed immediately, so a later press of Start game in this same window
+  // cannot inherit it and quietly launch without the mod.
+  if (standDownMod)
+    SetEnvironmentVariableA("ARLAND_DISABLE", nullptr);
+
+  if (!started) {
+    wchar_t failed[320];
+    wsprintfW(failed,
+      L"The configuration was saved, but %s could not be started (error %lu). "
+      L"Launch the game as you normally would; the saved settings still apply.",
+      g_gameName ? g_gameName : L"the game",
+      have ? error : (DWORD)ERROR_FILE_NOT_FOUND);
+    MessageBoxW(w, failed, L"Atelier Arland Fixes", MB_OK | MB_ICONWARNING);
+    return false;
+  }
+  CloseHandle(process.hThread);
+  CloseHandle(process.hProcess);
+  return true;
+}
+
 // True when the named executable sits in the game folder, so a button that
 // opens it can be greyed out rather than failing when pressed.
 bool stockToolPresent(const char* exeName) {
@@ -867,6 +919,16 @@ void applyFont(HWND parent) {
 void onPage(int page, HWND ctrl) {
   if (ctrl && g_pageCount[page] < 40)
     g_pageCtrls[page][g_pageCount[page]++] = ctrl;
+}
+
+// Whether a control sits on a tab page rather than on the dialog face around
+// it, which decides the background it has to be painted against.
+bool onTabPage(HWND ctrl) {
+  for (int p = 0; p < 3; ++p)
+    for (int i = 0; i < g_pageCount[p]; ++i)
+      if (g_pageCtrls[p][i] == ctrl)
+        return true;
+  return false;
 }
 
 // A one-line note under the control it explains: indented past the control's
@@ -976,19 +1038,25 @@ void createControls(HWND w) {
 
   // The stock front-ends are still reachable: this tool replaces them, it does
   // not remove them. Greyed out when the executable is not in this folder.
-  onPage(0, mkLabel(w, L"The game's own tools", L, 240, 300, 18));
-  HWND openEnv = mkButton(w, L"Settings &editor", 24, 264, 130, IDC_OPENENV);
-  HWND openLauncher = mkButton(w, L"&Original launcher", 162, 264, 130,
+  onPage(0, mkLabel(w, L"The game as it shipped", L, 240, 300, 18));
+  HWND openEnv = mkButton(w, L"Settings &editor", 24, 264, 124, IDC_OPENENV);
+  HWND openLauncher = mkButton(w, L"&Original launcher", 156, 264, 138,
     IDC_OPENLAUNCHER);
+  HWND playVanilla = mkButton(w, L"Play &without the mod", 302, 264, 150,
+    IDC_PLAYVANILLA);
   onPage(0, openEnv);
   onPage(0, openLauncher);
+  onPage(0, playVanilla);
   if (!stockToolPresent("ArlandDXEnv.exe"))
     EnableWindow(openEnv, FALSE);
   if (!stockToolPresent("ArlandDXLauncher.exe"))
     EnableWindow(openLauncher, FALSE);
+  if (!g_gameExePath[0])
+    EnableWindow(playVanilla, FALSE);
   onPage(0, mkDesc(w,
-    L"Koei Tecmo's own settings editor and launcher, opened as they were "
-    L"before this tool was installed.", 296));
+    L"Koei Tecmo's own settings editor and launcher, unmodified. The third "
+    L"saves and starts the game with the mod stood down, changing nothing.",
+    296));
 
   // ---------------- page 1: Image quality ----------------
   onPage(1, mkLabel(w, L"Preset:", L, 74, 140, 18));
@@ -1112,15 +1180,19 @@ LRESULT CALLBACK WndProc(HWND w, UINT msg, WPARAM wp, LPARAM lp) {
       }
       break;
     }
+    // Checkboxes send WM_CTLCOLORBTN rather than WM_CTLCOLORSTATIC, and a
+    // themed one ignores a hollow brush and fills with the dialog face anyway,
+    // so both messages are answered the same way: with the colour the tab page
+    // is actually painted in.
+    case WM_CTLCOLORBTN:
     case WM_CTLCOLORSTATIC: {
-      // Every label sits on top of the tab control, and a themed tab page is
-      // lighter than COLOR_BTNFACE. Handing back a real brush therefore paints
-      // that grey behind the text, which reads as a box drawn around each line.
-      // A hollow brush leaves the page the tab control has already drawn, and
-      // TRANSPARENT stops the text bringing its own background with it. The
-      // cost is that a static no longer erases what it had before, which is
-      // what repaintUnder is for.
-      SetBkMode((HDC)wp, TRANSPARENT);
+      // Controls on a tab page sit on the page, which is lighter than
+      // COLOR_BTNFACE -- so answering with the dialog face draws a grey box
+      // behind each one. Controls outside the tab really are on the dialog
+      // face, and are left to the default handling.
+      if (!onTabPage((HWND)lp))
+        break;
+      SetBkColor((HDC)wp, GetSysColor(COLOR_WINDOW));
       // The one-line notes under each control are secondary text, so they are
       // drawn in the system's grey rather than competing with the labels they
       // explain.
@@ -1130,7 +1202,7 @@ LRESULT CALLBACK WndProc(HWND w, UINT msg, WPARAM wp, LPARAM lp) {
           break;
         }
       }
-      return (LRESULT)GetStockObject(NULL_BRUSH);
+      return (LRESULT)GetSysColorBrush(COLOR_WINDOW);
     }
     case WM_COMMAND:
       // Base or supersampling changed: recompute the render label and the
@@ -1167,43 +1239,11 @@ LRESULT CALLBACK WndProc(HWND w, UINT msg, WPARAM wp, LPARAM lp) {
           MessageBoxW(w, saved, L"Atelier Arland Fixes", MB_OK | MB_ICONINFORMATION);
           return 0;
         }
-        case IDC_START: {
-          // Save first: starting the game with the settings still only on
-          // screen is the one outcome nobody wants from this button.
-          saveToIni();
-          // Which executable to run follows the language that was just saved,
-          // exactly as the game's own launcher decides it. Read from the
-          // control rather than the file so it is the selection in front of the
-          // user, not a stale one.
-          char exePath[MAX_PATH] = {};
-          const bool have = gameExeForLanguage(
-            comboValue(g_hLang, kLangItems, kLangCount), exePath);
-          // CreateProcess rather than ShellExecute: the game has to be a child
-          // of this process for Steam to keep counting the session as running,
-          // which is what keeps the overlay and Steam Input attached to it.
-          STARTUPINFOA startup = {};
-          startup.cb = sizeof(startup);
-          PROCESS_INFORMATION process = {};
-          const BOOL started = have && CreateProcessA(exePath, nullptr, nullptr,
-            nullptr, FALSE, 0, nullptr, g_gameDir, &startup, &process);
-          if (!started) {
-            wchar_t failed[320];
-            wsprintfW(failed,
-              L"The configuration was saved, but %s could not be started "
-              L"(error %lu). Launch the game as you normally would; the saved "
-              L"settings still apply.",
-              g_gameName ? g_gameName : L"the game",
-              have ? GetLastError() : (DWORD)ERROR_FILE_NOT_FOUND);
-            MessageBoxW(w, failed, L"Atelier Arland Fixes", MB_OK | MB_ICONWARNING);
-            return 0;
-          }
-          CloseHandle(process.hThread);
-          CloseHandle(process.hProcess);
-          // The game is running and owns the screen from here, so the
-          // configurator steps out of the way rather than sitting behind it.
-          DestroyWindow(w);
+        case IDC_START:
+        case IDC_PLAYVANILLA:
+          if (startGame(w, LOWORD(wp) == IDC_PLAYVANILLA))
+            DestroyWindow(w);
           return 0;
-        }
         case IDC_OPENENV:
         case IDC_OPENLAUNCHER: {
           const bool env = LOWORD(wp) == IDC_OPENENV;

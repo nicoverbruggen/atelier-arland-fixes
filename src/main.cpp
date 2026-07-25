@@ -58,7 +58,13 @@ D3D11Proc loadSystemD3D11() {
   if (d3d11Proc.D3D11CreateDevice)
     return d3d11Proc;
 
-  installCrashLogger();
+  // Skipped when the mod is stood down: the point of that switch is a process
+  // this DLL has not touched, and an installed exception filter is a thing it
+  // has touched.
+  if (atfix::modDisabled())
+    log("ARLAND_DISABLE is set: forwarding Direct3D only, nothing installed");
+  else
+    installCrashLogger();
 
   HMODULE libD3D11 = LoadLibraryExA("d3d11_proxy.dll", nullptr, LOAD_LIBRARY_SEARCH_APPLICATION_DIR);
 

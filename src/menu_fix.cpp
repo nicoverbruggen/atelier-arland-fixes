@@ -16,6 +16,7 @@
 #include <vector>
 
 #include "../vendor/minhook/include/MinHook.h"
+#include "config.h"
 #include "field_physics.h"
 #include "font_hires.h"
 #include "game.h"
@@ -2082,6 +2083,12 @@ void detectAndInstallGameHooks() {
 namespace arland {
 
 bool initializeGameHooks() {
+  // The one place the whole mod can be stood down: every hook the DLL installs
+  // is behind this, so returning false here leaves the game exactly as it
+  // shipped while the proxy still forwards Direct3D. Checked before call_once
+  // so the detection pass never runs either.
+  if (atfix::modDisabled())
+    return false;
   std::call_once(initialization, detectAndInstallGameHooks);
   return atfix::supportedGame;
 }

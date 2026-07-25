@@ -257,6 +257,24 @@ bool verboseLogging() {
   return on;
 }
 
+// Stands the whole mod down: it still loads, and still forwards Direct3D,
+// because the game imports this DLL by name and would not start otherwise --
+// but it installs no hooks, detours nothing, and overrides no resolution. The
+// result is the game as it ships.
+//
+// This exists so that "is the mod causing this?" can be answered in one launch,
+// without moving files out of the game folder and forgetting to move them back.
+// Environment only, and deliberately not an ini key: it is a property of a
+// single launch rather than a setting, and a disabled mod that stayed disabled
+// across launches because of a line in a file would be a trap.
+bool modDisabled() {
+  static const bool disabled = [] {
+    const char* value = std::getenv("ARLAND_DISABLE");
+    return value && value[0] != '0';
+  }();
+  return disabled;
+}
+
 bool borderlessWindow() {
   static const bool enabled = [] {
     const char* env = std::getenv("ARLAND_BORDERLESS");

@@ -47,6 +47,10 @@ unsigned int msaaSamples();
 // probe and other opt-in diagnostic lines so the default log stays quiet.
 bool verboseLogging();
 
+// Stands the whole mod down for one launch. Set by ARLAND_DISABLE, which the
+// launcher's "Play without the mod" button passes to the game. See config.cpp.
+bool modDisabled();
+
 // How UI text is rendered: [Rendering] Font. "replaced" (the DEFAULT: re-render
 // each string from the embedded scalable font (National Park), multi-line and
 // glyph-atlas-cached, falling back to upscaling for glyphs it can't resolve),
