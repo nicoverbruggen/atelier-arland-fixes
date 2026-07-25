@@ -3700,8 +3700,16 @@ void hookProc(void* pObject, const char* pName, T** ppOrig, T* pHook, uint32_t i
     reinterpret_cast<void**>(ppOrig));
 
   if (mh) {
-    if (mh != MH_ERROR_ALREADY_CREATED)
+    if (mh != MH_ERROR_ALREADY_CREATED) {
       log("Failed to create hook for ", pName, ": ", MH_StatusToString(mh));
+      // Target is left unpatched on this failure, so the vtable entry is still
+      // the real function: point the table at it rather than leaving a null.
+      // Hooks call through the table for other methods (Draw ->
+      // flushDirtyShadows -> procs->Map), so one failed slot would crash a hook
+      // that installed fine. Excludes ALREADY_CREATED, where a detour of ours
+      // is on the target and this entry would recurse into our own hook.
+      *ppOrig = reinterpret_cast<T*>(vtbl[index]);
+    }
     return;
   }
 
