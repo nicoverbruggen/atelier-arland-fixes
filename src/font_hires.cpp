@@ -294,7 +294,7 @@ void maybeDump(const char* utf8, const unsigned char* orig, int ow, int oh,
 
 // ---- "replaced" mode: re-render each string from a bundled scalable font -----
 
-std::atomic<bool> g_triedInit = { false };
+std::once_flag g_fontInit;
 bool g_ready = false;
 std::vector<unsigned char> g_ttf;
 stbtt_fontinfo g_font;
@@ -386,9 +386,9 @@ bool loadFont() {
   return true;
 }
 void ensureInit() {
-  if (g_triedInit.exchange(true, std::memory_order_acq_rel))
-    return;
-  g_ready = loadFont();
+  std::call_once(g_fontInit, [] {
+    g_ready = loadFont();
+  });
 }
 
 // Decode UTF-8 to codepoints, KEEPING '\n' as a line break; CR/TAB -> space.

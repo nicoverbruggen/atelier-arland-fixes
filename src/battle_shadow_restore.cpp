@@ -1919,6 +1919,18 @@ bool installFieldTickRestore(BYTE* base) {
   if (!g_battleAddrs || !g_battleAddrs->fmCoreUpdateRva ||
       !g_battleAddrs->fmCoreVtable || !g_battleAddrs->casterRestore)
     return false;
+  // Rorona EN and multilingual compile this function identically. The vtable
+  // relationship proves its class/slot identity; the full prologue also guards
+  // against a same-layout executable revision changing the target body.
+  const std::array<BYTE, 16> fmCoreUpdateExpected = {
+    0x48, 0x83, 0xec, 0x38, 0x0f, 0x29, 0x74, 0x24,
+    0x20, 0x48, 0x81, 0xc1, 0x00, 0x0b, 0x00, 0x00,
+  };
+  if (!matches(base + g_battleAddrs->fmCoreUpdateRva,
+      fmCoreUpdateExpected)) {
+    atfix::log("FIELD_TICK_RESTORE declined: update prologue mismatch");
+    return false;
+  }
   const uintptr_t slot1 = *reinterpret_cast<uintptr_t*>(
     base + g_battleAddrs->fmCoreVtable + sizeof(uintptr_t));
   if (slot1 != reinterpret_cast<uintptr_t>(base) +

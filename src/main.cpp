@@ -493,7 +493,10 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved) {
   switch (fdwReason) {
     case DLL_PROCESS_ATTACH:
       MH_Initialize();
-      atfix::installWindowTitleFix();  // hook ANSI title APIs before the game's window is created
+      // Hook ANSI title APIs before the game's window is created, except in
+      // the documented full pass-through mode.
+      if (!atfix::modDisabled())
+        atfix::installWindowTitleFix();
       break;
 
     case DLL_PROCESS_DETACH:

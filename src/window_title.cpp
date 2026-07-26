@@ -50,9 +50,9 @@ const char* baseName(const char* path) {
   return sep ? sep + 1 : path;
 }
 
-// The multilingual (Japanese and Chinese) executables are the ones without the
-// "_en"/"_EN" suffix the English builds carry (see the game table in
-// menu_fix.cpp: A11R/A12V/A13V "_x64_Release.exe" vs "..._Release_en.exe").
+// Match the three supported multilingual executable names exactly. currentTitle
+// intentionally recognizes a wider prefix for feature selection, but installing
+// system-API hooks uses the same exact-name discipline as game-code hooks.
 bool isMultilingualArlandExe() {
   if (currentTitle() == Title::Unknown)
     return false;
@@ -61,13 +61,9 @@ bool isMultilingualArlandExe() {
   if (!module || !GetModuleFileNameA(module, path, sizeof(path)))
     return false;
   const char* name = baseName(path);
-  const size_t len = std::strlen(name);
-  // Reject "...._en.exe" / "...._EN.exe" (7 chars incl. the ".exe").
-  const char* enSuffix = "_en.exe";
-  const size_t suffixLen = 7;
-  if (len >= suffixLen && !_strnicmp(name + len - suffixLen, enSuffix, suffixLen))
-    return false;
-  return true;
+  return !_stricmp(name, "A11R_x64_Release.exe") ||
+    !_stricmp(name, "A12V_x64_Release.exe") ||
+    !_stricmp(name, "A13V_x64_Release.exe");
 }
 
 // Plain-ASCII transliteration of each game's full Japanese title, e.g. Rorona's

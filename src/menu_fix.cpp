@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <unordered_map>
@@ -237,7 +238,7 @@ struct RenderTextKeyTiming {
 };
 
 std::mutex atlasMutex;
-std::unordered_map<uintptr_t, AtlasRead> atlasReads;
+std::unordered_map<uintptr_t, std::shared_ptr<AtlasRead>> atlasReads;
 std::mutex renderBitmapMutex;
 std::unordered_map<RenderTextKey, RenderTextBitmap, RenderTextKeyHash>
   renderBitmapCache;
@@ -274,7 +275,11 @@ std::atomic<uint64_t> pathRealChecks = { 0 };
 std::atomic<uint64_t> atlasCacheHits = { 0 };
 std::atomic<uint64_t> atlasRealReads = { 0 };
 thread_local uint32_t renderTextDepth = 0;
-thread_local std::vector<uintptr_t> syntheticAtlasLocks;
+struct SyntheticAtlasLock {
+  uintptr_t texture = 0;
+  std::shared_ptr<AtlasRead> snapshot;
+};
+thread_local std::vector<SyntheticAtlasLock> syntheticAtlasLocks;
 thread_local std::vector<uintptr_t> realCandidateAtlasLocks;
 thread_local uint32_t nodeInitDepth = 0;
 thread_local uint32_t layoutCreateDepth = 0;
@@ -1511,13 +1516,16 @@ uintptr_t cachedAtlasLock(uintptr_t texture, uintptr_t output,
   if (candidate) {
     std::lock_guard lock(atlasMutex);
     const auto found = atlasReads.find(texture);
-    if (found != atlasReads.end() && !found->second.bytes.empty()) {
+    if (found != atlasReads.end() && found->second &&
+        !found->second->bytes.empty()) {
       if (menuStatsEnabled())
         atlasCacheHits.fetch_add(1, std::memory_order_relaxed);
-      *reinterpret_cast<void**>(output) = found->second.bytes.data();
-      syntheticAtlasLocks.push_back(texture);
+      *reinterpret_cast<void**>(output) = found->second->bytes.data();
+      // Keep the snapshot alive until the matching synthetic unlock, even if
+      // another thread clears or invalidates the cache map meanwhile.
+      syntheticAtlasLocks.push_back({ texture, found->second });
       finishTrace(true);
-      return found->second.pitch;
+      return found->second->pitch;
     }
   }
 
@@ -1544,10 +1552,10 @@ uintptr_t cachedAtlasLock(uintptr_t texture, uintptr_t output,
     const void* mapped = *reinterpret_cast<void* const*>(output);
     const size_t size = size_t(pitch) * height;
     if (mapped && size <= 8 * 1024 * 1024) {
-      AtlasRead entry;
-      entry.pitch = uint32_t(pitch);
-      entry.bytes.resize(size);
-      std::memcpy(entry.bytes.data(), mapped, size);
+      auto entry = std::make_shared<AtlasRead>();
+      entry->pitch = uint32_t(pitch);
+      entry->bytes.resize(size);
+      std::memcpy(entry->bytes.data(), mapped, size);
       std::lock_guard lock(atlasMutex);
       atlasReads.emplace(texture, std::move(entry));
     }
@@ -1560,9 +1568,8 @@ uintptr_t cachedAtlasLock(uintptr_t texture, uintptr_t output,
 
 uintptr_t cachedAtlasUnlock(uintptr_t texture, uintptr_t a,
                             uintptr_t b, uintptr_t c) {
-  if (atlasCacheActive.load(std::memory_order_acquire) &&
-      !syntheticAtlasLocks.empty() &&
-      syntheticAtlasLocks.back() == texture) {
+  if (!syntheticAtlasLocks.empty() &&
+      syntheticAtlasLocks.back().texture == texture) {
     syntheticAtlasLocks.pop_back();
     return 0;
   }
