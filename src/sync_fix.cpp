@@ -62,6 +62,17 @@ constexpr uint32_t HOOK_DEF_CTX = (1u << 2);
 
 uint32_t      g_installedHooks = 0u;
 
+// Hot D3D paths can encounter the same failure every frame. Keep the first
+// occurrence in a normal log, then sample repeats only when verbose logging was
+// explicitly requested. Even a diagnostic log should not grow by one line per
+// frame forever.
+bool logFirstOrVerbose(std::atomic<uint32_t>& occurrences) {
+  const uint32_t seen =
+    occurrences.fetch_add(1, std::memory_order_relaxed);
+  return seen == 0 ||
+    (verboseLogging() && (seen < 16 || seen % 4096 == 0));
+}
+
 struct TransitionCounter {
   std::atomic<uint64_t> calls = 0;
   std::atomic<uint64_t> nanos = 0;
@@ -200,7 +211,9 @@ ID3D11DepthStencilView* getShadowResTwinDsv(ID3D11DepthStencilView* hostDsv) {
   }
   twinRes->Release();
   if (FAILED(hr) || !twinDsv) {
-    log("SHADOWRES twin DSV creation FAILED hr=0x", std::hex, hr);
+    static std::atomic<uint32_t> reported{0};
+    if (logFirstOrVerbose(reported))
+      log("SHADOWRES twin DSV creation FAILED hr=0x", std::hex, hr);
     return nullptr;
   }
   hostDsv->SetPrivateDataInterface(IID_ShadowResTwinView, twinDsv);
@@ -242,7 +255,9 @@ ID3D11ShaderResourceView* getShadowResTwinSrv(
   }
   twinRes->Release();
   if (FAILED(hr) || !twinSrv) {
-    log("SHADOWRES twin SRV creation FAILED hr=0x", std::hex, hr);
+    static std::atomic<uint32_t> reported{0};
+    if (logFirstOrVerbose(reported))
+      log("SHADOWRES twin SRV creation FAILED hr=0x", std::hex, hr);
     std::lock_guard lock(g_twinSrvNegMutex);
     g_twinSrvNegative.insert(reinterpret_cast<uintptr_t>(hostSrv));
     return nullptr;
@@ -712,9 +727,11 @@ bool applyResolutionOverride(DXGI_SWAP_CHAIN_DESC* pDesc) {
         // Compared as a cross product so no division rounds the answer away.
         if (monitorWidth && monitorHeight &&
             uint64_t(monitorWidth) * height != uint64_t(monitorHeight) * width) {
-          log("Aspect fit: presenting at the monitor's ", std::dec,
-              monitorWidth, "x", monitorHeight, " and rendering at ",
-              width, "x", height, ", letterboxed rather than stretched");
+          static std::atomic<uint32_t> reportedAspectFit{0};
+          if (logFirstOrVerbose(reportedAspectFit))
+            log("Aspect fit: presenting at the monitor's ", std::dec,
+                monitorWidth, "x", monitorHeight, " and rendering at ",
+                width, "x", height, ", letterboxed rather than stretched");
           width = monitorWidth;
           height = monitorHeight;
         }
@@ -768,16 +785,19 @@ bool applyResolutionOverride(DXGI_SWAP_CHAIN_DESC* pDesc) {
       pDesc->BufferCount = 2;
     pDesc->SampleDesc.Count = 1;
     pDesc->SampleDesc.Quality = 0;
-    log("Borderless: flip-model swap chain (", std::dec, pDesc->BufferCount,
-        " buffers), so presents are an independent flip rather than a"
-        " composited copy");
+    if (verboseLogging())
+      log("Borderless: flip-model swap chain (", std::dec, pDesc->BufferCount,
+          " buffers), so presents are an independent flip rather than a"
+          " composited copy");
   }
 
   pDesc->BufferDesc.Width = width;
   pDesc->BufferDesc.Height = height;
   pDesc->BufferDesc.RefreshRate.Numerator = 0;
   pDesc->BufferDesc.RefreshRate.Denominator = 0;
-  log("Overriding swap-chain resolution to ", std::dec, width, "x", height);
+  static std::atomic<uint32_t> reportedResolutionOverride{0};
+  if (logFirstOrVerbose(reportedResolutionOverride))
+    log("Overriding swap-chain resolution to ", std::dec, width, "x", height);
   return true;
 }
 
@@ -1222,12 +1242,19 @@ bool getOrCreateMSAAViews(ID3D11DeviceContext* context,
     depthResource->SetPrivateDataInterface(IID_MSAAResource, depthMsaa);
     hostRtv->SetPrivateDataInterface(IID_MSAAResource, *msaaRtv);
     hostDsv->SetPrivateDataInterface(IID_MSAAResource, *msaaDsv);
-    log("FIXES msaa=active samples=", std::dec, samples,
-        " size=", mainWidth, "x", mainHeight);
+    static std::atomic<bool> reportedMsaa{false};
+    if (!reportedMsaa.exchange(true, std::memory_order_relaxed))
+      log("FIXES msaa=active samples=", std::dec, samples,
+          " size=", mainWidth, "x", mainHeight);
+    else if (verboseLogging())
+      log("Created additional ", std::dec, samples, "x MSAA targets at ",
+          mainWidth, "x", mainHeight);
   } else {
     if (*msaaRtv) { (*msaaRtv)->Release(); *msaaRtv = nullptr; }
     if (*msaaDsv) { (*msaaDsv)->Release(); *msaaDsv = nullptr; }
-    log("Failed to create MSAA targets, hr 0x", std::hex, hr);
+    static std::atomic<uint32_t> reportedMsaaFailure{0};
+    if (logFirstOrVerbose(reportedMsaaFailure))
+      log("Failed to create MSAA targets, hr 0x", std::hex, hr);
   }
   if (colorMsaa) colorMsaa->Release();
   if (depthMsaa) depthMsaa->Release();
@@ -1394,7 +1421,9 @@ bool getResourceInfo(
     } return true;
 
     default:
-      log("Unhandled resource dimension ", pInfo->Dim);
+      static std::atomic<uint32_t> reported{0};
+      if (logFirstOrVerbose(reported))
+        log("Unhandled resource dimension ", pInfo->Dim);
       return false;
   }
 }
@@ -1552,15 +1581,18 @@ ID3D11Resource* createShadowResourceLocked(
     } break;
 
     default:
-      log("Unhandled resource dimension ", resourceInfo.Dim);
       hr = E_INVALIDARG;
   }
 
   if (SUCCEEDED(hr)) {
     procs->CopyResource(pContext, shadowResource, pBaseResource);
     pBaseResource->SetPrivateDataInterface(IID_StagingShadowResource, shadowResource);
-  } else
-    log("Failed to create shadow resource, hr ", std::hex, hr);
+  } else {
+    static std::atomic<uint32_t> reported{0};
+    if (logFirstOrVerbose(reported))
+      log("Failed to create shadow resource, dimension=", std::dec,
+          resourceInfo.Dim, " hr=0x", std::hex, hr);
+  }
 
   device->Release();
   return shadowResource;
@@ -1654,8 +1686,11 @@ void updateViewShadowResource(
           mipLevel = desc.Texture3D.MipSlice;
           break;
 
-        default:
-          log("Unhandled RTV dimension ", desc.ViewDimension);
+        default: {
+          static std::atomic<uint32_t> reported{0};
+          if (logFirstOrVerbose(reported))
+            log("Unhandled RTV dimension ", desc.ViewDimension);
+        }
       }
     } else if (SUCCEEDED(pView->QueryInterface(IID_PPV_ARGS(&uav)))) {
       D3D11_UNORDERED_ACCESS_VIEW_DESC desc = { };
@@ -1690,11 +1725,16 @@ void updateViewShadowResource(
           mipLevel = desc.Texture3D.MipSlice;
           break;
 
-        default:
-          log("Unhandled UAV dimension ", desc.ViewDimension);
+        default: {
+          static std::atomic<uint32_t> reported{0};
+          if (logFirstOrVerbose(reported))
+            log("Unhandled UAV dimension ", desc.ViewDimension);
+        }
       }
     } else {
-      log("Unhandled view type");
+      static std::atomic<uint32_t> reported{0};
+      if (logFirstOrVerbose(reported))
+        log("Unhandled view type");
     }
 
     for (uint32_t i = 0; i < layerCount; i++) {
@@ -1826,8 +1866,10 @@ HRESULT STDMETHODCALLTYPE ID3D11Device_CreateBuffer(
         log("Created targeted dialogue quad companion at ",
             std::dec, mainWidth, "x", mainHeight);
     } else {
-      log("Failed to create targeted dialogue quad companion at ",
-          std::dec, mainWidth, "x", mainHeight);
+      static std::atomic<uint32_t> reported{0};
+      if (logFirstOrVerbose(reported))
+        log("Failed to create targeted dialogue quad companion at ",
+            std::dec, mainWidth, "x", mainHeight);
     }
   }
   if (resolutionTraceEnabled() && SUCCEEDED(hr) && ppBuffer && *ppBuffer &&
@@ -2114,8 +2156,10 @@ HRESULT STDMETHODCALLTYPE ID3D11Device_CreateTexture2D(
             originalDesc.BindFlags);
     } else {
       // Fail-safe: no twin means this host silently keeps the vanilla path.
-      log("SHADOWRES twin creation FAILED hr=0x", std::hex, twinHr,
-          " (falling back to 1024 for this map)");
+      static std::atomic<uint32_t> reported{0};
+      if (logFirstOrVerbose(reported))
+        log("SHADOWRES twin creation FAILED hr=0x", std::hex, twinHr,
+            " (falling back to 1024 for this map)");
     }
   }
   if (resolutionTraceEnabled() && SUCCEEDED(hr) && ppTexture && *ppTexture &&
@@ -2494,8 +2538,11 @@ HRESULT tryCpuCopy(
 
   if (FAILED(hr)) {
     if (hr != DXGI_ERROR_WAS_STILL_DRAWING) {
-      log("Failed to map destination resource, hr 0x", std::hex, hr);
-      log("Resource dim ", dstInfo.Dim, ", size ", dstInfo.Width , "x", dstInfo.Height, ", usage ", dstInfo.Usage);
+      static std::atomic<uint32_t> reported{0};
+      if (logFirstOrVerbose(reported))
+        log("Failed to map destination resource, hr=0x", std::hex, hr,
+            std::dec, " dim=", dstInfo.Dim, " size=", dstInfo.Width, "x",
+            dstInfo.Height, " usage=", dstInfo.Usage);
     }
     return hr;
   }
@@ -2519,7 +2566,9 @@ HRESULT tryCpuCopy(
     if (FAILED(hr)) {
       shadowResource->Release();
 
-      log("Failed to map shadow resource, hr 0x", std::hex, hr);
+      static std::atomic<uint32_t> reported{0};
+      if (logFirstOrVerbose(reported))
+        log("Failed to map shadow resource, hr 0x", std::hex, hr);
       procs->Unmap(pContext, pDstResource, DstSubresource);
       return hr;
     }
@@ -2527,8 +2576,11 @@ HRESULT tryCpuCopy(
     hr = procs->Map(pContext, pSrcResource, SrcSubresource, D3D11_MAP_READ, 0, &srcSr);
 
     if (FAILED(hr)) {
-      log("Failed to map source resource, hr 0x", std::hex, hr);
-      log("Resource dim ", srcInfo.Dim, ", size ", srcInfo.Width , "x", srcInfo.Height, ", usage ", srcInfo.Usage);
+      static std::atomic<uint32_t> reported{0};
+      if (logFirstOrVerbose(reported))
+        log("Failed to map source resource, hr=0x", std::hex, hr,
+            std::dec, " dim=", srcInfo.Dim, " size=", srcInfo.Width, "x",
+            srcInfo.Height, " usage=", srcInfo.Usage);
       procs->Unmap(pContext, pDstResource, DstSubresource);
       return hr;
     }
@@ -3162,11 +3214,17 @@ void flushDirtyShadows(ID3D11DeviceContext* pContext) {
         }
         procs->Unmap(pContext, shadow, subresource);
       } else {
-        log("Failed to map a shadow resource for upload, hr 0x", std::hex, hr);
+        static std::atomic<uint32_t> reportedShadowUpload{0};
+        if (logFirstOrVerbose(reportedShadowUpload))
+          log("Failed to map a shadow resource for upload, hr 0x",
+              std::hex, hr);
       }
       procs->Unmap(pContext, resource, subresource);
     } else {
-      log("Failed to map a destination resource for upload, hr 0x", std::hex, hr);
+      static std::atomic<uint32_t> reportedDestinationUpload{0};
+      if (logFirstOrVerbose(reportedDestinationUpload))
+        log("Failed to map a destination resource for upload, hr 0x",
+            std::hex, hr);
     }
 
     shadow->Release();

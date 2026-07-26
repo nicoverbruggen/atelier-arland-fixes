@@ -2190,7 +2190,8 @@ void traceMenuPresent(uint64_t durationMicros, uint64_t intervalMicros) {
   // the currently-down bit (0x8000) with our own edge detection — Wine does not
   // reliably implement GetAsyncKeyState's "recently pressed" low bit. The ms
   // timestamp matches against the ms on each SHADOW window line.
-  if (atfix::verboseLogging() || std::getenv("ARLAND_SCENE_TRACE")) {
+  const char* sceneTrace = std::getenv("ARLAND_SCENE_TRACE");
+  if (atfix::verboseLogging() || (sceneTrace && sceneTrace[0] != '0')) {
     static bool markKeyWasDown[3] = {false, false, false};
     const int markKeys[3] = {VK_F7, VK_F8, VK_F9};
     for (int i = 0; i < 3; ++i) {

@@ -198,11 +198,11 @@ HRESULT STDMETHODCALLTYPE tracedPresent(
           "MB commit=", static_cast<unsigned>(pmc.PagefileUsage >> 20u), "MB");
     }
   }
-  // Frame-time heartbeat. On by default and deliberately so: the questions this
-  // project keeps having to answer are "what does this setting cost?" and "is
-  // it slower than it was?", and both are unanswerable from a report that says
-  // "it felt fine". A line every ten seconds makes any two runs comparable
-  // without the tester installing an overlay or knowing what one is.
+  // Frame-time heartbeat. Verbose/opt-in: the questions this project keeps
+  // having to answer are "what does this setting cost?" and "is it slower than
+  // it was?", and both are unanswerable from a report that says "it felt fine".
+  // A line every ten seconds makes any two diagnostic runs comparable without
+  // the tester installing an overlay or knowing what one is.
   //
   // The average alone hides the thing people actually notice, so the worst
   // frame in the window is reported alongside it: a steady 60 with a 90 ms
@@ -292,14 +292,20 @@ void hookSwapChain(IDXGISwapChain* swapChain) {
     reinterpret_cast<void*>(&tracedPresent),
     reinterpret_cast<void**>(&originalPresent));
   if (status && status != MH_ERROR_ALREADY_CREATED) {
-    log("Failed to create transition Present hook: ",
-      MH_StatusToString(status));
+    static std::atomic<bool> reported{false};
+    if (atfix::verboseLogging() ||
+        !reported.exchange(true, std::memory_order_relaxed))
+      log("Failed to create transition Present hook: ",
+        MH_StatusToString(status));
     return;
   }
   status = MH_EnableHook(vtable[8]);
   if (status) {
-    log("Failed to enable transition Present hook: ",
-      MH_StatusToString(status));
+    static std::atomic<bool> reported{false};
+    if (atfix::verboseLogging() ||
+        !reported.exchange(true, std::memory_order_relaxed))
+      log("Failed to enable transition Present hook: ",
+        MH_StatusToString(status));
     return;
   }
   if (atfix::verboseLogging())
@@ -342,8 +348,11 @@ void hookFactoryForSwapChain(ID3D11Device* device) {
     result = adapter->GetParent(
       IID_IDXGIFactory, reinterpret_cast<void**>(&factory));
   if (FAILED(result) || !factory) {
-    log("Failed to obtain DXGI factory for transition trace: ",
-      std::hex, result, std::dec);
+    static std::atomic<bool> reported{false};
+    if (atfix::verboseLogging() ||
+        !reported.exchange(true, std::memory_order_relaxed))
+      log("Failed to obtain DXGI factory for transition trace: ",
+        std::hex, result, std::dec);
   } else {
     std::lock_guard lock(presentHookMutex);
     if (!originalCreateSwapChain) {
@@ -353,9 +362,13 @@ void hookFactoryForSwapChain(ID3D11Device* device) {
         reinterpret_cast<void**>(&originalCreateSwapChain));
       if (!status || status == MH_ERROR_ALREADY_CREATED)
         status = MH_EnableHook(vtable[10]);
-      if (status)
-        log("Failed to hook IDXGIFactory::CreateSwapChain: ",
-          MH_StatusToString(status));
+      if (status) {
+        static std::atomic<bool> reported{false};
+        if (atfix::verboseLogging() ||
+            !reported.exchange(true, std::memory_order_relaxed))
+          log("Failed to hook IDXGIFactory::CreateSwapChain: ",
+            MH_StatusToString(status));
+      }
       else if (atfix::verboseLogging())
         log("Created transition CreateSwapChain hook @ ", vtable[10]);
     }

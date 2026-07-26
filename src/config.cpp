@@ -108,8 +108,9 @@ UINT shadowMapResolution() {
     }
     if (multiplier == 2 || multiplier == 4 || multiplier == 8) {
       const UINT size = 1024u * static_cast<UINT>(multiplier);
-      log("Shadow-map resolution override: ", std::dec, size, "x", size,
-        " (", multiplier, "x)");
+      if (verboseLogging())
+        log("Shadow-map resolution override: ", std::dec, size, "x", size,
+          " (", multiplier, "x)");
       return size;
     }
     return 1024u;

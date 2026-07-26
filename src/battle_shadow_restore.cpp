@@ -758,15 +758,16 @@ size_t scanForBattleCharaVectors(uintptr_t obj, size_t window, int depth,
       const uintptr_t elem0 = *reinterpret_cast<const uintptr_t*>(begin);
       if (readableRange(elem0, sizeof(uintptr_t)) &&
           isBattleCharaVtable(*reinterpret_cast<const uintptr_t*>(elem0))) {
-        const uintptr_t vt = *reinterpret_cast<const uintptr_t*>(elem0);
         g_battleCharaVectorAddr.store(obj + off, std::memory_order_release);
-        if (!registerMode)
+        if (!registerMode && sceneTraceEnabled()) {
+          const uintptr_t vt = *reinterpret_cast<const uintptr_t*>(elem0);
           atfix::log("BATTLE_CONTAINER obj=", reinterpret_cast<void*>(obj),
             " offset=0x", std::hex, off, std::dec,
             " count=", (end - begin) / sizeof(uintptr_t),
             " elem0=", reinterpret_cast<void*>(elem0),
             " vtable_rva=0x", std::hex,
             vt - reinterpret_cast<uintptr_t>(gameBase), std::dec);
+        }
         ++found;
         // Register every BtlChara in this vector as a caster (dedup). Catches a
         // cut-in/victory character that lives outside the party vector.
@@ -824,7 +825,7 @@ size_t locateBattleCharaContainer(uintptr_t gameMode, uintptr_t scene,
   if (scene)
     found += scanForBattleCharaVectors(
       scene, 0x1000, 2, seen, budget, registerMode);
-  if (!registerMode)
+  if (!registerMode && sceneTraceEnabled())
     atfix::log("BATTLE_CONTAINER_SCAN phase=", phase,
       " gamemode=", reinterpret_cast<void*>(gameMode),
       " scene=", reinterpret_cast<void*>(scene),
@@ -1035,14 +1036,16 @@ void restoreBattleSnodeFlags(const char* site) {
       ++stamped;
     }
   }
-  static std::atomic<uint64_t> tick{0};
-  static std::atomic<uint32_t> lastRestored{0xffffffff};
-  const uint64_t t = tick.fetch_add(1, std::memory_order_relaxed);
-  if (restored != lastRestored.exchange(restored) || (t % 300) == 0)
-    atfix::log("CUTIN_SNODE_FLAG site=", site, " restored=", restored,
-      " stamped=", stamped, " nodes=", nodes,
-      " state=", currentBattleState() ? currentBattleState() : "?",
-      " tick=", t);
+  if (sceneTraceEnabled()) {
+    static std::atomic<uint64_t> tick{0};
+    static std::atomic<uint32_t> lastRestored{0xffffffff};
+    const uint64_t t = tick.fetch_add(1, std::memory_order_relaxed);
+    if (restored != lastRestored.exchange(restored) || (t % 300) == 0)
+      atfix::log("CUTIN_SNODE_FLAG site=", site, " restored=", restored,
+        " stamped=", stamped, " nodes=", nodes,
+        " state=", currentBattleState() ? currentBattleState() : "?",
+        " tick=", t);
+  }
 }
 
 // ---- tactical-scene caster clear (stray-shadow fix, engine-cooperative) ----
@@ -1862,9 +1865,12 @@ uintptr_t tracedBattleModeDtor(uintptr_t self) {
   } else {
     // Two live battle modes should be impossible. Say so rather than quietly
     // tearing down state that belongs to a different one.
-    atfix::log("BATTLE_MODE_DTOR for an untracked mode=",
-      reinterpret_cast<void*>(self), " tracked=",
-      reinterpret_cast<void*>(tracked), "; leaving state alone");
+    static std::atomic<bool> reported{false};
+    if (sceneTraceEnabled() ||
+        !reported.exchange(true, std::memory_order_relaxed))
+      atfix::log("BATTLE_MODE_DTOR for an untracked mode=",
+        reinterpret_cast<void*>(self), " tracked=",
+        reinterpret_cast<void*>(tracked), "; leaving state alone");
   }
   return originalBattleModeDtor(self);
 }

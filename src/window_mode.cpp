@@ -201,8 +201,11 @@ void prepareBorderlessSwapChain(DXGI_SWAP_CHAIN_DESC* desc) {
   installModeChangeGuard();
   if (!desc->Windowed) {
     desc->Windowed = TRUE;
-    log("Borderless: swap chain forced to windowed"
-        " (the game asked for exclusive fullscreen)");
+    static std::atomic<bool> reported{false};
+    if (verboseLogging() ||
+        !reported.exchange(true, std::memory_order_relaxed))
+      log("Borderless: swap chain forced to windowed"
+          " (the game asked for exclusive fullscreen)");
   }
 }
 
@@ -224,7 +227,10 @@ void applyBorderlessWindow(IDXGISwapChain* swapChain) {
   if (SUCCEEDED(swapChain->GetFullscreenState(&fullscreen, nullptr)) &&
       fullscreen) {
     swapChain->SetFullscreenState(FALSE, nullptr);
-    log("Borderless: swap chain pulled back out of exclusive fullscreen");
+    static std::atomic<bool> reported{false};
+    if (verboseLogging() ||
+        !reported.exchange(true, std::memory_order_relaxed))
+      log("Borderless: swap chain pulled back out of exclusive fullscreen");
   }
   IDXGIFactory* factory = nullptr;
   if (SUCCEEDED(swapChain->GetParent(IID_IDXGIFactory,

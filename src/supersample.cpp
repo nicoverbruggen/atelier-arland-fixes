@@ -265,7 +265,9 @@ ID3D11Texture2D* ssaaRedirectRenderTargetView(
 
   const uint32_t seen = g_redirects.fetch_add(1, std::memory_order_relaxed);
   if (desc && desc->Format != DXGI_FORMAT_UNKNOWN && desc->Format != g_format) {
-    if (seen < 4)
+    static std::atomic<bool> reportedDecline{false};
+    if (verboseLogging() ||
+        !reportedDecline.exchange(true, std::memory_order_relaxed))
       log("SSAA backbuffer redirect DECLINED: view format ", std::dec,
           desc->Format, " differs from backbuffer format ", g_format);
     return nullptr;

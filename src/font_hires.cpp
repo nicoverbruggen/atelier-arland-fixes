@@ -534,7 +534,9 @@ bool renderReplaced(BYTE* output, const char* utf8, uintptr_t pixels,
       // The bundled font has no glyph for this codepoint (e.g. the game's custom
       // button-prompt icons). Bail so the caller upscales the baked bitmap of the
       // whole string instead — the icon stays intact, the rest still smooths.
-      if (verboseLogging())
+      static std::atomic<uint32_t> missingGlyphLogs{0};
+      if (verboseLogging() &&
+          missingGlyphLogs.fetch_add(1, std::memory_order_relaxed) < 32)
         log("HiResText: font lacks U+", std::hex, cp, std::dec,
           " -> upscale \"", utf8, "\"");
       return false;
