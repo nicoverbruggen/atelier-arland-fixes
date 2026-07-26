@@ -247,6 +247,7 @@ HRESULT STDMETHODCALLTYPE tracedPresent(
   }
 
   atfix::maintainBorderlessWindow();   // re-applies only if the game restyled
+  atfix::noteSceneAnchor(swapChain);         // re-anchor: survives ResizeBuffers
   atfix::notePresentBackbuffer(swapChain);   // ARLAND_PRESENT_TRACE diagnostic
   atfix::smaaApply(swapChain);        // Present-time path (only if pre-UI off)
   atfix::ssaaDownscale(swapChain);    // supersampling: render res -> backbuffer
@@ -328,6 +329,7 @@ HRESULT STDMETHODCALLTYPE tracedCreateSwapChain(
     factory, device, desc, swapChain);
   if (SUCCEEDED(result) && swapChain && *swapChain) {
     atfix::ssaaNoteSwapChain(*swapChain);
+    atfix::noteSceneAnchor(*swapChain);
     atfix::applyBorderlessWindow(*swapChain);
     hookSwapChain(*swapChain);
   }
@@ -490,6 +492,7 @@ DLLEXPORT HRESULT __stdcall D3D11CreateDeviceAndSwapChain(
       // Before the game can create a view over the backbuffer, so supersampling
       // owns every one of them but the downscale's own.
       atfix::ssaaNoteSwapChain(*ppSwapChain);
+      atfix::noteSceneAnchor(*ppSwapChain);
       atfix::applyBorderlessWindow(*ppSwapChain);
       atfix::hookSwapChain(*ppSwapChain);
     }

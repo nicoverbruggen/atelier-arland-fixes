@@ -77,7 +77,7 @@ Use it with `DisplayWidth`/`DisplayHeight` set to your monitor's resolution. The
 
 ## SMAA anti-aliasing
 
-SMAA (a post-process anti-aliasing pass) is **on by default**. It smooths edges across the whole scene, including visible edges inside textures that geometry-only MSAA cannot touch, at a low, constant cost. It is applied before the UI is drawn so the HUD and text stay crisp in all three games. When optional MSAA is enabled in Atelier Totori DX, SMAA instead runs as a full-frame pass at present time and therefore lightly affects that game's UI, because Totori keeps its multisample target bound across the scene/UI transition. Turn it off with:
+SMAA (a post-process anti-aliasing pass) is **on by default**. It smooths edges across the whole scene, including visible edges inside textures that geometry-only MSAA cannot touch, at a low, constant cost. It is applied before the UI is drawn so the HUD and text stay crisp in all three games, whether or not optional MSAA and supersampling are enabled. SMAA and MSAA complement each other rather than replacing each other — MSAA only smooths the outlines of 3D shapes, while SMAA also catches edges inside textures, on cut-out foliage and hair, and in specular highlights — so turning one on never turns the other off. Turn it off with:
 
 ```ini
 [Rendering]

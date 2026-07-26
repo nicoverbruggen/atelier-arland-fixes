@@ -2,6 +2,7 @@
 // work by TellowKrinkle; substantially altered for Arland. See LICENSE.
 #include <array>
 #include <atomic>
+#include <deque>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -887,18 +888,110 @@ void resolveBoundMSAA(ID3D11DeviceContext* context) {
   host->Release();
 }
 
-// ---- pre-UI SMAA injection -------------------------------------------------
-// Run SMAA on the finished 3D scene, before the UI composites on top of it —
-// matching AGT's injection point, so the HUD/menus stay crisp. The boundary is
-// the frame's first bind of the main-size colour target WITHOUT depth (the UI
-// draws to the main render target with depth testing off; the scene rendered
-// to it with depth). Under MSAA the scene lives in the twin and is resolved to
-// this host by resolveBoundMSAA just before we get here, so either way the
-// host holds the finished single-sample scene. Once per frame; the latch is
-// reset at Present.
-std::atomic<bool> g_smaaDoneThisFrame{false};
-std::atomic<bool> g_smaaSceneSeen{false};
+// ---- scene-target identity -------------------------------------------------
+// The one surface the games composite the finished frame into. supersample.h
+// states the architectural fact this rests on: these games bind the swap-chain
+// backbuffer itself as their colour render target. Under supersampling or
+// borderless, every RTV over that backbuffer is redirected to the mod's
+// render-resolution texture, so that texture is the composite target instead.
+//
+// SMAA has to identify this surface to find the scene/UI boundary, and it used
+// to do so by dimensions. That cannot work in this mod: CreateTexture2D
+// deliberately promotes the engine's hard-coded 1920x1080 auxiliary targets to
+// the main render size, so blur and snapshot targets become byte-identical to
+// the scene target under any size-based test. Anchoring on identity removes the
+// ambiguity entirely rather than trying to score it.
+std::atomic<void*> g_sceneAnchor{nullptr};
+// An AddRef'd handle to the same texture. The command-list injection point runs
+// outside any bind, so it needs the resource itself rather than a bare identity.
+std::atomic<ID3D11Texture2D*> g_sceneAnchorTex{nullptr};
+// Rorona records its whole frame on the deferred context, in more than one
+// command list, and the immediate context executes them in the order they were
+// finished. Passes recorded onto the deferred context never reach the presented
+// frame, so they are issued on the immediate context instead -- immediately
+// after the list that drew the scene, which is exactly the pre-UI point.
+//
+// Pairing matters: the scene/UI boundary is observed at the very end of
+// recording, so keying off it lands after the UI list. What identifies the
+// right list is whether the scene itself was drawn in it.
 
+// The scene target identified by what is drawn into it, not by its size or by
+// assuming it is the backbuffer. Rorona renders the 3D scene into an offscreen
+// target, post-processes it, draws the UI into separate targets, and composites
+// everything into the backbuffer at the end -- so the backbuffer only ever
+// holds the finished, UI-included frame.
+//
+// Dimensions cannot pick the scene target out: the mod promotes the engine's
+// hard-coded 1920x1080 auxiliary targets to the main render size, so several
+// textures match it exactly. Depth-tested draw count can: only the 3D pass
+// accumulates hundreds of them. SMAA runs when the game binds away from that
+// target, which is the end of the 3D pass and before any UI exists.
+std::atomic<void*> g_sceneRt{nullptr};
+std::atomic<ID3D11Texture2D*> g_sceneRtTex{nullptr};
+std::atomic<uint32_t> g_sceneRtDraws{0};
+
+// Enough draws to be the 3D pass rather than a stray depth-tested blit.
+constexpr uint32_t kSceneDrawThreshold = 24;
+
+// The SMAA passes bind render targets themselves, re-entering the very hook
+// that triggers them. Without this the injector recurses until the stack is
+// gone -- the counter it self-limits on is only cleared once the passes return.
+// Thread-local because the recursion is always on the recording thread, and a
+// global flag would let one thread suppress another's legitimate injection.
+thread_local bool t_inSmaaPasses = false;
+
+struct SmaaReentryGuard {
+  bool entered;
+  SmaaReentryGuard() : entered(!t_inSmaaPasses) { t_inSmaaPasses = true; }
+  ~SmaaReentryGuard() { if (entered) t_inSmaaPasses = false; }
+};
+// Per-list composition, to establish whether the scene and the UI are recorded
+// into the same command list. If they are, there is no boundary between lists
+// and the injection point has to be inside the recorded stream instead.
+
+// Re-evaluated every frame rather than latched once. The game changes display
+// mode after creating the swap chain, and ResizeBuffers destroys and recreates
+// the backbuffer textures -- a pointer captured at creation would silently
+// refer to freed memory and never match again. Refreshing costs one GetBuffer
+// per present and is immune to resizes, mode changes and buffer rotation.
+void noteSceneAnchor(IDXGISwapChain* swapChain) {
+  if (!swapChain)
+    return;
+  void* found = nullptr;
+  const char* which = nullptr;
+  // Supersampling/borderless: the render-resolution stand-in is what the game
+  // actually renders into. Ask first, because in that case the backbuffer is
+  // touched only by the downscale.
+  if (ID3D11Texture2D* ssaa = atfix::ssaaAcquireColor()) {
+    found = ssaa;
+    which = "render-resolution texture";
+    ssaa->Release();   // identity only; the module owns the reference
+  } else {
+    ID3D11Texture2D* back = nullptr;
+    if (SUCCEEDED(swapChain->GetBuffer(0, IID_PPV_ARGS(&back))) && back) {
+      found = back;
+      which = "swap-chain backbuffer";
+      back->Release();   // identity only; the swap chain owns the reference
+    }
+  }
+  if (!found)
+    return;
+  if (g_sceneAnchor.exchange(found, std::memory_order_relaxed) != found) {
+    ID3D11Texture2D* tex = static_cast<ID3D11Texture2D*>(found);
+    tex->AddRef();
+    if (ID3D11Texture2D* prev =
+          g_sceneAnchorTex.exchange(tex, std::memory_order_relaxed))
+      prev->Release();
+    if (verboseLogging())
+      log("SMAA scene target anchored to the ", which, " ", found);
+  }
+}
+
+// Totori's scene target test, unchanged from the implementation validated for
+// it: a main-size single-sample colour view. Rorona and Meruru cannot use this
+// -- the mod promotes their hard-coded auxiliary targets to the same size, so
+// several textures match -- but Totori draws its UI onto the target this finds,
+// which is what makes its depth-state boundary genuinely pre-UI.
 bool smaaMainSizeColor(ID3D11RenderTargetView* rtv, ID3D11Texture2D** outTex) {
   if (outTex) *outTex = nullptr;
   if (!rtv)
@@ -922,64 +1015,257 @@ bool smaaMainSizeColor(ID3D11RenderTargetView* rtv, ID3D11Texture2D** outTex) {
   return match;
 }
 
-struct TotoriSmaaTrackedState {
+// Is this view's resource the composite target? Used by the Arland pair only.
+bool smaaIsSceneTarget(ID3D11RenderTargetView* rtv, ID3D11Texture2D** outTex) {
+  if (outTex) *outTex = nullptr;
+  void* anchor = g_sceneAnchor.load(std::memory_order_relaxed);
+  if (!rtv || !anchor)
+    return false;
+  ID3D11Resource* res = nullptr;
+  rtv->GetResource(&res);
+  bool match = false;
+  if (res) {
+    ID3D11Texture2D* tex = nullptr;
+    if (SUCCEEDED(res->QueryInterface(IID_PPV_ARGS(&tex)))) {
+      match = static_cast<void*>(tex) == anchor;
+      if (match && outTex) { *outTex = tex; tex = nullptr; }
+      if (tex) tex->Release();
+    }
+    res->Release();
+  }
+  return match;
+}
+
+// Main-size single-sample test for a resource rather than a view: under MSAA
+// the bound view is the twin, and the context records which host it stands in.
+bool smaaMainSizeHostResource(ID3D11Resource* res) {
+  ID3D11Texture2D* tex = nullptr;
+  if (!res || FAILED(res->QueryInterface(IID_PPV_ARGS(&tex))) || !tex)
+    return false;
+  D3D11_TEXTURE2D_DESC d = {};
+  tex->GetDesc(&d);
+  const UINT w = g_mainRtWidth.load(std::memory_order_relaxed);
+  const UINT h = g_mainRtHeight.load(std::memory_order_relaxed);
+  const bool match =
+    w && d.Width == w && d.Height == h && d.SampleDesc.Count == 1;
+  tex->Release();
+  return match;
+}
+
+bool smaaIsSceneTargetResource(ID3D11Resource* res) {
+  void* anchor = g_sceneAnchor.load(std::memory_order_relaxed);
+  if (!res || !anchor)
+    return false;
+  ID3D11Texture2D* tex = nullptr;
+  if (FAILED(res->QueryInterface(IID_PPV_ARGS(&tex))) || !tex)
+    return false;
+  const bool match = static_cast<void*>(tex) == anchor;
+  tex->Release();
+  return match;
+}
+
+// ---- pre-UI SMAA injection -------------------------------------------------
+// Run SMAA on the finished 3D scene, before the UI composites on top of it —
+// matching AGT's injection point, so the HUD/menus stay crisp. The boundary is
+// the frame's first bind of the main-size colour target WITHOUT depth (the UI
+// draws to the main render target with depth testing off; the scene rendered
+// to it with depth). Under MSAA the scene lives in the twin and is resolved to
+// this host by resolveBoundMSAA just before we get here, so either way the
+// host holds the finished single-sample scene. Once per frame; the latch is
+// reset at Present.
+std::atomic<bool> g_smaaDoneThisFrame{false};
+std::atomic<bool> g_smaaSceneSeen{false};
+
+struct SmaaTrackedState {
   std::atomic<bool> mainDepthBound{false};
   std::atomic<bool> depthDisabled{false};
 };
 
-TotoriSmaaTrackedState g_totoriSmaaImmediate;
-TotoriSmaaTrackedState g_totoriSmaaDeferred;
+SmaaTrackedState g_smaaImmediate;
+SmaaTrackedState g_smaaDeferred;
 
-TotoriSmaaTrackedState* totoriSmaaTrackedState(
+SmaaTrackedState* smaaTrackedState(
     ID3D11DeviceContext* context) {
   return context == g_immCtx.load(std::memory_order_relaxed)
-    ? &g_totoriSmaaImmediate : &g_totoriSmaaDeferred;
+    ? &g_smaaImmediate : &g_smaaDeferred;
 }
 
-// Setter hooks maintain the two facts that identify Totori's scene/UI
-// transition. Keeping them here makes the hot draw hook an atomic-flag check
-// rather than a pair of D3D11 state queries on every scene draw.
-void trackTotoriSmaaRenderTargets(
+// Which scene/UI boundary to use. Rorona and Meruru shipped on the render-
+// target-bind boundary and it was visually confirmed working there, so that
+// stays their default; Totori has no such bind and uses the depth-state one.
+// The two share the once-per-frame latch, so running both lets whichever fires
+// first suppress the other -- which is why this is a choice and not a union.
+// ARLAND_SMAA_BOUNDARY=target|depth|both overrides.
+enum class SmaaBoundary { TargetBind, DepthState, Both, SceneRt };
+
+SmaaBoundary smaaBoundaryMode() {
+  static const SmaaBoundary mode = [] {
+    if (const char* v = std::getenv("ARLAND_SMAA_BOUNDARY")) {
+      if (v[0] == 'd') return SmaaBoundary::DepthState;
+      if (v[0] == 'b') return SmaaBoundary::Both;
+      if (v[0] == 't') return SmaaBoundary::TargetBind;
+      if (v[0] == 's') return SmaaBoundary::SceneRt;
+    }
+    // Rorona and Meruru composite scene and UI into the backbuffer only at the
+    // very end of the frame, so every render-target or depth-state boundary
+    // reachable there is already post-UI. Their pre-UI point is the moment the
+    // 3D pass stops being the bound target, which is what SceneRt keys off.
+    // Totori draws its UI onto the scene target itself, so its depth-state
+    // boundary is genuinely pre-UI and stays.
+    return currentTitle() == Title::Totori ? SmaaBoundary::DepthState
+                                           : SmaaBoundary::SceneRt;
+  }();
+  return mode;
+}
+
+bool smaaTargetBindBoundaryEnabled() {
+  const SmaaBoundary mode = smaaBoundaryMode();
+  return mode == SmaaBoundary::TargetBind || mode == SmaaBoundary::Both;
+}
+
+bool smaaDepthStateBoundaryEnabled() {
+  const SmaaBoundary mode = smaaBoundaryMode();
+  return mode == SmaaBoundary::DepthState || mode == SmaaBoundary::Both;
+}
+
+bool smaaSceneRtBoundaryEnabled() {
+  return smaaBoundaryMode() == SmaaBoundary::SceneRt;
+}
+
+// Temporary boundary-sequence trace; defined below, used by the setter hooks.
+void fireSceneRtSmaa(ID3D11DeviceContext* context, const char* reason);
+
+// Setter hooks maintain the two facts the depth-state boundary needs, so the
+// hot draw path is an atomic-flag read rather than a pair of D3D11 state
+// queries. depthDisabled also drives the scene-target injector below.
+void trackSmaaRenderTargets(
     ID3D11DeviceContext* context, UINT rtvCount,
     ID3D11RenderTargetView* const* rtvs, ID3D11DepthStencilView* dsv) {
-  static const bool enabled = currentTitle() == Title::Totori &&
-    atfix::smaaEnabled() && atfix::smaaPreUI();
+  static const bool enabled = atfix::smaaEnabled() && atfix::smaaPreUI();
   if (!enabled)
     return;
   const bool mainWithDepth = rtvCount >= 1 && rtvs && rtvs[0] && dsv &&
     smaaMainSizeColor(rtvs[0], nullptr);
-  totoriSmaaTrackedState(context)->mainDepthBound.store(
+  smaaTrackedState(context)->mainDepthBound.store(
     mainWithDepth, std::memory_order_relaxed);
 }
 
-void trackTotoriSmaaDepthState(
+void trackSmaaDepthState(
     ID3D11DeviceContext* context, ID3D11DepthStencilState* state) {
   D3D11_DEPTH_STENCIL_DESC desc = {};
-  desc.DepthEnable = TRUE; // null means D3D11's depth-enabled default
+  desc.DepthEnable = TRUE;   // null means D3D11's depth-enabled default
   if (state)
     state->GetDesc(&desc);
-  totoriSmaaTrackedState(context)->depthDisabled.store(
+  smaaTrackedState(context)->depthDisabled.store(
     !desc.DepthEnable, std::memory_order_relaxed);
 }
 
-// Totori never rebinds its main colour target when the UI starts. Runtime
-// tracing shows a different, equally stable boundary: after the depth-tested
-// scene, it keeps the DSV attached but disables depth testing for the final UI
-// draw group. Run SMAA immediately before that first depth-disabled draw.
+void smaaFireOnSceneRtRelease(ID3D11DeviceContext* context,
+                              ID3D11RenderTargetView* const* rtvs,
+                              UINT rtvCount) {
+  if (!smaaSceneRtBoundaryEnabled() || t_inSmaaPasses)
+    return;
+  void* scene = g_sceneRt.load(std::memory_order_relaxed);
+  if (!scene)
+    return;
+  // Still bound? The 3D pass is not finished.
+  if (rtvCount >= 1 && rtvs && rtvs[0]) {
+    ID3D11Resource* res = nullptr;
+    rtvs[0]->GetResource(&res);
+    const bool same = static_cast<void*>(res) == scene;
+    if (res) res->Release();
+    if (same)
+      return;
+  }
+  // Backstop: only reached when the UI never drew onto the scene target, so
+  // the depth-off trigger above never fired.
+  fireSceneRtSmaa(context, "bind_away");
+}
+
+// Issue the passes over the tracked scene target. The callers decide *when*;
+// this decides whether there is anything to do, and does it once.
+void fireSceneRtSmaa(ID3D11DeviceContext* context, const char* reason) {
+  const uint32_t draws = g_sceneRtDraws.load(std::memory_order_relaxed);
+  if (draws < kSceneDrawThreshold)
+    return;
+  ID3D11Texture2D* tex = g_sceneRtTex.load(std::memory_order_relaxed);
+  if (!tex)
+    return;
+  // Cleared before running, not after: the passes re-enter the hooks below.
+  g_sceneRtDraws.store(0, std::memory_order_relaxed);
+  SmaaReentryGuard guard;
+  tex->AddRef();
+  const bool ran = atfix::smaaApplySceneColor(context, tex, nullptr, false);
+  static std::atomic<bool> logged{false};
+  if (verboseLogging() && !logged.exchange(true, std::memory_order_relaxed))
+    log("SMAA: pre-UI injection on the scene target, reason=", reason,
+        " depth_draws=", std::dec, draws, " passes_ran=", ran ? 1 : 0);
+  tex->Release();
+}
+
+// Every draw. Depth-tested draws into a main-size single-sample colour target
+// identify the 3D pass -- dimensions alone cannot, because the mod promotes the
+// engine's hard-coded 1920x1080 auxiliary targets to the main render size, but
+// only the 3D pass accumulates hundreds of depth-tested draws.
 //
-// Totori's MSAA twin remains bound across this boundary, so its single-sample
-// host cannot be processed without the later resolve overwriting the result.
-// smaaPreUI() therefore keeps the old Present path when MSAA is active.
-void smaaTotoriDrawBoundary(ID3D11DeviceContext* context) {
-  static const bool enabled = currentTitle() == Title::Totori &&
-    atfix::smaaEnabled() && atfix::smaaPreUI();
+// The first draw into that same target with depth testing OFF is the first UI
+// draw: these games composite the HUD straight onto the finished scene. That is
+// the pre-UI moment, and it has to be taken before the draw rather than after.
+void noteSceneRtDraw(ID3D11DeviceContext* context) {
+  if (!smaaSceneRtBoundaryEnabled() || t_inSmaaPasses)
+    return;
+  SmaaTrackedState* tracked = smaaTrackedState(context);
+  const bool depthOff = tracked->depthDisabled.load(std::memory_order_relaxed);
+
+  ID3D11RenderTargetView* rtv = nullptr;
+  ID3D11DepthStencilView* dsv = nullptr;
+  context->OMGetRenderTargets(1, &rtv, &dsv);
+  ID3D11Resource* res = nullptr;
+  if (rtv) rtv->GetResource(&res);
+  ID3D11Texture2D* tex = nullptr;
+  if (res) res->QueryInterface(IID_PPV_ARGS(&tex));
+
+  if (tex) {
+    if (depthOff) {
+      if (static_cast<void*>(tex) == g_sceneRt.load(std::memory_order_relaxed))
+        fireSceneRtSmaa(context, "first_ui_draw");
+    } else if (dsv) {
+      D3D11_TEXTURE2D_DESC d = {};
+      tex->GetDesc(&d);
+      const UINT w = g_mainRtWidth.load(std::memory_order_relaxed);
+      const UINT h = g_mainRtHeight.load(std::memory_order_relaxed);
+      if (w && d.Width == w && d.Height == h && d.SampleDesc.Count == 1) {
+        if (g_sceneRt.exchange(tex, std::memory_order_relaxed) != tex) {
+          g_sceneRtDraws.store(0, std::memory_order_relaxed);
+          tex->AddRef();
+          if (ID3D11Texture2D* prev =
+                g_sceneRtTex.exchange(tex, std::memory_order_relaxed))
+            prev->Release();
+        }
+        g_sceneRtDraws.fetch_add(1, std::memory_order_relaxed);
+      }
+    }
+    tex->Release();
+  }
+  if (res) res->Release();
+  if (rtv) rtv->Release();
+  if (dsv) dsv->Release();
+}
+
+void smaaDrawBoundary(ID3D11DeviceContext* context) {
+  noteSceneRtDraw(context);
+  static const bool enabled = atfix::smaaEnabled() && atfix::smaaPreUI() &&
+    smaaDepthStateBoundaryEnabled();
   if (!enabled ||
       g_smaaDoneThisFrame.load(std::memory_order_relaxed))
     return;
-  TotoriSmaaTrackedState* tracked = totoriSmaaTrackedState(context);
-  if (!tracked->mainDepthBound.load(std::memory_order_relaxed) ||
-      !tracked->depthDisabled.load(std::memory_order_relaxed) ||
-      !g_smaaSceneSeen.load(std::memory_order_relaxed))
+  SmaaTrackedState* tracked = smaaTrackedState(context);
+  const bool depthBound = tracked->mainDepthBound.load(std::memory_order_relaxed);
+  const bool depthOff = tracked->depthDisabled.load(std::memory_order_relaxed);
+  const bool sceneSeen = g_smaaSceneSeen.load(std::memory_order_relaxed);
+  // Which of the three conditions is missing is the whole diagnosis when the
+  // boundary never fires, so report each distinct combination once.
+  if (!depthBound || !depthOff || !sceneSeen)
     return;
 
   ID3D11RenderTargetView* rtv = nullptr;
@@ -987,16 +1273,48 @@ void smaaTotoriDrawBoundary(ID3D11DeviceContext* context) {
   if (!rtv)
     return;
 
+  // Under MSAA the bound RTV is the twin, not the composite target, so it will
+  // never match the anchor. The context records which host it stands in for.
+  ID3D11Resource* host = nullptr;
+  UINT hostSize = sizeof(host);
+  if (FAILED(context->GetPrivateData(IID_MSAABoundHost, &hostSize, &host)))
+    host = nullptr;
+
   ID3D11Texture2D* scene = nullptr;
-  if (smaaMainSizeColor(rtv, &scene) && scene) {
+  ID3D11RenderTargetView* twinRtv = nullptr;
+  if (host && smaaMainSizeHostResource(host)) {
+    ID3D11Texture2D* hostTex = nullptr;
+    if (SUCCEEDED(host->QueryInterface(IID_PPV_ARGS(&hostTex)))) {
+      resolveIfMSAA(context, host);        // twin -> host, marks Clean
+      scene = hostTex;                     // ownership moves to `scene`
+      twinRtv = rtv;                       // still bound; feed the result back
+    }
+  } else if (!host) {
+    smaaMainSizeColor(rtv, &scene);
+  }
+
+  if (scene) {
     g_smaaDoneThisFrame.store(true, std::memory_order_relaxed);
-    atfix::smaaApplySceneColor(context, scene);
+    const bool ran = atfix::smaaApplySceneColor(context, scene, twinRtv, true);
+    static std::atomic<bool> depthBoundaryLogged{false};
+    if (verboseLogging() &&
+        !depthBoundaryLogged.exchange(true, std::memory_order_relaxed))
+      log("SMAA: pre-UI depth-state boundary active msaa_twin=",
+          host ? "yes" : "no", " passes_ran=", ran ? 1 : 0);
+    if (host) {
+      // The write-back and the UI draws that follow both land in the twin, so
+      // the host must resolve again before it is read.
+      const MSAAState state = MSAAState::Dirty;
+      host->SetPrivateData(IID_MSAAState, sizeof(state), &state);
+    }
     static std::atomic<bool> logged{false};
     if (verboseLogging() &&
         !logged.exchange(true, std::memory_order_relaxed))
-      log("SMAA: Totori pre-UI depth-state boundary active");
+      log("SMAA: pre-UI depth-state boundary active msaa_twin=",
+        host ? "yes" : "no");
     scene->Release();
   }
+  if (host) host->Release();
   rtv->Release();
 }
 
@@ -1117,19 +1435,30 @@ void smaaSceneBoundary(ID3D11DeviceContext* context, UINT rtvCount,
       rtvCount != 1 || !rtvs || !rtvs[0])
     return;
   if (dsv) {
-    // Main colour + depth = the scene pass. Remember we saw it this frame.
+    // Main colour + depth = the scene pass. Feeds Totori's depth-state
+    // boundary; the Arland pair's injector uses its own draw counting.
     if (smaaMainSizeColor(rtvs[0], nullptr))
       g_smaaSceneSeen.store(true, std::memory_order_relaxed);
     return;
   }
-  // Main colour without depth = UI start. SMAA the finished scene once.
+  if (!smaaTargetBindBoundaryEnabled())
+    return;
+  // Composite target without depth = UI start. SMAA the finished scene once.
   if (!g_smaaSceneSeen.load(std::memory_order_relaxed) ||
       g_smaaDoneThisFrame.load(std::memory_order_relaxed))
     return;
   ID3D11Texture2D* scene = nullptr;
-  if (smaaMainSizeColor(rtvs[0], &scene) && scene) {
+  if (smaaIsSceneTarget(rtvs[0], &scene) && scene) {
+    static std::atomic<bool> logged{false};
+    if (verboseLogging() && !logged.exchange(true, std::memory_order_relaxed))
+      log("SMAA: pre-UI target-bind boundary active");
     g_smaaDoneThisFrame.store(true, std::memory_order_relaxed);
-    atfix::smaaApplySceneColor(context, scene);
+    // No twin to feed: the substitution only happens on depth-bound binds, and
+    // resolveBoundMSAA already landed the scene in this host on the way in.
+    // No state preservation: this is the original Rorona/Meruru path, and the
+    // game's own setup follows this bind.
+    g_smaaSceneSeen.store(false, std::memory_order_relaxed);
+    atfix::smaaApplySceneColor(context, scene, nullptr, false);
     scene->Release();
   }
 }
@@ -1137,6 +1466,8 @@ void smaaSceneBoundary(ID3D11DeviceContext* context, UINT rtvCount,
 void smaaResetFrame() {
   g_smaaDoneThisFrame.store(false, std::memory_order_relaxed);
   g_smaaSceneSeen.store(false, std::memory_order_relaxed);
+  g_sceneRt.store(nullptr, std::memory_order_relaxed);
+  g_sceneRtDraws.store(0, std::memory_order_relaxed);
 }
 
 bool getOrCreateMSAAViews(ID3D11DeviceContext* context,
@@ -1953,8 +2284,16 @@ HRESULT STDMETHODCALLTYPE ID3D11Device_CreateDeferredContext(
   auto procs = getDeviceProcs(pDevice);
   HRESULT hr = procs->CreateDeferredContext(pDevice, Flags, ppDeferredContext);
 
-  if (SUCCEEDED(hr) && ppDeferredContext)
+  if (SUCCEEDED(hr) && ppDeferredContext) {
+    // The mod is bimodal -- one immediate context, one deferred -- in
+    // smaaTrackedState, getRasterState and getContextProcs. If the game makes
+    // several, per-context state is being shared between unrelated recorders.
+    static std::atomic<uint32_t> deferredCount{0};
+    const uint32_t n = deferredCount.fetch_add(1, std::memory_order_relaxed) + 1;
+    log("D3D11 deferred context #", std::dec, n, " created ",
+        static_cast<void*>(*ppDeferredContext));
     hookContext(*ppDeferredContext);
+  }
 
   return hr;
 }
@@ -2953,8 +3292,9 @@ void STDMETHODCALLTYPE ID3D11DeviceContext_OMSetRenderTargets(
   auto procs = getContextProcs(pContext);
   updateRtvShadowResources(pContext);
   resolveBoundMSAA(pContext);
+  smaaFireOnSceneRtRelease(pContext, ppRTVs, RTVCount);
   smaaSceneBoundary(pContext, RTVCount, ppRTVs, pDSV);
-  trackTotoriSmaaRenderTargets(pContext, RTVCount, ppRTVs, pDSV);
+  trackSmaaRenderTargets(pContext, RTVCount, ppRTVs, pDSV);
   presentTraceRenderTargets(RTVCount, ppRTVs, pDSV);
   getRasterState(pContext)->dirty.store(true, std::memory_order_release);
 
@@ -3015,7 +3355,7 @@ void STDMETHODCALLTYPE ID3D11DeviceContext_OMSetRenderTargetsAndUnorderedAccessV
   auto procs = getContextProcs(pContext);
   updateRtvShadowResources(pContext);
   resolveBoundMSAA(pContext);
-  trackTotoriSmaaRenderTargets(pContext, RTVCount, ppRTVs, pDSV);
+  trackSmaaRenderTargets(pContext, RTVCount, ppRTVs, pDSV);
   getRasterState(pContext)->dirty.store(true, std::memory_order_release);
 
   ID3D11RenderTargetView* msaaRtv = nullptr;
@@ -3044,7 +3384,7 @@ void STDMETHODCALLTYPE ID3D11DeviceContext_OMSetDepthStencilState(
         ID3D11DepthStencilState*  pDepthStencilState,
         UINT                      StencilRef) {
   auto procs = getContextProcs(pContext);
-  trackTotoriSmaaDepthState(pContext, pDepthStencilState);
+  trackSmaaDepthState(pContext, pDepthStencilState);
   procs->OMSetDepthStencilState(
     pContext, pDepthStencilState, StencilRef);
 }
@@ -3496,7 +3836,7 @@ void STDMETHODCALLTYPE ID3D11DeviceContext_Draw(
   flushDirtyShadows(pContext);
   updateViewportScissor(pContext);
   gateHoldAtDraw(pContext);
-  smaaTotoriDrawBoundary(pContext);
+  smaaDrawBoundary(pContext);
   traceResolutionDraw(pContext, "draw", VertexCount, 1);
 
   // Carry dialogue-snapshot identity through the three-vertex blur passes so
@@ -3540,7 +3880,7 @@ void STDMETHODCALLTYPE ID3D11DeviceContext_DrawIndexed(
   flushDirtyShadows(pContext);
   updateViewportScissor(pContext);
   gateHoldAtDraw(pContext);
-  smaaTotoriDrawBoundary(pContext);
+  smaaDrawBoundary(pContext);
   traceResolutionDraw(pContext, "indexed", IndexCount, 1);
 
   // The 48-byte 1920x1080 quad is shared by other cutscene layers. Keep the
@@ -3603,7 +3943,7 @@ void STDMETHODCALLTYPE ID3D11DeviceContext_DrawInstanced(
   flushDirtyShadows(pContext);
   updateViewportScissor(pContext);
   gateHoldAtDraw(pContext);
-  smaaTotoriDrawBoundary(pContext);
+  smaaDrawBoundary(pContext);
   traceResolutionDraw(
     pContext, "instanced", VertexCountPerInstance, InstanceCount);
   procs->DrawInstanced(pContext, VertexCountPerInstance, InstanceCount,
@@ -3618,7 +3958,7 @@ void STDMETHODCALLTYPE ID3D11DeviceContext_DrawIndexedInstanced(
   flushDirtyShadows(pContext);
   updateViewportScissor(pContext);
   gateHoldAtDraw(pContext);
-  smaaTotoriDrawBoundary(pContext);
+  smaaDrawBoundary(pContext);
   traceResolutionDraw(
     pContext, "indexed-instanced", IndexCountPerInstance, InstanceCount);
   procs->DrawIndexedInstanced(pContext, IndexCountPerInstance, InstanceCount,
@@ -3911,8 +4251,8 @@ void hookContext(ID3D11DeviceContext* pContext) {
   HOOK_PROC(ID3D11DeviceContext, pContext, procs, 45, RSSetScissorRects);
   HOOK_PROC(ID3D11DeviceContext, pContext, procs, 33, OMSetRenderTargets);
   HOOK_PROC(ID3D11DeviceContext, pContext, procs, 34, OMSetRenderTargetsAndUnorderedAccessViews);
-  if (currentTitle() == Title::Totori &&
-      atfix::smaaEnabled() && atfix::smaaPreUI())
+  // Feeds the depth-state scene/UI boundary, which all three games now use.
+  if (atfix::smaaEnabled() && atfix::smaaPreUI())
     HOOK_PROC(ID3D11DeviceContext, pContext, procs, 36, OMSetDepthStencilState);
   HOOK_PROC(ID3D11DeviceContext, pContext, procs, 48, UpdateSubresource);
 

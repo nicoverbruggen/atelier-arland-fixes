@@ -108,6 +108,17 @@ float4 BlendPS(float4 position : SV_POSITION,
   return SMAANeighborhoodBlendingPS(texcoord, offset, colorTex, blendTex);
 }
 
+// Write the antialiased scene back out through the ordinary fullscreen quad.
+// Used to push the finished image into a multisample twin: every sample in a
+// pixel receives the same colour, which is correct because the image has
+// already been resolved and carries no subsample information to preserve.
+// Shares EdgeVS, so it also receives the unused edge offsets.
+float4 CopyPS(float4 position : SV_POSITION,
+              float2 texcoord : TEXCOORD0,
+              float4 offset[3] : TEXCOORD1) : SV_TARGET {
+  return colorTex.Sample(LinearSampler, texcoord);
+}
+
 // Debug: visualize the edge-detection output (red = horizontal edge, green =
 // vertical) over a dimmed scene, so we can see what SMAA is flagging.
 float4 DebugEdgesPS(float4 position : SV_POSITION,
@@ -154,6 +165,7 @@ ID3D11VertexShader* g_blendVS = nullptr;
 ID3D11PixelShader*  g_edgePS = nullptr;
 ID3D11PixelShader*  g_weightPS = nullptr;
 ID3D11PixelShader*  g_blendPS = nullptr;
+ID3D11PixelShader*  g_copyPS = nullptr;       // scene -> MSAA twin write-back
 ID3D11PixelShader*  g_debugPS = nullptr;      // edges
 ID3D11PixelShader*  g_debugWeightPS = nullptr; // weights
 
@@ -219,12 +231,14 @@ bool initShared(ID3D11Device* dev) {
 
   ID3DBlob* evs = nullptr; ID3DBlob* wvs = nullptr; ID3DBlob* bvs = nullptr;
   ID3DBlob* eps = nullptr; ID3DBlob* wps = nullptr; ID3DBlob* bps = nullptr;
+  ID3DBlob* cps = nullptr;
   bool ok = compile(D3DCompile, "EdgeVS", "vs_4_1", &evs) &&
     compile(D3DCompile, "WeightVS", "vs_4_1", &wvs) &&
     compile(D3DCompile, "BlendVS", "vs_4_1", &bvs) &&
     compile(D3DCompile, "EdgePS", "ps_4_1", &eps) &&
     compile(D3DCompile, "WeightPS", "ps_4_1", &wps) &&
-    compile(D3DCompile, "BlendPS", "ps_4_1", &bps);
+    compile(D3DCompile, "BlendPS", "ps_4_1", &bps) &&
+    compile(D3DCompile, "CopyPS", "ps_4_1", &cps);
   if (ok && smaaDebugLevel() > 0) {
     ID3DBlob* dps = nullptr;
     if (compile(D3DCompile, "DebugEdgesPS", "ps_4_1", &dps))
@@ -249,7 +263,9 @@ bool initShared(ID3D11Device* dev) {
       SUCCEEDED(dev->CreatePixelShader(wps->GetBufferPointer(),
           wps->GetBufferSize(), nullptr, &g_weightPS)) &&
       SUCCEEDED(dev->CreatePixelShader(bps->GetBufferPointer(),
-          bps->GetBufferSize(), nullptr, &g_blendPS));
+          bps->GetBufferSize(), nullptr, &g_blendPS)) &&
+      SUCCEEDED(dev->CreatePixelShader(cps->GetBufferPointer(),
+          cps->GetBufferSize(), nullptr, &g_copyPS));
 
   // Fullscreen quad (clip xy + uv), input layout from the edge VS.
   if (ok) {
@@ -263,7 +279,7 @@ bool initShared(ID3D11Device* dev) {
       evs->GetBufferSize(), &g_layout));
   }
   release(evs); release(wvs); release(bvs);
-  release(eps); release(wps); release(bps);
+  release(eps); release(wps); release(bps); release(cps);
   if (!ok) { log("SMAA: shader/layout init failed"); return false; }
 
   const float quad[] = {
@@ -488,14 +504,25 @@ private:
 
 // Run the three SMAA passes over `color` (a single-sample colour target),
 // writing the antialiased result back into it via `colorRTV`. `allowDebug`
-// enables the edge/weight debug views (backbuffer path only). Does not own or
-// release dev/ctx/color/colorRTV. Returns false on any setup failure.
+// enables the edge/weight debug views (backbuffer path only).
+//
+// `msaaTwinRTV`, when non-null, is the multisample twin that is still bound at
+// the injection point: the caller resolved it into `color` so SMAA could run on
+// a single-sample image, and the game will keep drawing its UI into the twin
+// afterwards. Push the finished image back into it so the game's own final
+// resolve carries the antialiased scene through. Null whenever the twin is not
+// bound across the boundary, which includes every MSAA-off configuration.
+//
+// Does not own or release dev/ctx/color/colorRTV/msaaTwinRTV. Returns false on
+// any setup failure.
 //
 // `ctx` is the hooked context by design; re-entering the proxy is what resolves
 // MSAA twins on bind. Not a getContextProcs path (see AGENTS.md).
-bool smaaRun(ID3D11Device* dev, ID3D11DeviceContext* ctx,
-             ID3D11Texture2D* color, ID3D11RenderTargetView* colorRTV,
-             bool allowDebug) {
+bool smaaRunPasses(ID3D11Device* dev, ID3D11DeviceContext* ctx,
+                   ID3D11Texture2D* color,
+                   ID3D11RenderTargetView* colorRTV,
+                   ID3D11RenderTargetView* msaaTwinRTV,
+                   bool allowDebug) {
   D3D11_TEXTURE2D_DESC cd = {};
   color->GetDesc(&cd);
   if (cd.SampleDesc.Count != 1)
@@ -511,7 +538,6 @@ bool smaaRun(ID3D11Device* dev, ID3D11DeviceContext* ctx,
   if (cd.Width != g_width || cd.Height != g_height)
     if (!initSized(dev, cd.Width, cd.Height, cd.Format)) { g_broken = true; return false; }
 
-  ScopedSmaaState savedState(ctx);
   ctx->CopyResource(g_sceneTex, color);
 
   SmaaConstants cb;
@@ -543,6 +569,27 @@ bool smaaRun(ID3D11Device* dev, ID3D11DeviceContext* ctx,
 
   const int debug = allowDebug ? smaaDebugLevel() : 0;
 
+  // Write-back: re-stage whatever ended up in the colour target and draw it
+  // into the still-bound multisample twin, so the UI composites on top of it
+  // rather than on the copy the twin is still holding. The debug views take it
+  // too, otherwise they would be invisible under MSAA — which is exactly when
+  // one would be reaching for them.
+  auto writeBackToTwin = [&] {
+    if (!msaaTwinRTV || !g_copyPS)
+      return;
+    // Rebind first: `color` is still the bound render target, and it is the
+    // copy source here.
+    ctx->OMSetRenderTargets(1, &msaaTwinRTV, nullptr);
+    ctx->CopyResource(g_sceneTex, color);
+    ID3D11ShaderResourceView* wb[4] = {g_areaSRV, g_searchSRV, g_sceneSRV,
+      g_sceneSRV};
+    ctx->PSSetShaderResources(0, 4, wb);
+    ctx->VSSetShader(g_edgeVS, nullptr, 0);
+    ctx->PSSetShader(g_copyPS, nullptr, 0);
+    ctx->Draw(4, 0);
+    ctx->PSSetShaderResources(0, 10, nullSRV);
+  };
+
   // Pass 1: edge detection (colorGamma at t3) -> edges.
   ctx->PSSetShaderResources(0, 10, nullSRV);
   ctx->ClearRenderTargetView(g_edgesRTV, black);
@@ -563,6 +610,7 @@ bool smaaRun(ID3D11Device* dev, ID3D11DeviceContext* ctx,
     ctx->PSSetShader(g_debugPS, nullptr, 0);
     ctx->Draw(4, 0);
     ctx->PSSetShaderResources(0, 10, nullSRV);
+    writeBackToTwin();
     return true;
   }
 
@@ -587,6 +635,7 @@ bool smaaRun(ID3D11Device* dev, ID3D11DeviceContext* ctx,
     ctx->PSSetShader(g_debugWeightPS, nullptr, 0);
     ctx->Draw(4, 0);
     ctx->PSSetShaderResources(0, 10, nullSRV);
+    writeBackToTwin();
     return true;
   }
 
@@ -600,7 +649,22 @@ bool smaaRun(ID3D11Device* dev, ID3D11DeviceContext* ctx,
   ctx->PSSetShader(g_blendPS, nullptr, 0);
   ctx->Draw(4, 0);
   ctx->PSSetShaderResources(0, 10, nullSRV);
+  writeBackToTwin();
   return true;
+}
+
+// The scene/UI boundary is a depth-state change immediately before a UI draw,
+// so that draw must inherit exactly the state the game prepared for it.
+// Snapshot and restore everything the passes touch.
+bool smaaRunAtDraw(ID3D11Device* dev, ID3D11DeviceContext* ctx,
+                   ID3D11Texture2D* color,
+                   ID3D11RenderTargetView* colorRTV,
+                   ID3D11RenderTargetView* msaaTwinRTV) {
+  ScopedSmaaState savedState(ctx);
+  // Debug views are allowed here too: this is the path that actually runs, so
+  // gating them to the Present-time fallback made ARLAND_SMAA_DEBUG silently
+  // do nothing in the configuration one would be diagnosing.
+  return smaaRunPasses(dev, ctx, color, colorRTV, msaaTwinRTV, true);
 }
 
 }  // namespace
@@ -610,17 +674,21 @@ bool smaaPreUI() {
     const char* v = std::getenv("ARLAND_SMAA_PREUI");
     if (v)
       return v[0] != '0';   // explicit override wins in both directions
-    // Totori keeps its multisample twin bound across the scene/UI boundary.
-    // Resolving and processing its single-sample host here would be overwritten
-    // by the later final resolve, so retain the full-frame fallback in that
-    // one configuration. All three games otherwise expose a usable boundary.
-    return currentTitle() != Title::Totori || msaaSamples() == 1;
+    // Pre-UI injection is independent of MSAA and supersampling: the boundary
+    // is a depth-state change in the game's own draw sequence, and where the
+    // pixels live at that point is handled by the twin resolve/write-back in
+    // smaaRunPasses. SMAA and MSAA are complementary — MSAA only antialiases
+    // polygon silhouettes — so enabling one must never silently drop the other.
+    return true;
   }();
   return on;
 }
 
 void smaaApply(IDXGISwapChain* swapChain) {
-  // Present-time (full-frame) path — used only when pre-UI injection is off.
+  // Present-time (full-frame) path -- used only when pre-UI injection is off
+  // (ARLAND_SMAA_PREUI=0). Deliberately not a fallback: pre-UI injection either
+  // works or is a bug to fix, and a silent Present-time pass on top of it just
+  // softens the UI twice over while hiding that something is wrong.
   if (!smaaEnabled() || smaaPreUI() || !swapChain || g_broken)
     return;
   // Under supersampling the finished frame is in the render-resolution target,
@@ -638,24 +706,30 @@ void smaaApply(IDXGISwapChain* swapChain) {
   if (dev && ctx)
     dev->CreateRenderTargetView(back, nullptr, &backRTV);
   if (dev && ctx && backRTV)
-    smaaRun(dev, ctx, back, backRTV, true);
+    smaaRunPasses(dev, ctx, back, backRTV, nullptr, true);
   release(backRTV); release(back);
   if (ctx) ctx->Release();
   if (dev) dev->Release();
 }
 
-void smaaApplySceneColor(ID3D11DeviceContext* ctx, ID3D11Texture2D* color) {
+bool smaaApplySceneColor(ID3D11DeviceContext* ctx, ID3D11Texture2D* color,
+                         ID3D11RenderTargetView* msaaTwinRTV,
+                         bool preserveState) {
   if (!smaaEnabled() || !smaaPreUI() || !ctx || !color || g_broken)
-    return;
+    return false;
   ID3D11Device* dev = nullptr;
   ctx->GetDevice(&dev);
   ID3D11RenderTargetView* rtv = nullptr;
   if (dev)
     dev->CreateRenderTargetView(color, nullptr, &rtv);
+  bool ran = false;
   if (dev && rtv)
-    smaaRun(dev, ctx, color, rtv, false);
+    ran = preserveState
+      ? smaaRunAtDraw(dev, ctx, color, rtv, msaaTwinRTV)
+      : smaaRunPasses(dev, ctx, color, rtv, msaaTwinRTV, true);
   release(rtv);
   if (dev) dev->Release();
+  return ran;
 }
 
 }  // namespace atfix
