@@ -18,6 +18,8 @@ The current code supports the exact tested Arland DX executables (the English bu
 
 ## D3D11 synchronization stalls
 
+> **TL;DR**: The games often send font textures to the graphics card and then immediately ask for the same data back, forcing the game to stop and wait. The mod keeps a CPU-readable copy synchronized with the real texture, avoiding that round trip while ensuring both the game and graphics card always see the latest text.
+
 The Arland ports frequently copy GPU resources into CPU-readable staging resources and then map them. A normal D3D11 `CopyResource` followed by `Map` forces the CPU to wait for the GPU. Font-atlas activity makes this especially visible while constructing text-heavy menus.
 
 The original algorithm, retained here, first examines both resources involved in `CopyResource` or `CopySubresourceRegion`. When the destination is immediately CPU-writable and the source is not CPU-readable, it creates a staging shadow for the source with both `D3D11_CPU_ACCESS_READ` and `D3D11_CPU_ACCESS_WRITE`, initializes it from the real resource, and stores it as private data on that resource. Compatible later copies map the destination and the source shadow and use row- and depth-pitch-aware CPU memory copies. Unsupported formats, layouts, contexts, or busy destinations fall back to the real D3D11 copy.
@@ -43,6 +45,8 @@ Native Windows exposed one additional ordering hazard. The games can populate a 
 
 ## Repeated PSSG validation
 
+> **TL;DR**: When opening a menu, the games repeatedly ask Windows to verify the same few resource files, sometimes thousands of times. The mod remembers successful checks and reuses the answer, removing much of the menu-opening delay without skipping any actual file loading or hiding missing files.
+
 The English Arland executables repeatedly validate identical immutable `.PSSG` archive paths while recursively building UI records. Rorona and Meruru perform a metadata lookup followed by a filename-case directory enumeration; Totori repeatedly performs its corresponding metadata validation.
 
 During one unmodified Rorona Status-menu build, only `a11r_menu_EN.PSSG` and `a11r_common_EN.PSSG` were validated 1,245 redundant times. The operating-system file cache cannot eliminate the overhead of repeated path conversion, opens, metadata queries, directory enumeration, Wine/NT transitions, and handle teardown.
@@ -59,6 +63,8 @@ These desktop measurements were captured on an AMD Ryzen 7 5800X3D, Radeon RX 79
 | Quest/Container/Basket test | 632–711 ms | 135.6 ms | 78.5–80.9% |
 
 ## Repeated font-atlas reads
+
+> **TL;DR**: While building a menu, the games read the same three font textures over and over even when nothing has changed. The mod takes one temporary copy and reuses it for the rest of that safe menu or frame window, discarding it as soon as the texture may have changed.
 
 After the PSSG fix, the games still read the same three 512×512 font atlases once per text operation. A representative Rorona Status build made about 3,642 candidate reads even though the atlases did not change during that synchronous build. Totori and Meruru use the same middleware behavior.
 
@@ -93,6 +99,8 @@ Retaining those three atlas snapshots across frames could avoid this remaining f
 
 ## Frame-rate independence
 
+> **TL;DR**: Some movement rules were written as fixed amounts per frame, so high refresh rates made characters jitter or eventually stop moving, and made Totori and Meruru's world-map cursor too fast. The mod scales those rules with actual frame time, preserving the original 60 fps feel at higher refresh rates without imposing a frame-rate cap.
+
 The engine is variable-timestep by design: a frame's elapsed time is measured, clamped to a maximum, and threaded through the update tree, which is why the games do not simply run fast at a high refresh rate. What is not frame-rate independent is a set of constants that describe a *distance per frame* rather than a speed, and those are only correct at the 60 fps the games were built around.
 
 The one that matters is in the field-map character's collision resolver. It computes the total distance the character moved this frame and, if that distance is below a fixed threshold, discards the entire frame's movement: the position is reverted to its value on entry, and the ground-snap sweep that would re-seat the character is skipped along with it. At 60 fps this is a reasonable way to ignore numerical noise. As the frame time shrinks, the same fixed distance covers more and more of what the character is actually doing.
@@ -118,6 +126,8 @@ An earlier approach capped the frame rate instead. It was withdrawn: holding a r
 Other frame-rate couplings exist outside the field map, in effect playback and, in Atelier Meruru DX, in secondary motion such as hair and clothing. Those are not yet addressed.
 
 ## High-resolution rendering
+
+> **TL;DR**: The games nominally support 1440p and 4K, but their launcher can hide those modes and parts of the renderer remain fixed at 1080p, producing an enlarged target with only a smaller image inside it. The mod exposes the useful resolutions and scales the affected render targets, screen bounds, and dialogue blur so the games genuinely render at the selected resolution. This rendering layer also provides optional MSAA and sharper texture filtering.
 
 The games accept high render dimensions, but the settings launcher filters its lists through Windows display-mode reporting. DPI virtualization and the current desktop mode can therefore hide a resolution that the game and display can use. The launcher stores independent fullscreen and windowed arrays, so both have to be corrected.
 
@@ -170,6 +180,8 @@ Every patch in the proxy is gated on the verified process image, the launcher's 
 
 ## Battle shadow restoration
 
+> **TL;DR**: Rorona's battle renderer can draw proper ground shadows, but the port never tells it that the characters and enemies should cast them. The mod registers the battlers with the game's existing shadow system and carefully restores the field-map state after combat, producing native shadows rather than drawing replacements of its own.
+
 Atelier Rorona DX renders ordinary battles without any character or enemy ground shadows. The engine's shadow pipeline is present and functional (the field map uses it), but the port's battle scene setup never registers the battle actors as shadow casters. Atelier Meruru DX, by contrast, registers its battle casters natively, which is why its ordinary battle shadows work out of the box.
 
 The restoration hooks the engine's shadow-helper initialization and observes its two static call sites: the battle scene-setup path and the field-map re-entry path. When the battle path runs, the mod records the battle game-mode object and the battle's shadow helper, locates the party's character vector inside the game-mode (verified through the BtlChara-family vtables), and registers each character's render node as a shadow caster through the engine's own `ShadowCharacterBuild` routine, the same call the field map uses. The battle helper is then published to the engine's global active-helper slot so the shadow traversal walks the battle casters; the displaced field helper is remembered. Enemies are registered through the same container discovery. Because the engine performs the actual shadow rendering, the restored shadows use the game's own pipeline end to end; the mod injects bookkeeping, not draw calls.
@@ -181,6 +193,8 @@ The complication is that returning from battle to an already-loaded field map do
 Arming the watchdog only after the game-mode has been seen alive prevents a slow battle intro, where the party is not yet spawned, from tripping it. Without the watchdog, the tracking kept scanning the freed battle objects every frame after combat and degraded field performance.
 
 ## Battle cut-in shadows
+
+> **TL;DR**: During battle close-ups, the games darken the arena and stop the ground from receiving shadows. The mod can keep the scene bright and its real shadows visible, while following the game's hide-and-show choreography so invisible or repositioned characters do not leave stray shadows behind.
 
 Atelier Rorona DX renders attack "cut-ins" (the brief close-up when a character or enemy acts) without ground shadows and with a visibly darker scene. This is original behavior on every platform, not a port regression, and both symptoms trace to a single animated constant.
 
@@ -228,6 +242,8 @@ The dim-hold consults this per-game field table with one value predicate everywh
 
 ## High-resolution shadow maps
 
+> **TL;DR**: The games draw every shadow into a relatively small 1024×1024 texture, which makes shadow edges look blocky. The mod creates larger companion textures and quietly redirects the existing shadow pipeline through them, improving definition without changing the engine-owned textures or replacing its shadow renderer.
+
 The games render all shadows into two 1024×1024 `R24G8_TYPELESS` depth maps, a caster map (A) and a receiver map (B) with a per-frame A→B transfer between them, so shadow edges are visibly blocky, most noticeably in Meruru. The `ShadowMultiplier` option renders shadows at 2048, 4096, or 8192 instead.
 
 The engine's own maps are never resized: the engine sizes viewports, copies, and memory assumptions from its texture metadata, and an in-place resize would invalidate them. Instead, each eligible 1024×1024 shadow-map creation also creates a separate mod-owned enlarged "twin" texture, attached to the engine texture as private data so the two share a lifetime, and when the engine releases its map, the twin is released with it. Anything ambiguous at creation (initial data, staging or CPU access, mips, arrays, MSAA, misc flags) declines the twin and keeps that map on the vanilla path.
@@ -243,6 +259,8 @@ Two size assumptions still need correcting, because the engine sizes everything 
 
 ## Meruru conversation text-render cache
 
+> **TL;DR**: Meruru was rebuilding unchanged conversation text every frame while an animated portrait was on screen, causing a large slowdown for the whole conversation. The mod keeps the finished text bitmap for exactly as long as the conversation balloon exists, turning those repeated renders into inexpensive memory copies.
+
 Atelier Meruru DX's field-map conversations with animated bust-up portraits collapsed the framerate on the English executable for the duration of the conversation. The cost was not the portraits: the conversation balloon's per-frame callback pump re-entered the executable's text-render path (the same CPU-side glyph and atlas work that makes menu construction slow) every frame, for text that had not changed. Menus pay that cost once per rebuild; the balloon paid it continuously.
 
 The mod already contained a text-bitmap replay cache built for menu diagnosis. `cachedRenderText` keys on the renderer, font, atlas, style, and the exact string, and replays the previously rendered output bitmap into the caller's buffer instead of re-rendering. Its lifetime, though, was scoped to a single queue drain.
@@ -252,6 +270,8 @@ The fix gives that cache a cross-frame scope bounded by the conversation. Hooks 
 Two edges are handled. The typewriter reveal inserts one entry per partial string, so the cache is bounded and an overflow clears and rebuilds it. And a replay whose target buffer is too small falls back to a real render rather than reallocating through the game's allocator, a case that cannot occur for unchanged text. The hooks verify the constructor and destructor prologues per build (the destructor check includes the RIP-relative load of the `BalloonBucMode` vtable, pinning it to the right class) and are installed for both the English and multilingual executables.
 
 ## High-resolution UI text
+
+> **TL;DR**: The games use a small pre-rendered bitmap font, so their text looks soft and pixelated at modern resolutions. The mod replaces English text with crisp scalable fonts, or sharpens the original glyphs when needed, while preserving the game's layout, sizing, and controller icons.
 
 All UI text in these games comes from a pre-baked bitmap font. Koei Tecmo's G1N atlases store every glyph as a fixed 32×48 image that the engine blits 1:1, with no scalable rasterizer, so text is soft and pixelated at 1440p or 4K. This feature re-renders that text at full resolution while preserving the engine's exact layout. `[Rendering] Font` chooses the mode: `replaced` (the default), `upscaled`, or `original` (or `off`; the untouched bitmap).
 
@@ -275,6 +295,8 @@ A small related mechanism rides the same render path to correct known English di
 
 ## SMAA anti-aliasing
 
+> **TL;DR**: The games ship without anti-aliasing, leaving visible jagged edges throughout the scene. The mod runs a lightweight smoothing pass after the 3D scene is finished but before the interface is drawn, improving edges while keeping menus and text crisp.
+
 The games' only built-in anti-aliasing is none; the mod adds optional MSAA, but MSAA only multisamples geometry silhouettes and cannot touch aliasing that lives inside a surface, most visibly the thin alpha-tested costume trim (frilled lace on sleeves, collars, skirts). The mod therefore also offers SMAA (Enhanced Subpixel Morphological Anti-Aliasing, Jimenez et al.), a post-process that works on the finished image and smooths any visible edge regardless of how it was produced. It is enabled by default and is a cheaper, broader alternative to MSAA: a single constant-cost pass rather than per-pixel supersampled shading.
 
 SMAA runs the standard three passes (luma/colour edge detection, blending-weight calculation against the precomputed `AreaTex`/`SearchTex` lookup textures, and neighborhood blending) using the reference shader (vendored under `vendor/smaa/`, MIT) compiled at runtime through `d3dcompiler`, at the `SMAA_PRESET_ULTRA` quality level. If the runtime shader compiler is unavailable or any resource fails to create, SMAA disables itself for the session and the rest of the mod is unaffected.
@@ -284,6 +306,8 @@ The pass is injected before the UI is composited, matching the approach the Atel
 The fine costume trim specifically is beyond what SMAA, or any edge-based or coverage-based technique, can resolve on these games: the trim is a hard alpha-test cutout of a DXT1 one-bit-alpha texture, so its edges are sub-pixel and near-binary, and TellowKrinkle's per-sample sample-rate-shading approach is documented as non-functional on the older Arland DX titles. Full supersampling is the only technique that resolves it, and ships as the optional feature described next.
 
 ## Supersampling
+
+> **TL;DR**: Supersampling renders the entire game at a higher resolution and then shrinks it cleanly to the display, recovering very fine detail that ordinary anti-aliasing cannot. The mod redirects the game's rendering into a larger internal image, downscales it once at the end, and adds black bars when necessary rather than stretching the picture.
 
 `[Rendering] RenderWidth`/`RenderHeight` larger than the display resolution renders the whole frame, scene and UI alike, at that larger size and downscales it once into the backbuffer just before Present. Unlike MSAA it resamples shading rather than geometry coverage, which is why it is the one technique that resolves the alpha-tested costume trim described above.
 
@@ -298,6 +322,8 @@ The render resolution is clamped to 7680×4320 with the aspect preserved. These 
 Because the whole mechanism rests on the game binding the backbuffer as a render target, a build that never does so would be silently un-supersampled. That case is detected and reported: if no redirect has happened by the time the downscale would run, the backbuffer is left alone and a log line says so. A second line reports the largest viewport the engine actually drew with, so "supersampling is on but the edges are still jagged" can be answered from the log rather than guessed at.
 
 ## Borderless windowed mode
+
+> **TL;DR**: Exclusive fullscreen makes these games slow to alt-tab and can interact poorly with modern desktops, while ordinary windowed mode leaves a visible frame. The mod creates a true borderless window that fills the current monitor without taking control of the display mode, giving a fullscreen appearance with quick, reliable task switching.
 
 The games offer only windowed, with a title bar and border, or exclusive fullscreen. Exclusive fullscreen takes ownership of the display mode, which makes alt-tabbing slow and, under Wine or Proton, interacts badly with compositors and multi-monitor setups. `[Rendering] Borderless` runs the game as a plain window with its decorations removed, sized to cover the monitor it is on: it looks like fullscreen, alt-tabs instantly, and leaves the display mode alone. Off by default, in which case the game's own fullscreen setting is used as-is.
 
