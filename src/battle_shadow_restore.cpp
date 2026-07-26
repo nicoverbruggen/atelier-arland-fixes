@@ -2134,51 +2134,6 @@ void trackBattleStateTick() {
     name ? name : "<unknown>", " vt_rva=0x", std::hex,
     gameBase ? vt - reinterpret_cast<uintptr_t>(gameBase) : vt, std::dec,
     " obj=", reinterpret_cast<void*>(stateObj));
-
-  // On entering the overview (SelectCommand) or the attack cut-in (WaitAction),
-  // snapshot the first party character's render node so the two can be diffed to
-  // find the flag that gates shadow casting during the cut-in.
-  static int snaps = 0;
-  const bool target = name && (std::strcmp(name, "SelectCommand") == 0 ||
-    std::strcmp(name, "WaitAction") == 0);
-  if (!target || snaps >= 4)
-    return;
-  const uintptr_t gameMode = g_battleGameMode.load(std::memory_order_acquire);
-  if (!gameMode || !g_battleAddrs ||
-      !readableRange(gameMode + g_battleAddrs->partyVectorOffset, 0x10))
-    return;
-  const uintptr_t begin = *reinterpret_cast<const uintptr_t*>(
-    gameMode + g_battleAddrs->partyVectorOffset);
-  const uintptr_t end = *reinterpret_cast<const uintptr_t*>(
-    gameMode + g_battleAddrs->partyVectorOffset + 8);
-  if (!begin || end <= begin || (end - begin) > 0x200 ||
-      !readableRange(begin, end - begin))
-    return;
-  ++snaps;
-  // Dump the shadow caster registry nodes (helper+0x48) — the actual nodes the
-  // shadow traversal walks; their per-node visibility gates the shadow draw.
-  const uintptr_t helper = gameMode + g_battleAddrs->helperEmbedOffset;
-  if (readableRange(helper + 0x48, 0x10)) {
-    const uintptr_t rb = *reinterpret_cast<const uintptr_t*>(helper + 0x48);
-    const uintptr_t re = *reinterpret_cast<const uintptr_t*>(helper + 0x50);
-    if (rb && re > rb && (re - rb) <= 0x200 && readableRange(rb, re - rb)) {
-      int ridx = 0;
-      for (uintptr_t p = rb; p < re; p += sizeof(uintptr_t), ++ridx) {
-        const uintptr_t snode = *reinterpret_cast<const uintptr_t*>(p);
-        if (!snode || !readableRange(snode, 0x120))
-          continue;
-        for (size_t off = 0; off < 0x120; off += 0x20)
-          atfix::log("SNODE_SNAP state=", name, " ridx=", ridx,
-            " snode=", reinterpret_cast<void*>(snode),
-            " off=0x", std::hex, off,
-            " ", *reinterpret_cast<const uintptr_t*>(snode + off),
-            " ", *reinterpret_cast<const uintptr_t*>(snode + off + 8),
-            " ", *reinterpret_cast<const uintptr_t*>(snode + off + 0x10),
-            " ", *reinterpret_cast<const uintptr_t*>(snode + off + 0x18),
-            std::dec);
-      }
-    }
-  }
 }
 
 // The current battle state name, or nullptr outside battle.
@@ -2475,16 +2430,6 @@ void battleShadowFrameTick() {
   // outside the party vector and only exists while its scene is on screen.
   if (battleShadowSweepEnabled() && gameMode && tick % 8 == 0)
     locateBattleCharaContainer(gameMode, scene, "sweep", true);
-
-  if (tick % 120 == 0 && tick <= 120 * 200) {
-    uintptr_t* slot = globalActiveHelperSlot();
-    const uintptr_t global = slot ? *slot : 0;
-    const uintptr_t ours = g_battleHelper.load(std::memory_order_acquire);
-    atfix::log("BATTLE_MONITOR tick=", tick,
-      " global_active_helper=", reinterpret_cast<void*>(global),
-      " battle_helper=", reinterpret_cast<void*>(ours),
-      " matches=", global == ours && ours != 0);
-  }
 }
 
 // Per-frame battle tick, bundled so the Present hook (traceMenuPresent) has a
