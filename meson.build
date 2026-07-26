@@ -1,4 +1,7 @@
-project('atelier-arland-fixes', ['c', 'cpp'], version : '0.5.0',
+project('atelier-arland-fixes', ['c', 'cpp'],
+  version : run_command(
+    'python3', 'scripts/read_version.py', 'VERSION',
+    check : true).stdout().strip(),
   default_options : ['cpp_std=c++17', 'buildtype=release', 'strip=true'])
 
 cpp = meson.get_compiler('cpp')
@@ -6,9 +9,25 @@ windows = import('windows')   # compiles the DLL VERSIONINFO resources (windres 
 common_cpp_args = ['-DNOMINMAX', '-D_WIN32_WINNT=0x0a00']
 common_link_args = cpp.get_id() == 'gcc' ? ['-static', '-static-libgcc', '-static-libstdc++', '-Wl,--strip-all'] : []
 
+version_parts = meson.project_version().split('.')
+if version_parts.length() != 3
+  error('VERSION must contain three numeric components: X.Y.Z')
+endif
+version_data = configuration_data()
+version_data.set('VERSION_COMMA', ','.join(version_parts) + ',0')
+version_data.set_quoted('VERSION_STRING', meson.project_version() + '.0')
+version_rc = configure_file(
+  output : 'version.rc',
+  configuration : version_data)
+resource_includes = include_directories('.')
+
 if host_machine.cpu_family() == 'x86'
   shared_library('msimg32',
-    ['src/launcher_proxy.cpp', windows.compile_resources('src/msimg32.rc')],
+    ['src/launcher_proxy.cpp',
+     windows.compile_resources(
+       'src/msimg32.rc',
+       depend_files : version_rc,
+       include_directories : resource_includes)],
     name_prefix : '',
     vs_module_defs : 'src/msimg32.def',
     cpp_args : common_cpp_args,
@@ -68,7 +87,10 @@ else
 
   shared_library('d3d11',
     [sources, embedded_np, embedded_nunito, embedded_mgopen,
-     windows.compile_resources('src/d3d11.rc')],
+     windows.compile_resources(
+       'src/d3d11.rc',
+       depend_files : version_rc,
+       include_directories : resource_includes)],
     name_prefix : '',
     vs_module_defs : 'src/d3d11.def',
     include_directories : include_directories('src'),  # so generated fonts find embedded_font.h
@@ -87,7 +109,11 @@ else
      # controls rather than the flat 5.82 ones. See the manifest for the rest.
      windows.compile_resources(
        'src/config_gui/arland-fix-launcher.rc',
-       depend_files : files('src/config_gui/arland-fix-launcher.manifest')),
+       depend_files : [
+         version_rc,
+         files('src/config_gui/arland-fix-launcher.manifest'),
+       ],
+       include_directories : resource_includes),
      # Inter, subset to Latin, so the launcher renders identically on Windows
      # and under Wine instead of inheriting whichever UI face each happens to
      # default to. See createUiFont.

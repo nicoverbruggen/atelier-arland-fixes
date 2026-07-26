@@ -2,6 +2,8 @@
 
 The mod builds with Meson and Ninja on Windows (MSVC) or Linux (MinGW cross build). The outputs are `build64/d3d11.dll` (the game DLL), `build64/arland-fix-launcher.exe` (the launcher and settings editor) and `build32/msimg32.dll` (the front-end proxy).
 
+The root `VERSION` file is the single version source for the Meson project and all three Windows version resources. Change it before a release; the build generates the numeric and string resource forms automatically.
+
 Two convenience scripts wrap the steps below. `scripts/build_linux.sh` cross- compiles both DLLs with MinGW inside the build container (the day-to-day Linux flow; set `$ATFIX_CONTAINER` to use a different container name). `scripts/build.sh` builds natively on Windows from a Native Tools prompt. Both take an optional build type (default `release`).
 
 ## Windows

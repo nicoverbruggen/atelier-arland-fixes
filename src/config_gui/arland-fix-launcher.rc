@@ -4,11 +4,13 @@
 // 1 is CREATEPROCESS_MANIFEST_RESOURCE_ID, which is what the loader looks for in
 // an executable; type 24 is RT_MANIFEST. Spelling both as numbers keeps this
 // working under windres and rc alike without pulling in winuser.h.
+#include "version.rc"
+
 1 24 "arland-fix-launcher.manifest"
 
 1 VERSIONINFO
-FILEVERSION     0,5,0,0
-PRODUCTVERSION  0,5,0,0
+FILEVERSION     VERSION_COMMA
+PRODUCTVERSION  VERSION_COMMA
 FILEOS          0x4L
 FILETYPE        0x1L
 {
@@ -18,12 +20,12 @@ FILETYPE        0x1L
     {
       VALUE "CompanyName",      "Nico Verbruggen"
       VALUE "FileDescription",  "Atelier Arland Fixes launcher"
-      VALUE "FileVersion",      "0.5.0.0"
+      VALUE "FileVersion",      VERSION_STRING
       VALUE "InternalName",     "arland-fix-launcher"
       VALUE "LegalCopyright",   "Nico Verbruggen. MIT licensed; see LICENSE."
       VALUE "OriginalFilename", "arland-fix-launcher.exe"
       VALUE "ProductName",      "Atelier Arland Fixes"
-      VALUE "ProductVersion",   "0.5.0.0"
+      VALUE "ProductVersion",   VERSION_STRING
     }
   }
   BLOCK "VarFileInfo"
