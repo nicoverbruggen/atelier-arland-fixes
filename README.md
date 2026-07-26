@@ -56,7 +56,7 @@ These are optional improvements that are off by default and documented in [ADVAN
 | Restored battle cut-in shadows               | ✓      | ✓      | ✓      |
 | Cut-in scene kept at full brightness         | ✓      | ✓      | ✓      |
 
-Rare crashes have been observed during long sessions with the advanced graphics tweaks enabled at their highest settings; no individual feature has been confirmed as the cause. If you hit instability, lower or disable them — crashes append a report to `arland-fix.log` that helps pinpoint the cause.
+If the game crashes, the mod appends a report to `arland-fix.log` that helps pinpoint the cause. Include that file and your settings when reporting the problem.
 
 ## Safety
 
