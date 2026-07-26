@@ -39,8 +39,8 @@ namespace atfix {
 //
 //   1. Shadow-map "twin" plumbing: separate mod-owned high-res shadow maps for
 //      ShadowMultiplier, redirected onto without touching the engine's own maps.
-//   2. Constant-buffer snapshot cache (CbSnap / captureCbMap / captureCbUnmap /
-//      readCb0Snap) feeding the cut-in patches (battle_shadows.cpp) and the
+//   2. Constant-buffer write interception (captureCbMap / captureCbUnmap)
+//      feeding the cut-in patches (battle_shadows.cpp) and the
 //      shadow-map-clear callback.
 //   3. Resolution override + MSAA resolve + viewport/scissor correction.
 //   4. The D3D11 device/context hook implementations that call into 1-3 and the
@@ -252,42 +252,15 @@ ID3D11ShaderResourceView* getShadowResTwinSrv(
 }
 
 
-// The write-path patches and the blob's cb0 reads consume CPU-side captures of
-// constant-buffer writes (a Map payload is only visible between Map and Unmap).
+// The write-path patches consume CPU-side constant-buffer writes (a Map payload
+// is only visible between Map and Unmap).
 bool cbCaptureEnabled() {
-  return cutinShadowsEnabled() || cutinBlobEnabled() ||
-    shadowMapResolution() > 1024;
+  return cutinShadowsEnabled() || shadowMapResolution() > 1024;
 }
 
-
-struct CbSnap {
-  uint32_t size = 0;      // full buffer byte width
-  uint8_t data[kCbSnapBytes] = {}; // first bytes of the latest write
-};
-mutex g_cbSnapMutex;
-std::map<ID3D11Resource*, CbSnap> g_cbSnaps;
+mutex g_cbCaptureMutex;
 std::map<std::pair<ID3D11Resource*, UINT>, std::pair<const void*, uint32_t>>
-    g_cbSnapPending;
-
-void snapCbWrite(ID3D11Resource* resource, const void* data, uint32_t size) {
-  CbSnap snap;
-  snap.size = size;
-  std::memcpy(snap.data, data, std::min<uint32_t>(size, sizeof(snap.data)));
-  std::lock_guard lock(g_cbSnapMutex);
-  // Drop snapshots from previous scenes on each rebuild. g_cbSnaps is keyed by
-  // raw resource pointer and never erased otherwise, so without this it grows
-  // for the lifetime of the process (a cut-in constant buffer is snapshotted
-  // every cinematic frame with cut-in shadows on, which is the default) and a
-  // recycled pointer could return a stale snapshot. Matches the SRV verdict-
-  // cache and twin-negative-cache invalidation on scene generation.
-  static uint32_t cachedGeneration = 0;
-  const uint32_t generation = arlandSceneGeneration();
-  if (generation != cachedGeneration) {
-    cachedGeneration = generation;
-    g_cbSnaps.clear();
-  }
-  g_cbSnaps[resource] = snap;
-}
+    g_cbCapturePending;
 
 bool isConstantBuffer(ID3D11Resource* resource, D3D11_BUFFER_DESC* desc) {
   ID3D11Buffer* buffer = nullptr;
@@ -300,7 +273,7 @@ bool isConstantBuffer(ID3D11Resource* resource, D3D11_BUFFER_DESC* desc) {
 
 // The game writes cbuffers via Map(WRITE_DISCARD)/Unmap; the CPU payload is
 // only valid between Map and Unmap. Track the mapped pointer per subresource
-// so captureCbUnmap can patch/snapshot it right before the real Unmap.
+// so captureCbUnmap can patch it right before the real Unmap.
 void captureCbMap(ID3D11Resource* resource, UINT sub,
                   const D3D11_MAPPED_SUBRESOURCE* mapped) {
   if (!cbCaptureEnabled() || !resource || !mapped || !mapped->pData)
@@ -308,8 +281,8 @@ void captureCbMap(ID3D11Resource* resource, UINT sub,
   D3D11_BUFFER_DESC desc = {};
   if (!isConstantBuffer(resource, &desc))
     return;
-  std::lock_guard lock(g_cbSnapMutex);
-  g_cbSnapPending[{resource, sub}] = {mapped->pData, desc.ByteWidth};
+  std::lock_guard lock(g_cbCaptureMutex);
+  g_cbCapturePending[{resource, sub}] = {mapped->pData, desc.ByteWidth};
 }
 
 void captureCbUnmap(ID3D11DeviceContext*, ID3D11Resource* resource,
@@ -318,11 +291,11 @@ void captureCbUnmap(ID3D11DeviceContext*, ID3D11Resource* resource,
     return;
   std::pair<const void*, uint32_t> pending{nullptr, 0};
   {
-    std::lock_guard lock(g_cbSnapMutex);
-    auto it = g_cbSnapPending.find({resource, sub});
-    if (it != g_cbSnapPending.end()) {
+    std::lock_guard lock(g_cbCaptureMutex);
+    auto it = g_cbCapturePending.find({resource, sub});
+    if (it != g_cbCapturePending.end()) {
       pending = it->second;
-      g_cbSnapPending.erase(it);
+      g_cbCapturePending.erase(it);
     }
   }
   if (!pending.first)
@@ -338,32 +311,9 @@ void captureCbUnmap(ID3D11DeviceContext*, ID3D11Resource* resource,
   }
   if (shadowMapResolution() > 1024)
     tapScalePatch(const_cast<void*>(pending.first), pending.second);
-  if (cutinBlobEnabled())
-    snapCbWrite(resource, pending.first, pending.second);
 }
 
 std::atomic<ID3D11DeviceContext*> g_immCtx{nullptr};
-
-
-// Latest captured contents of the draw's VS cb0 (via the Map/Unmap snapshots).
-bool readCb0Snap(ID3D11DeviceContext* ctx, uint32_t* size, uint8_t out[kCbSnapBytes]) {
-  ID3D11Buffer* cb = nullptr;
-  ctx->VSGetConstantBuffers(0, 1, &cb);
-  if (!cb)
-    return false;
-  bool ok = false;
-  {
-    std::lock_guard lock(g_cbSnapMutex);
-    auto it = g_cbSnaps.find(cb);
-    if (it != g_cbSnaps.end()) {
-      *size = it->second.size;
-      std::memcpy(out, it->second.data, sizeof(it->second.data));
-      ok = true;
-    }
-  }
-  cb->Release();
-  return ok;
-}
 
 // A shadow-map clear wipes the engine-side cut-in caster flags; the game-side
 // restore walk lives in menu_fix (env-gated there).
@@ -1883,10 +1833,6 @@ HRESULT STDMETHODCALLTYPE ID3D11Device_CreateBuffer(
     (*ppBuffer)->SetPrivateData(
       IID_ResolutionBufferData, pDesc->ByteWidth, pData->pSysMem);
   }
-  if (cutinBlobEnabled() && SUCCEEDED(hr) && ppBuffer && *ppBuffer &&
-      pDesc && pData && pData->pSysMem && pDesc->ByteWidth >= 16 &&
-      (pDesc->BindFlags & D3D11_BIND_CONSTANT_BUFFER))
-    snapCbWrite(*ppBuffer, pData->pSysMem, pDesc->ByteWidth);
   return hr;
 }
 
@@ -3056,8 +3002,6 @@ void STDMETHODCALLTYPE ID3D11DeviceContext_UpdateSubresource(
   if (cbCaptureEnabled() && pData && !pBox && Subresource == 0) {
     D3D11_BUFFER_DESC desc = {};
     if (isConstantBuffer(pResource, &desc)) {
-      if (cutinBlobEnabled())
-        snapCbWrite(pResource, pData, desc.ByteWidth);
       cutinCbTraceScan("update", pData, desc.ByteWidth);
       if (arlandInCinematicBattle()) {
         // Dim-hold: keep the faded light $Params at 1.0 during the cut-in.
@@ -3514,7 +3458,6 @@ void STDMETHODCALLTYPE ID3D11DeviceContext_Draw(
   if (blurInput) blurInput->Release();
   if (blurView) blurView->Release();
 
-  cutinBlobCaptureDraw(pContext, VertexCount);
   procs->Draw(pContext, VertexCount, StartVertexLocation);
 }
 
@@ -3576,7 +3519,6 @@ void STDMETHODCALLTYPE ID3D11DeviceContext_DrawIndexed(
     if (resource) resource->Release();
     if (view) view->Release();
   }
-  cutinBlobCaptureDraw(pContext, IndexCount);
   procs->DrawIndexed(pContext, IndexCount, StartIndexLocation,
     BaseVertexLocation);
 }

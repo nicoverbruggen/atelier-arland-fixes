@@ -2,7 +2,6 @@
 #pragma once
 
 #include <d3d11.h>
-#include <d3dcompiler.h>
 
 #include "log.h"
 
@@ -13,7 +12,6 @@ void hookContext(ID3D11DeviceContext* pContext);
 bool applyResolutionOverride(DXGI_SWAP_CHAIN_DESC* pDesc);
 bool arlandConfigBool(const char* section, const char* key, bool def);
 void traceTransitionD3DFrame(uint64_t intervalMicros);
-void cutinDrawContactBlobs(IDXGISwapChain* swapChain);
 /* lives in sync_fix.cpp: reset the per-frame pre-UI SMAA latch (call at Present). */
 void smaaResetFrame();
 /* lives in sync_fix.cpp: ARLAND_PRESENT_TRACE diagnostic. notePresentBackbuffer

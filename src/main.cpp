@@ -113,9 +113,7 @@ std::atomic<int64_t> previousPresentNanos = 0;
 
 bool menuTransitionTraceEnabled() {
   const char* trace = std::getenv("ARLAND_MENU_TRANSITION_TRACE");
-  const char* blob = std::getenv("ARLAND_CUTIN_BLOB");
   return (trace && trace[0] != '0') ||
-    (blob && blob[0] != '0') ||
     arland::frameAtlasCacheEnabled() ||
     arland::battleShadowRestoreActive();
 }
@@ -240,7 +238,6 @@ HRESULT STDMETHODCALLTYPE tracedPresent(
 
   atfix::maintainBorderlessWindow();   // re-applies only if the game restyled
   atfix::notePresentBackbuffer(swapChain);   // ARLAND_PRESENT_TRACE diagnostic
-  atfix::cutinDrawContactBlobs(swapChain);
   atfix::smaaApply(swapChain);        // Present-time path (only if pre-UI off)
   atfix::ssaaDownscale(swapChain);    // supersampling: render res -> backbuffer
   const HRESULT result = originalPresent(

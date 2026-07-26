@@ -197,7 +197,7 @@ These are environment variables, not INI keys: they are for narrowing down a pro
 
 | Variable | Effect |
 | --- | --- |
-| `ARLAND_VERBOSE_LOG=1` | Extra logging, same as `[Diagnostics] VerboseLogging`. Turns on the observing diagnostics below (the frame-time line, menu statistics, scene tracking and the memory probe), so a log can be asked for without anyone editing environment variables. The heavier traces stay opt-in individually, and the two that change behaviour rather than only reporting (`ARLAND_MENU_TRANSITION_TRACE`, `ARLAND_CUTIN_BLOB`) are deliberately never included: a diagnostic that moves the code path it reports on is worse than none. |
+| `ARLAND_VERBOSE_LOG=1` | Extra logging, same as `[Diagnostics] VerboseLogging`. Turns on the observing diagnostics below (the frame-time line, menu statistics, scene tracking and the memory probe), so a log can be asked for without anyone editing environment variables. The heavier traces stay opt-in individually, and `ARLAND_MENU_TRANSITION_TRACE` is deliberately never included because it changes the code path it reports on. |
 | `ARLAND_MENU_STATS=1` | Per-drain menu timings and cache hit rates. |
 | `ARLAND_FIELD_TRACE=1` | Logs the field-map character's state around each loss of footing. |
 | `ARLAND_PRESENT_INTERVAL=0` | Forces vsync off (`1`, `2`, `3` present every Nth refresh). Useful with an external frame limiter. Unset, the game's own vsync is left alone; `0` will tear in exclusive fullscreen. |
