@@ -50,6 +50,7 @@ else
     'src/crash_log.cpp',
     'src/smaa.cpp',
     'src/field_physics.cpp',
+    'src/worldmap_fix.cpp',
     'src/supersample.cpp',
     'src/font_hires.cpp',
     'src/menu_fix.cpp',

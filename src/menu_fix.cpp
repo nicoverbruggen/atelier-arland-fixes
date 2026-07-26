@@ -18,6 +18,7 @@
 #include "../vendor/minhook/include/MinHook.h"
 #include "config.h"
 #include "field_physics.h"
+#include "worldmap_fix.h"
 #include "font_hires.h"
 #include "game.h"
 #include "log.h"
@@ -2080,6 +2081,7 @@ void detectAndInstallGameHooks() {
       ? installDeepMenuStats(gameBase, game) : false;
     atfix::installBattleShadowRestore(gameBase, game);
     atfix::installFieldPhysics(gameBase, game);
+    atfix::installWorldMapFix(gameBase, game);
     atfix::log("Menu hooks pssg=", pathInstalled,
       " atlas=", atlasInstalled,
       " frame_atlas_cache=", frameAtlasCacheEnabled(),

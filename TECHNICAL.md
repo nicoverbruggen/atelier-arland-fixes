@@ -105,6 +105,14 @@ The second part suppresses that. While the character is genuinely at rest, meani
 
 Both parts are on by default and each can be turned off for comparison, as described in [ADVANCED.md](ADVANCED.md). The second refuses to run without the first, since the grounded state it holds on can otherwise drop while the character is still settling.
 
+Totori and Meruru have a separate frame-rate coupling on the travel map. Their freely controlled analog cursor reads both stick axes, folds in the four digital directions, rotates and normalizes that direction, then adds a fixed step directly to its authoritative position once per rendered frame. The mover receives no elapsed-time argument, although its immediate driver does. The mod hooks both functions, scopes the driver's real frame delta to the mover call, snapshots the position at `self+0x30`, and rescales the engine's step by `min(dt × 60, 1)`. It writes the corrected position back and republishes it through the mover's own target at `[self+0x28]`, keeping the authoritative and rendered positions coherent.
+
+This preserves the shipped movement byte-for-byte at 60 fps and below while holding distance per second steady above 60 fps. Runtime validation at 144 fps measured Totori's raw step at approximately 0.4465 units per frame, the scale at approximately 0.416, and the corrected speed at approximately 26.789 units per second; Totori and Meruru were then both validated against their original feel under a 60 fps MangoHud cap.
+
+Rorona does not share this mover: its stick advances a discrete location selector. A read-only probe on the routine that commits each selected location measured a median interval of 382 ms at the normal 144 Hz and 416 ms under a 60 fps cap; the corresponding means were 394 ms and 384 ms. The cadence therefore stays stable in real time rather than differing by the 2.4× refresh-rate ratio. Rorona needs no corresponding correction and this subsystem deliberately installs nothing there.
+
+The four supported executable rows are exact-address and prologue gated: Totori English uses driver/mover/publisher RVAs `0x2faf60`/`0x2ff540`/`0x2e9710`, Totori multilingual uses `0x518d20`/`0x51d300`/`0x507470`, Meruru English uses `0x2556c0`/`0x259ba0`/`0x247bb0`, and Meruru multilingual uses `0x24a5e0`/`0x24eac0`/`0x23c310`. `ARLAND_WORLDMAP_FIX=0` disables the correction for comparison. `ARLAND_WORLDMAP_PROBE=1` logs the measured raw and corrected movement.
+
 An earlier approach capped the frame rate instead. It was withdrawn: holding a rate that is not a divisor of the display's refresh meant presenting without waiting for vertical blank, which tears in exclusive fullscreen. Nothing in the current fix touches presentation, so the game presents exactly as it always did.
 
 Other frame-rate couplings exist outside the field map, in effect playback and, in Atelier Meruru DX, in secondary motion such as hair and clothing. Those are not yet addressed.
