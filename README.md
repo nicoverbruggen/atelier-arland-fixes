@@ -58,6 +58,32 @@ These are optional improvements that are off by default and documented in [ADVAN
 
 Rare crashes have been observed during long sessions with the advanced graphics tweaks enabled at their highest settings; no individual feature has been confirmed as the cause. If you hit instability, lower or disable them — crashes append a report to `arland-fix.log` that helps pinpoint the cause.
 
+## Safety
+
+I have done my best to make the mod as safe as possible. Here's what you should know:
+
+### Policy #1: Keep the original game files untouched
+
+Like other DLL-based game fixes, this mod is loaded by the game and changes how parts of it work while it is running. It does not permanently patch the games: the changes disappear when you close the game, and the original executables and game assets are never edited.
+
+### Policy #2: Safety checks and easy removal
+
+In practical terms:
+
+- The mod checks that it recognizes the exact game version before applying a fix. If something does not match what it expects, that fix is skipped.
+- It does not read or write your save files, collect usage data, update itself or connect to the internet in the background.
+- The only files it normally creates or updates are its settings and diagnostic logs. Changing options in the settings launcher also updates the game's own settings file.
+- **Play without the mod** starts the game with the fixes disabled. Removing or renaming the mod's DLL files returns the game to normal the next time it starts.
+
+Like any DLL mod, this is executable code that runs with the same access as the game. Download it only from this repository's [official releases](https://github.com/nicoverbruggen/atelier-arland-fixes/releases), or build it from source. The exact technical safeguards are documented in [TECHNICAL.md](TECHNICAL.md#runtime-memory-manipulation).
+
+### Policy #3: Public source and build process
+
+The complete source code and the steps GitHub uses to build each release are public. You can also make your own build by following [BUILDING.md](BUILDING.md). 
+
+> [!TIP]
+> If you do not read code yourself, an LLM (like ChatGPT or Claude) can help review the repository for obvious red flags and explain whether it appears to do what this page claims. That can be a useful second opinion, but it is not a guarantee and cannot prove that a downloaded file was built from the published source. You can ask it to inspect the built files, however this may use up a lot of tokens.
+
 ## Installation on Windows
 
 1. Open the game's installation directory from Steam by selecting **Manage → Browse local files**.
@@ -94,7 +120,7 @@ The bundled SMAA anti-aliasing is by Jorge Jimenez, Jose I. Echevarria, Belen Ma
 
 See [TECHNICAL.md](TECHNICAL.md) for the full implementation details and provenance.
 
-The menu-hitch research that made this project possible was mine, and I (Nico) did the reverse engineering and integration that combine all of the above into a single mod, using large language models from OpenAI and Anthropic throughout to analyze the games, develop the fixes, and bundle the improvements together.
+The menu-hitch research that made this project possible was mine, and I (Nico) did the reverse engineering and integration that combine all of the above plus more into a single mod, using large language models from OpenAI and Anthropic throughout to analyze the games, develop the fixes, and bundle the improvements together.
 
 ## License
 
