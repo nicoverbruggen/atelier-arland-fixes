@@ -85,7 +85,9 @@ else
     ['src/config_gui/main.cpp',
      # Carries the ComCtl32 v6 manifest, which is what gets the themed common
      # controls rather than the flat 5.82 ones. See the manifest for the rest.
-     windows.compile_resources('src/config_gui/arland-fix-launcher.rc'),
+     windows.compile_resources(
+       'src/config_gui/arland-fix-launcher.rc',
+       depend_files : files('src/config_gui/arland-fix-launcher.manifest')),
      # Inter, subset to Latin, so the launcher renders identically on Windows
      # and under Wine instead of inheriting whichever UI face each happens to
      # default to. See createUiFont.

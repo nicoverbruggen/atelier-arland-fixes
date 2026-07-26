@@ -2,7 +2,7 @@
 <assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
   <assemblyIdentity
       type="win32"
-      name="nl.spatie.atelier-arland-fixes.launcher"
+      name="be.nicoverbruggen.atelier-arland-fixes.launcher"
       version="1.0.0.0"
       processorArchitecture="*"/>
   <description>Atelier Arland Fixes launcher</description>
