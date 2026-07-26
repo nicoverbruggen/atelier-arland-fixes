@@ -951,6 +951,83 @@ bool smaaMainSizeColor(ID3D11RenderTargetView* rtv, ID3D11Texture2D** outTex) {
   return match;
 }
 
+struct TotoriSmaaTrackedState {
+  std::atomic<bool> mainDepthBound{false};
+  std::atomic<bool> depthDisabled{false};
+};
+
+TotoriSmaaTrackedState g_totoriSmaaImmediate;
+TotoriSmaaTrackedState g_totoriSmaaDeferred;
+
+TotoriSmaaTrackedState* totoriSmaaTrackedState(
+    ID3D11DeviceContext* context) {
+  return context == g_immCtx.load(std::memory_order_relaxed)
+    ? &g_totoriSmaaImmediate : &g_totoriSmaaDeferred;
+}
+
+// Setter hooks maintain the two facts that identify Totori's scene/UI
+// transition. Keeping them here makes the hot draw hook an atomic-flag check
+// rather than a pair of D3D11 state queries on every scene draw.
+void trackTotoriSmaaRenderTargets(
+    ID3D11DeviceContext* context, UINT rtvCount,
+    ID3D11RenderTargetView* const* rtvs, ID3D11DepthStencilView* dsv) {
+  static const bool enabled = currentTitle() == Title::Totori &&
+    atfix::smaaEnabled() && atfix::smaaPreUI();
+  if (!enabled)
+    return;
+  const bool mainWithDepth = rtvCount >= 1 && rtvs && rtvs[0] && dsv &&
+    smaaMainSizeColor(rtvs[0], nullptr);
+  totoriSmaaTrackedState(context)->mainDepthBound.store(
+    mainWithDepth, std::memory_order_relaxed);
+}
+
+void trackTotoriSmaaDepthState(
+    ID3D11DeviceContext* context, ID3D11DepthStencilState* state) {
+  D3D11_DEPTH_STENCIL_DESC desc = {};
+  desc.DepthEnable = TRUE; // null means D3D11's depth-enabled default
+  if (state)
+    state->GetDesc(&desc);
+  totoriSmaaTrackedState(context)->depthDisabled.store(
+    !desc.DepthEnable, std::memory_order_relaxed);
+}
+
+// Totori never rebinds its main colour target when the UI starts. Runtime
+// tracing shows a different, equally stable boundary: after the depth-tested
+// scene, it keeps the DSV attached but disables depth testing for the final UI
+// draw group. Run SMAA immediately before that first depth-disabled draw.
+//
+// Totori's MSAA twin remains bound across this boundary, so its single-sample
+// host cannot be processed without the later resolve overwriting the result.
+// smaaPreUI() therefore keeps the old Present path when MSAA is active.
+void smaaTotoriDrawBoundary(ID3D11DeviceContext* context) {
+  static const bool enabled = currentTitle() == Title::Totori &&
+    atfix::smaaEnabled() && atfix::smaaPreUI();
+  if (!enabled ||
+      g_smaaDoneThisFrame.load(std::memory_order_relaxed))
+    return;
+  TotoriSmaaTrackedState* tracked = totoriSmaaTrackedState(context);
+  if (!tracked->mainDepthBound.load(std::memory_order_relaxed) ||
+      !tracked->depthDisabled.load(std::memory_order_relaxed) ||
+      !g_smaaSceneSeen.load(std::memory_order_relaxed))
+    return;
+
+  ID3D11RenderTargetView* rtv = nullptr;
+  context->OMGetRenderTargets(1, &rtv, nullptr);
+  if (!rtv)
+    return;
+
+  ID3D11Texture2D* scene = nullptr;
+  if (smaaMainSizeColor(rtv, &scene) && scene) {
+    g_smaaDoneThisFrame.store(true, std::memory_order_relaxed);
+    atfix::smaaApplySceneColor(context, scene);
+    static std::atomic<bool> logged{false};
+    if (!logged.exchange(true, std::memory_order_relaxed))
+      log("SMAA: Totori pre-UI depth-state boundary active");
+    scene->Release();
+  }
+  rtv->Release();
+}
+
 // ---- present-path probe (ARLAND_PRESENT_TRACE) ----------------------------
 // One-shot diagnostic that answers how the finished frame reaches the swap-
 // chain backbuffer, which decides where supersampling inserts its downscale.
@@ -2865,6 +2942,7 @@ void STDMETHODCALLTYPE ID3D11DeviceContext_OMSetRenderTargets(
   updateRtvShadowResources(pContext);
   resolveBoundMSAA(pContext);
   smaaSceneBoundary(pContext, RTVCount, ppRTVs, pDSV);
+  trackTotoriSmaaRenderTargets(pContext, RTVCount, ppRTVs, pDSV);
   presentTraceRenderTargets(RTVCount, ppRTVs, pDSV);
   getRasterState(pContext)->dirty.store(true, std::memory_order_release);
 
@@ -2925,6 +3003,7 @@ void STDMETHODCALLTYPE ID3D11DeviceContext_OMSetRenderTargetsAndUnorderedAccessV
   auto procs = getContextProcs(pContext);
   updateRtvShadowResources(pContext);
   resolveBoundMSAA(pContext);
+  trackTotoriSmaaRenderTargets(pContext, RTVCount, ppRTVs, pDSV);
   getRasterState(pContext)->dirty.store(true, std::memory_order_release);
 
   ID3D11RenderTargetView* msaaRtv = nullptr;
@@ -2946,6 +3025,16 @@ void STDMETHODCALLTYPE ID3D11DeviceContext_OMSetRenderTargetsAndUnorderedAccessV
     RTVCount, ppRTVs, pDSV, UAVIndex, UAVCount, ppUAVs, pUAVClearValues);
   if (msaaRtv) msaaRtv->Release();
   if (msaaDsv) msaaDsv->Release();
+}
+
+void STDMETHODCALLTYPE ID3D11DeviceContext_OMSetDepthStencilState(
+        ID3D11DeviceContext*      pContext,
+        ID3D11DepthStencilState*  pDepthStencilState,
+        UINT                      StencilRef) {
+  auto procs = getContextProcs(pContext);
+  trackTotoriSmaaDepthState(pContext, pDepthStencilState);
+  procs->OMSetDepthStencilState(
+    pContext, pDepthStencilState, StencilRef);
 }
 
 void STDMETHODCALLTYPE ID3D11DeviceContext_UpdateSubresource(
@@ -3391,6 +3480,7 @@ void STDMETHODCALLTYPE ID3D11DeviceContext_Draw(
   flushDirtyShadows(pContext);
   updateViewportScissor(pContext);
   gateHoldAtDraw(pContext);
+  smaaTotoriDrawBoundary(pContext);
   traceResolutionDraw(pContext, "draw", VertexCount, 1);
 
   // Carry dialogue-snapshot identity through the three-vertex blur passes so
@@ -3435,6 +3525,7 @@ void STDMETHODCALLTYPE ID3D11DeviceContext_DrawIndexed(
   flushDirtyShadows(pContext);
   updateViewportScissor(pContext);
   gateHoldAtDraw(pContext);
+  smaaTotoriDrawBoundary(pContext);
   traceResolutionDraw(pContext, "indexed", IndexCount, 1);
 
   // The 48-byte 1920x1080 quad is shared by other cutscene layers. Keep the
@@ -3498,6 +3589,7 @@ void STDMETHODCALLTYPE ID3D11DeviceContext_DrawInstanced(
   flushDirtyShadows(pContext);
   updateViewportScissor(pContext);
   gateHoldAtDraw(pContext);
+  smaaTotoriDrawBoundary(pContext);
   traceResolutionDraw(
     pContext, "instanced", VertexCountPerInstance, InstanceCount);
   procs->DrawInstanced(pContext, VertexCountPerInstance, InstanceCount,
@@ -3512,6 +3604,7 @@ void STDMETHODCALLTYPE ID3D11DeviceContext_DrawIndexedInstanced(
   flushDirtyShadows(pContext);
   updateViewportScissor(pContext);
   gateHoldAtDraw(pContext);
+  smaaTotoriDrawBoundary(pContext);
   traceResolutionDraw(
     pContext, "indexed-instanced", IndexCountPerInstance, InstanceCount);
   procs->DrawIndexedInstanced(pContext, IndexCountPerInstance, InstanceCount,
@@ -3793,6 +3886,9 @@ void hookContext(ID3D11DeviceContext* pContext) {
   HOOK_PROC(ID3D11DeviceContext, pContext, procs, 45, RSSetScissorRects);
   HOOK_PROC(ID3D11DeviceContext, pContext, procs, 33, OMSetRenderTargets);
   HOOK_PROC(ID3D11DeviceContext, pContext, procs, 34, OMSetRenderTargetsAndUnorderedAccessViews);
+  if (currentTitle() == Title::Totori &&
+      atfix::smaaEnabled() && atfix::smaaPreUI())
+    HOOK_PROC(ID3D11DeviceContext, pContext, procs, 36, OMSetDepthStencilState);
   HOOK_PROC(ID3D11DeviceContext, pContext, procs, 48, UpdateSubresource);
 
   g_installedHooks |= flag;

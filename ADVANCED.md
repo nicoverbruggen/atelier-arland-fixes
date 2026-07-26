@@ -50,7 +50,7 @@ Each pair is all-or-nothing: if either half is blank or out of range, that pair 
 
 When the render resolution is larger than the display resolution, the whole frame — scene *and* UI — is rendered at that larger size and downscaled once, just before it reaches the screen.
 
-Unlike MSAA and SMAA, which smooth edges after the fact, this resolves detail that is genuinely finer than a display pixel: the thin alpha-tested costume trim no post-process can fully recover comes back, and menus and text sharpen along with the scene. The whole pipeline follows the render resolution, so the background blur and depth-of-field stay internally consistent.
+Unlike MSAA and SMAA, which smooth edges after the fact, this resolves detail that is genuinely finer than a display pixel, and menus and text sharpen along with the scene. The whole pipeline follows the render resolution, so the background blur and depth-of-field stay internally consistent.
 
 It is the most expensive option in this file, and cost scales with pixels drawn: 3840×2160 into a 2560×1440 window is 2.25× the pixels of 1440p, and 4× if the window is 1080p. Exact integer ratios (a 1080p window rendering at 4K) resolve with a true box filter and are the sharpest; other ratios use a bilinear resolve. Because supersampling already anti-aliases geometry, there is little reason to combine it with MSAA — that multiplies the cost of an already larger render target — so prefer raising the render resolution over stacking the two.
 
@@ -77,14 +77,14 @@ Use it with `DisplayWidth`/`DisplayHeight` set to your monitor's resolution. The
 
 ## SMAA anti-aliasing
 
-SMAA (a post-process anti-aliasing pass) is **on by default**. It smooths edges across the whole scene — including the thin alpha-tested costume trim that MSAA cannot touch — at a low, constant cost, and is applied before the UI is drawn so the HUD and text stay crisp. (Atelier Totori DX composites its scene and UI into one render target with no separable pre-UI point, so there SMAA runs as a full-frame pass at present time instead and also lightly affects the UI.) Turn it off with:
+SMAA (a post-process anti-aliasing pass) is **on by default**. It smooths edges across the whole scene, including visible edges inside textures that geometry-only MSAA cannot touch, at a low, constant cost. It is applied before the UI is drawn so the HUD and text stay crisp in all three games. When optional MSAA is enabled in Atelier Totori DX, SMAA instead runs as a full-frame pass at present time and therefore lightly affects that game's UI, because Totori keeps its multisample target bound across the scene/UI transition. Turn it off with:
 
 ```ini
 [Rendering]
 SMAA=false
 ```
 
-`ARLAND_SMAA` overrides the INI for a session. SMAA and MSAA can be combined (SMAA cleans up what MSAA's geometry-only multisampling leaves), or SMAA can be used alone as a much cheaper alternative to MSAA. Note: the very fine lace trim is sub-pixel alpha-test detail that no post-process (SMAA included) can fully resolve — only rendering at a higher internal resolution does.
+`ARLAND_SMAA` overrides the INI for a session. SMAA and MSAA can be combined (SMAA cleans up what MSAA's geometry-only multisampling leaves), or SMAA can be used alone as a much cheaper alternative to MSAA.
 
 ## UI font
 

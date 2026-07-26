@@ -1,19 +1,17 @@
 // SPDX-License-Identifier: MIT
 //
 // SMAA (Enhanced Subpixel Morphological Anti-Aliasing, Jimenez et al.) as a
-// full-frame post-process applied to the swap chain's back buffer just before
-// Present. Unlike MSAA, SMAA works on the finished image, so it smooths edges
-// MSAA cannot — texture-interior alpha-test cutouts such as the character
-// costume trim — as well as ordinary silhouettes. It runs the standard three
+// post-process. It normally runs over the finished 3D scene before the games
+// draw their UI; Totori with MSAA falls back to the swap-chain backbuffer just
+// before Present. Unlike MSAA, SMAA works on the finished image, so it smooths
+// edges MSAA cannot — including texture-interior and alpha-test edges — as well
+// as ordinary silhouettes. It runs the standard three
 // passes (edge detection -> blending-weight calculation -> neighborhood
 // blending) with the reference shader and its two precomputed lookup textures.
 //
 // The reference shader and the AreaTex/SearchTex data are vendored under
 // vendor/smaa/ (MIT). Shaders are compiled at runtime via d3dcompiler, matching
-// the mod's existing runtime-shader pattern. Applied at Present, SMAA also
-// touches the composited UI (a mild softening of text), the same trade-off the
-// Atelier Graphics Tweak's SMAA made; a pre-UI injection point is a later
-// refinement.
+// the mod's existing runtime-shader pattern.
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <d3d11.h>
@@ -382,6 +380,112 @@ bool smaaEnabled() {
 
 namespace {
 
+// SMAA temporarily owns the parts of the pipeline its three fullscreen passes
+// touch. The usual Rorona/Meruru injection runs just before the game establishes
+// its UI state, but Totori's boundary is the first UI draw itself. Preserve and
+// restore every modified binding so that draw sees exactly the state the game
+// prepared for it.
+class ScopedSmaaState {
+public:
+  explicit ScopedSmaaState(ID3D11DeviceContext* context) : ctx(context) {
+    ctx->IAGetInputLayout(&inputLayout);
+    ctx->IAGetVertexBuffers(0, 1, &vertexBuffer, &vertexStride, &vertexOffset);
+    ctx->IAGetPrimitiveTopology(&topology);
+
+    viewportCount = D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE;
+    ctx->RSGetViewports(&viewportCount, viewports);
+    ctx->RSGetState(&rasterizer);
+
+    ctx->OMGetBlendState(&blend, blendFactor, &sampleMask);
+    ctx->OMGetDepthStencilState(&depthStencil, &stencilRef);
+    ctx->OMGetRenderTargets(
+      D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT, renderTargets, &depthTarget);
+
+    ctx->PSGetSamplers(0, 2, psSamplers);
+    ctx->VSGetConstantBuffers(0, 1, &vsConstantBuffer);
+    ctx->PSGetConstantBuffers(0, 1, &psConstantBuffer);
+    ctx->PSGetShaderResources(0, 10, psResources);
+
+    vsClassCount = kMaxClassInstances;
+    psClassCount = kMaxClassInstances;
+    ctx->VSGetShader(&vertexShader, vsClasses, &vsClassCount);
+    ctx->PSGetShader(&pixelShader, psClasses, &psClassCount);
+  }
+
+  ~ScopedSmaaState() {
+    ctx->IASetInputLayout(inputLayout);
+    ctx->IASetVertexBuffers(
+      0, 1, &vertexBuffer, &vertexStride, &vertexOffset);
+    ctx->IASetPrimitiveTopology(topology);
+
+    ctx->RSSetViewports(viewportCount, viewports);
+    ctx->RSSetState(rasterizer);
+
+    ctx->OMSetBlendState(blend, blendFactor, sampleMask);
+    ctx->OMSetDepthStencilState(depthStencil, stencilRef);
+    ctx->OMSetRenderTargets(
+      D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT, renderTargets, depthTarget);
+
+    ctx->PSSetSamplers(0, 2, psSamplers);
+    ctx->VSSetConstantBuffers(0, 1, &vsConstantBuffer);
+    ctx->PSSetConstantBuffers(0, 1, &psConstantBuffer);
+    ctx->PSSetShaderResources(0, 10, psResources);
+    ctx->VSSetShader(vertexShader, vsClasses, vsClassCount);
+    ctx->PSSetShader(pixelShader, psClasses, psClassCount);
+
+    release(inputLayout);
+    release(vertexBuffer);
+    release(rasterizer);
+    release(blend);
+    release(depthStencil);
+    for (auto*& target : renderTargets) release(target);
+    release(depthTarget);
+    for (auto*& sampler : psSamplers) release(sampler);
+    release(vsConstantBuffer);
+    release(psConstantBuffer);
+    for (auto*& resource : psResources) release(resource);
+    release(vertexShader);
+    release(pixelShader);
+    for (UINT i = 0; i < vsClassCount; ++i) release(vsClasses[i]);
+    for (UINT i = 0; i < psClassCount; ++i) release(psClasses[i]);
+  }
+
+  ScopedSmaaState(const ScopedSmaaState&) = delete;
+  ScopedSmaaState& operator=(const ScopedSmaaState&) = delete;
+
+private:
+  static constexpr UINT kMaxClassInstances = 256;
+
+  ID3D11DeviceContext* ctx;
+  ID3D11InputLayout* inputLayout = nullptr;
+  ID3D11Buffer* vertexBuffer = nullptr;
+  UINT vertexStride = 0;
+  UINT vertexOffset = 0;
+  D3D11_PRIMITIVE_TOPOLOGY topology = D3D11_PRIMITIVE_TOPOLOGY_UNDEFINED;
+  UINT viewportCount = 0;
+  D3D11_VIEWPORT viewports[
+    D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE] = {};
+  ID3D11RasterizerState* rasterizer = nullptr;
+  ID3D11BlendState* blend = nullptr;
+  FLOAT blendFactor[4] = {};
+  UINT sampleMask = 0;
+  ID3D11DepthStencilState* depthStencil = nullptr;
+  UINT stencilRef = 0;
+  ID3D11RenderTargetView* renderTargets[
+    D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT] = {};
+  ID3D11DepthStencilView* depthTarget = nullptr;
+  ID3D11SamplerState* psSamplers[2] = {};
+  ID3D11Buffer* vsConstantBuffer = nullptr;
+  ID3D11Buffer* psConstantBuffer = nullptr;
+  ID3D11ShaderResourceView* psResources[10] = {};
+  ID3D11VertexShader* vertexShader = nullptr;
+  ID3D11PixelShader* pixelShader = nullptr;
+  ID3D11ClassInstance* vsClasses[kMaxClassInstances] = {};
+  ID3D11ClassInstance* psClasses[kMaxClassInstances] = {};
+  UINT vsClassCount = 0;
+  UINT psClassCount = 0;
+};
+
 // Run the three SMAA passes over `color` (a single-sample colour target),
 // writing the antialiased result back into it via `colorRTV`. `allowDebug`
 // enables the edge/weight debug views (backbuffer path only). Does not own or
@@ -406,6 +510,7 @@ bool smaaRun(ID3D11Device* dev, ID3D11DeviceContext* ctx,
   if (cd.Width != g_width || cd.Height != g_height)
     if (!initSized(dev, cd.Width, cd.Height, cd.Format)) { g_broken = true; return false; }
 
+  ScopedSmaaState savedState(ctx);
   ctx->CopyResource(g_sceneTex, color);
 
   SmaaConstants cb;
@@ -504,11 +609,11 @@ bool smaaPreUI() {
     const char* v = std::getenv("ARLAND_SMAA_PREUI");
     if (v)
       return v[0] != '0';   // explicit override wins in both directions
-    // Totori composites the scene and UI into a single render target and never
-    // rebinds it without depth at UI time, so the pre-UI scene→UI boundary is
-    // undetectable there; fall back to the present-time full-frame pass. Rorona
-    // and Meruru expose the boundary and keep the crisp pre-UI injection.
-    return currentTitle() != Title::Totori;   // default on except Totori
+    // Totori keeps its multisample twin bound across the scene/UI boundary.
+    // Resolving and processing its single-sample host here would be overwritten
+    // by the later final resolve, so retain the full-frame fallback in that
+    // one configuration. All three games otherwise expose a usable boundary.
+    return currentTitle() != Title::Totori || msaaSamples() == 1;
   }();
   return on;
 }

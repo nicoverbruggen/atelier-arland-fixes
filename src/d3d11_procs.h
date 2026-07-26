@@ -54,6 +54,8 @@ using PFN_ID3D11DeviceContext_OMSetRenderTargets = void (STDMETHODCALLTYPE *) (I
   UINT, ID3D11RenderTargetView* const*, ID3D11DepthStencilView*);
 using PFN_ID3D11DeviceContext_OMSetRenderTargetsAndUnorderedAccessViews = void (STDMETHODCALLTYPE *) (ID3D11DeviceContext*,
   UINT, ID3D11RenderTargetView* const*, ID3D11DepthStencilView*, UINT, UINT, ID3D11UnorderedAccessView* const*, const UINT*);
+using PFN_ID3D11DeviceContext_OMSetDepthStencilState = void (STDMETHODCALLTYPE *) (ID3D11DeviceContext*,
+  ID3D11DepthStencilState*, UINT);
 using PFN_ID3D11DeviceContext_UpdateSubresource = void (STDMETHODCALLTYPE *) (ID3D11DeviceContext*,
   ID3D11Resource*, UINT, const D3D11_BOX*, const void*, UINT, UINT);
 using PFN_ID3D11DeviceContext_Map = HRESULT (STDMETHODCALLTYPE *) (ID3D11DeviceContext*,
@@ -99,6 +101,7 @@ struct ContextProcs {
   PFN_ID3D11DeviceContext_DispatchIndirect              DispatchIndirect              = nullptr;
   PFN_ID3D11DeviceContext_OMSetRenderTargets            OMSetRenderTargets            = nullptr;
   PFN_ID3D11DeviceContext_OMSetRenderTargetsAndUnorderedAccessViews OMSetRenderTargetsAndUnorderedAccessViews = nullptr;
+  PFN_ID3D11DeviceContext_OMSetDepthStencilState        OMSetDepthStencilState        = nullptr;
   PFN_ID3D11DeviceContext_UpdateSubresource             UpdateSubresource             = nullptr;
   PFN_ID3D11DeviceContext_Map                           Map                           = nullptr;
   PFN_ID3D11DeviceContext_Unmap                         Unmap                         = nullptr;
