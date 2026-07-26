@@ -163,7 +163,7 @@ BattleCutInDimming=false
 
 `BattleCutInShadows` (default `false`) restores the ground shadows during cut-ins; set it to `true` to enable them.
 
-`BattleCutInDimming` (default `true`) keeps the original close-up dimming; set it to `false` to hold the cut-in at full brightness. The two options are independent. They apply to all three games, except that Totori's cut-in support is limited to its English build: the multilingual build has no battle-state addresses mapped yet, so both options resolve to unsupported there and the cut-ins stay as the game renders them.
+`BattleCutInDimming` (default `true`) keeps the original close-up dimming; set it to `false` to hold the cut-in at full brightness. The two options are independent and apply to all three games, in both the English and the multilingual builds.
 
 ## Suggested "best experience" configuration
 
@@ -193,7 +193,7 @@ Raise `MSAA` to `8` and `ShadowMultiplier` to `4` on strong hardware. (The high-
 
 ## Diagnostic switches
 
-These are environment variables, not INI keys: they are for narrowing down a problem for a bug report, and none of them change how the game plays.
+These are environment variables, not INI keys: they are for narrowing down a problem for a bug report. Most only add logging, but a few named below deliberately switch a fix back off so its effect can be compared against unmodified behaviour, and those do change how the game plays for that launch.
 
 | Variable | Effect |
 | --- | --- |
@@ -206,6 +206,7 @@ These are environment variables, not INI keys: they are for narrowing down a pro
 | `ARLAND_DISABLE=1` | Stands the whole mod down for one launch: `d3d11.dll` still loads and still forwards Direct3D, but installs no hooks and changes nothing, so the game runs as it shipped. This is what the launcher's **Play without the mod** button passes to the game, and it is the quickest way to tell a problem apart from a problem the mod is causing without moving files out of the game folder. |
 | `ARLAND_FIELD_ENGINE_FIX=0` | Restores the game's own minimum-movement distance, reinstating the high-refresh field-map problems. For comparing against unmodified behaviour. |
 | `ARLAND_FIELD_STABILIZER=0` | Stops holding the character still at rest, leaving a small residual movement at high frame rates. Ignored unless the option above is also on. |
+| `ARLAND_CUTIN_ACTOR_CLEAR=0` | Stops clearing a mid-cut-in battler's shadow when its fade begins, so it fades out over its full quarter second with the shadow at full strength until the end. Only has an effect while the cut-in shadow restoration is enabled. For comparing against unmodified behaviour. |
 | `ARLAND_RESOLUTION_TRACE=1` | Traces the resolution override's effect on render targets. |
 | `ARLAND_PRESENT_TRACE=1` | Reports how the finished frame reaches the screen. Needs a display resolution set. |
 

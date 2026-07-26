@@ -16,7 +16,7 @@ The current tree contains:
 - optional MSAA, optional high-resolution shadow-map twins (`ShadowMultiplier`), and optional anisotropic filtering;
 - SMAA anti-aliasing applied before UI composition (present-time full-frame on Totori);
 - high-resolution UI text rendered from bundled scalable fonts, on the English builds;
-- Rorona battle-shadow restoration, battle-state tracking with a battle-end watchdog, and the optional cut-in shadow/dim handling (Rorona, Meruru, and Totori EN), all in `src/battle_shadow_restore.cpp`;
+- Rorona battle-shadow restoration, battle-state tracking with a battle-end watchdog, and the optional cut-in shadow/dim handling (all three games, both builds), all in `src/battle_shadow_restore.cpp`;
 - a per-game capability matrix (`src/game.cpp`) that centralizes feature availability and defaults;
 - crash post-mortem logging and log rotation.
 

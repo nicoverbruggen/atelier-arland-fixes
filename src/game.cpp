@@ -76,11 +76,10 @@ constexpr Support X = Support::OnByDefault;
 // key, see the descriptor). The cut-in character-juggling stray-shadow glitch was
 // fixed on 2026-07-23 (the settle-gated reception hold plus the force-expiry
 // per-actor hide; validated in Rorona, Meruru, and Totori), but the cut-in
-// restorations ship opt-in pending wider playtest. Totori's cut-in support
-// (battle-state tracking +
-// the shared gate/dim patches) is English-build only so far; its multilingual
-// build has no battle-state RVAs yet, so its cut-in cells resolve to Unsupported
-// there via the Totori-EN-only address-pack gating in menu_fix.cpp.
+// restorations ship opt-in pending wider playtest. Totori's cut-in support now
+// covers both builds: its multilingual battle addresses were RTTI-located and
+// homologue-matched, then confirmed in-game, so the cut-in cells apply to every
+// supported executable.
 constexpr Support kMatrix[3][static_cast<int>(Feature::Count)] = {
   //           Sync Menu Atls Frme Res  MSAA ShMl Bat  CutS CutD
   /* Rorona */ { X,   X,   X,   X,   X,   O,   O,   X,   O,   O },

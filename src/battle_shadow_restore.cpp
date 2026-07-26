@@ -390,6 +390,15 @@ struct BattleBuildAddrs {
   uintptr_t hideAllRva;        // tactical-scene hideAll(charaMgr, fade)
   uintptr_t showAllRva;        // tactical-scene showAll(charaMgr)
   uintptr_t deferredHideArmRva; // per-actor deferred setVisible arm
+  // Model field offsets the front-run reads and writes. Rorona and Meruru
+  // share one layout; Totori's differs and NOT by a single constant: the flag
+  // bytes sit 0x13 further on and the duration float 0x14, because Totori's
+  // struct carries alignment padding where the earlier one does not. Each set
+  // is read off that build's own setter and constructor, never inferred from
+  // another build's by adding a guessed delta.
+  uintptr_t modelVisibilityOffset;   // current-visibility byte
+  uintptr_t modelFadePendingOffset;  // fade-pending byte
+  uintptr_t modelFadeDurationOffset; // fade-duration float
   bool casterRestore;          // install the full caster-restoration hook set
   // The battle game mode's constructor and destructor, and the vtable both of
   // them install. This is the engine's own answer to "when does a battle begin
@@ -415,14 +424,16 @@ constexpr BattleBuildAddrs kRoronaAddrsEn = {
   kBtlCharaVtableRvasEn, std::size(kBtlCharaVtableRvasEn),
   0x74e598, 0x74eb70, 0x76e018, 0x74e3f8,
   0x10c73c8, 0xfe6e1, 0x397307,
-  0x9d0, 0x68, 0x658, 0x2d0, 0x10c2c0, 0x10c270, 0xc5f80, true,
+  0x9d0, 0x68, 0x658, 0x2d0, 0x10c2c0, 0x10c270, 0xc5f80,
+  0x80, 0x8f, 0x90, true,
   0xfde20, 0xfe120, 0x76d248, 0x2d5fd0, 0x9be9b0,
 };
 constexpr BattleBuildAddrs kRoronaAddrsMulti = {
   kBtlCharaVtableRvasMulti, std::size(kBtlCharaVtableRvasMulti),
   0x76c138, 0x76c710, 0x78bc48, 0x76bf98,
   0x11044c8, 0x106781, 0x3ac8d7,
-  0x9d0, 0x68, 0x658, 0x2d0, 0x1143c0, 0x114370, 0xce020, true,
+  0x9d0, 0x68, 0x658, 0x2d0, 0x1143c0, 0x114370, 0xce020,
+  0x80, 0x8f, 0x90, true,
   0x105ec0, 0x1061c0, 0x78ae48, 0x2eac20, 0x9b2298,
 };
 // Meruru: managerSlot/helperSlotOffset read straight from the caster-group
@@ -437,14 +448,16 @@ constexpr BattleBuildAddrs kMeruruAddrsEn = {
   kBtlCharaVtableRvasMeruruEn, std::size(kBtlCharaVtableRvasMeruruEn),
   0x6681e8, 0x667fe8, 0x66ffb8, 0x668048,
   0xfe0b30, 0x119a47, 0x392875,
-  0x960, 0x68, 0x648, 0x2c0, 0x1369b0, 0x136940, 0x102cd0, false,
+  0x960, 0x68, 0x648, 0x2c0, 0x1369b0, 0x136940, 0x102cd0,
+  0x80, 0x8f, 0x90, false,
   0x118780, 0x119070, 0x66df50, 0, 0,
 };
 constexpr BattleBuildAddrs kMeruruAddrsMulti = {
   kBtlCharaVtableRvasMeruruMulti, std::size(kBtlCharaVtableRvasMeruruMulti),
   0x664268, 0x664068, 0x66bfa8, 0x6640c8,
   0x1040410, 0x106e97, 0x38f925,
-  0x960, 0x68, 0x648, 0x2c0, 0x124080, 0x124010, 0xf0070, false,
+  0x960, 0x68, 0x648, 0x2c0, 0x124080, 0x124010, 0xf0070,
+  0x80, 0x8f, 0x90, false,
   0x105bc0, 0x1064b0, 0x669f20, 0, 0,
 };
 // Totori (EN): static investigation + runtime probe 2026-07-23. Structural
@@ -481,7 +494,8 @@ constexpr BattleBuildAddrs kTotoriAddrsEn = {
   kBtlCharaVtableRvasTotoriEn, std::size(kBtlCharaVtableRvasTotoriEn),
   0x6d4350, 0x6d4240, 0x6dbc90, 0x6d4288,
   0, 0x1512f0, 0x94212,
-  0, 0x60, 0x5f8, 0, 0x170cb0, 0x170c30, 0, false,
+  0, 0x60, 0x5f8, 0, 0x170cb0, 0x170c30, 0x133880,
+  0x90, 0xa2, 0xa4, false,
   0x14d0e0, 0x14f790, 0x6d9620, 0, 0,
 };
 
@@ -491,17 +505,20 @@ constexpr BattleBuildAddrs kTotoriAddrsEn = {
 // at this binary. The battle gate was then confirmed live in-game: mode ctor and
 // dtor both fired, the vtable check passed, and the states logged by name.
 //
-// The ShadowHelperInit publish/re-entry gate is deliberately absent (the three
-// zeros on the third row). It is redundant here: the mode gate already marks
-// battles begin and end, and with managerSlot and helperSlotOffset zero on
-// Totori there is no published helper to put back, so the English build's copy
-// only duplicates a log line. Struct offsets are shared, being one source
-// compiled twice.
+// The ShadowHelperInit publish/re-entry return addresses are required even
+// though Totori has no global helper slot to restore: the battle-setup call
+// site is what publishes g_battleHelper, and that is the handle the whole
+// caster registry walk uses (clearBattleSnodeFlags and friends read the node
+// vector at helper+0x48). Without it the tactical hooks install and then clear
+// nothing. Both were located from the two callers of ShadowHelperInit, matched
+// to their English counterparts at 0.994 and 0.979 similarity with identical
+// lengths. Struct offsets are shared, being one source compiled twice.
 constexpr BattleBuildAddrs kTotoriAddrsMulti = {
   kBtlCharaVtableRvasTotoriMulti, std::size(kBtlCharaVtableRvasTotoriMulti),
   0x976518, 0x976408, 0x97eb40, 0x976450,
-  0, 0, 0,
-  0, 0x60, 0x5f8, 0, 0x38db20, 0x38daa0, 0, false,
+  0, 0x36e150, 0x2b08f2,
+  0, 0x60, 0x5f8, 0, 0x38db20, 0x38daa0, 0x3506e0,
+  0x90, 0xa2, 0xa4, false,
   0x369f40, 0x36c5f0, 0x97b7f0, 0, 0,
 };
 
@@ -1037,6 +1054,13 @@ void restoreBattleSnodeFlags(const char* site) {
 // participants get their flags re-set by the event system's own immediate
 // show paths, so the focus actor keeps its shadow.
 std::atomic<bool> g_tacticalHooksActive{false};
+// Set only when the per-actor deferred-hide front-run installs. Distinct from
+// g_tacticalHooksActive: that one covers hideAll/showAll, which do not touch
+// the per-actor fade, so it does not license skipping the settle cover.
+std::atomic<bool> g_deferredHideArmActive{false};
+// Set the first time the front-run actually force-expires a fade, so the log can
+// distinguish "hook installed" from "hook did something".
+std::atomic<bool> g_deferredHideArmFired{false};
 std::atomic<uint64_t> g_snodeRestoreDeadlineMs{0};
 
 // Inverse of restoreBattleSnodeFlags: clear the caster bit on every
@@ -1096,8 +1120,8 @@ uintptr_t tracedDeferredHideArm(uintptr_t obj, uintptr_t target,
   // engine's own alpha-fade expiry (~0.25 s) recursively hides the whole model
   // subtree, including the shadow leaves — that lag is the stray shadow. The
   // fix forces that expiry to happen on the next frame: when a hide (target 0)
-  // latches on this Model (+0x8f == 1, i.e. the arm did not early-out) during a
-  // cinematic state, zero the fade timer at Model+0x90. The engine's own visTick
+  // latches on this Model (fade-pending == 1, i.e. the arm did not early-out)
+  // during a cinematic state, zero the fade duration. The engine's own visTick
   // then performs the complete, bookkeeping-correct hide (subtree setVisibility
   // via 0xb9720 plus the +0x8d/+0x8f state the cancel/show path depends on), so
   // there are ZERO manual node writes and the focus actor is untouched (the
@@ -1106,13 +1130,27 @@ uintptr_t tracedDeferredHideArm(uintptr_t obj, uintptr_t target,
   // inActionCutin() (NOT arlandInCinematicBattle) — restricted to the mid-
   // battle action cut-ins, excluding the result/victory teardown states where
   // force-expiring would hit the field transition (black-screen risk).
+  // Offsets come from the per-build table, never hardcoded: Totori's Model puts
+  // the pending byte at +0xa2 and the duration float at +0xa4, so unlike
+  // Rorona's +0x8f/+0x90 they are not adjacent (alignment padding at +0xa3) and
+  // each needs its own readability check rather than one combined range.
+  const uintptr_t pendingOffset = g_battleAddrs->modelFadePendingOffset;
+  const uintptr_t durationOffset = g_battleAddrs->modelFadeDurationOffset;
   if ((target & 0xff) == 0 &&
       g_battleActive.load(std::memory_order_acquire) &&
       g_tacticalHooksActive.load(std::memory_order_acquire) &&
       inActionCutin() &&
-      readableRange(obj + 0x8f, sizeof(float) + 1) &&
-      *reinterpret_cast<const uint8_t*>(obj + 0x8f) == 1) {
-    *reinterpret_cast<float*>(obj + 0x90) = 0.0f;
+      pendingOffset && durationOffset &&
+      readableRange(obj + pendingOffset, 1) &&
+      readableRange(obj + durationOffset, sizeof(float)) &&
+      *reinterpret_cast<const uint8_t*>(obj + pendingOffset) == 1) {
+    *reinterpret_cast<float*>(obj + durationOffset) = 0.0f;
+    // Report the first real force-expiry, not just that the hook installed.
+    // "Deferred-hide arm hook installed=1" is true even when the subsystem goes
+    // on to do nothing, which is exactly how a silently inert caster clear cost
+    // a day of debugging on 2026-07-26.
+    if (!g_deferredHideArmFired.exchange(true, std::memory_order_acq_rel))
+      atfix::log("Deferred-hide arm force-expired a caster fade (first hit)");
   }
   return result;
 }
@@ -1677,24 +1715,46 @@ bool installTacticalSceneHooks(BYTE* base, const Game& game) {
   g_tacticalHooksActive.store(true, std::memory_order_release);
   // Per-actor deferred-hide front-run: fixes the mid-cut-in stray shadow of a
   // battler hidden during the close-up (see tracedDeferredHideArm — force-
-  // expiry, engine-native, zero manual node writes). On by default now that it
-  // is validated (Rorona/Meruru); ARLAND_CUTIN_ACTOR_CLEAR=0 is a diagnostic
-  // kill switch.
+  // expiry, engine-native, zero manual node writes). Validated in Rorona and
+  // Meruru. Totori was wired up on 2026-07-26 once its arm was found and is NOT
+  // yet validated in game: it is on so the next playtest exercises it, and
+  // ARLAND_CUTIN_ACTOR_CLEAR=0 is the kill switch for an A/B. On Totori the
+  // expected change is that a hidden battler's shadow goes at fade start rather
+  // than fade end, which is what removes the pop where the shadow held full
+  // strength while the character faded.
   static const bool actorClearEnabled = [] {
     const char* value = std::getenv("ARLAND_CUTIN_ACTOR_CLEAR");
     return !value || value[0] != '0';
   }();
-  if (actorClearEnabled && g_battleAddrs->deferredHideArmRva) {
+  if (actorClearEnabled && g_battleAddrs->deferredHideArmRva &&
+      g_battleAddrs->modelVisibilityOffset &&
+      g_battleAddrs->modelFadePendingOffset &&
+      g_battleAddrs->modelFadeDurationOffset) {
     auto* arm = base + g_battleAddrs->deferredHideArmRva;
-    const std::array<BYTE, 16> armExpected = {
-      0x38, 0x91, 0x80, 0x00, 0x00, 0x00, 0x74, 0x15,
-      0xf3, 0x0f, 0x11, 0x91, 0x90, 0x00, 0x00, 0x00,
+    // The setter is the same 30-byte leaf in every build, differing only in the
+    // two Model offsets it encodes as disp32 fields:
+    //   cmp byte [rcx+visibility], dl / je / movss [rcx+duration], xmm2
+    // So build the verification window from this build's offsets rather than
+    // hardcoding one build's bytes. That makes the check self-validating: a
+    // wrong offset fails the byte match and leaves the hook uninstalled,
+    // instead of installing and then writing to the wrong field in a live game.
+    std::array<BYTE, 16> armExpected = {
+      0x38, 0x91, 0x00, 0x00, 0x00, 0x00, 0x74, 0x15,
+      0xf3, 0x0f, 0x11, 0x91, 0x00, 0x00, 0x00, 0x00,
     };
-    if (matches(arm, armExpected))
-      atfix::log("Deferred-hide arm hook installed=",
-        installMinHookDetour(arm,
-          reinterpret_cast<void*>(&tracedDeferredHideArm),
-          reinterpret_cast<void**>(&originalDeferredHideArm)));
+    const auto encodeDisp32 = [&armExpected](size_t at, uintptr_t offset) {
+      const uint32_t disp = static_cast<uint32_t>(offset);
+      std::memcpy(armExpected.data() + at, &disp, sizeof(disp));
+    };
+    encodeDisp32(2, g_battleAddrs->modelVisibilityOffset);
+    encodeDisp32(12, g_battleAddrs->modelFadeDurationOffset);
+    if (matches(arm, armExpected)) {
+      const bool armed = installMinHookDetour(arm,
+        reinterpret_cast<void*>(&tracedDeferredHideArm),
+        reinterpret_cast<void**>(&originalDeferredHideArm));
+      g_deferredHideArmActive.store(armed, std::memory_order_release);
+      atfix::log("Deferred-hide arm hook installed=", armed);
+    }
   }
   return true;
 }
@@ -1705,9 +1765,8 @@ bool installMeruruBattleStateHook(BYTE* base, const Game& game) {
   uintptr_t helperInitRva = 0;
   if (game.atlasVariant == AtlasLaterArland)
     helperInitRva = game.exeBuild == BuildMultilingual ? 0x168b20 : 0x17b540;
-  else if (game.atlasVariant == AtlasTotori &&
-           game.exeBuild == BuildEnglish)
-    helperInitRva = 0x1a8930;
+  else if (game.atlasVariant == AtlasTotori)
+    helperInitRva = game.exeBuild == BuildMultilingual ? 0x3c4e40 : 0x1a8930;
   if (!helperInitRva)
     return false;
   auto* helperInit = base + helperInitRva;
@@ -2168,7 +2227,13 @@ bool arlandInCinematicBattle() {
 }
 
 bool arlandCutinCasterClearActive() {
-  return g_tacticalHooksActive.load(std::memory_order_acquire);
+  // "Can the held-open gate expose a stale caster?" Two ways it cannot: the
+  // per-actor front-run clears flags at fade START (all three games), or the
+  // tactical clear has taken every caster down for the cut-in and the delayed
+  // restore refuses to re-arm before the cinematic ends (all three games).
+  // Either way the dim cover is unnecessary and the hold engages immediately.
+  return g_deferredHideArmActive.load(std::memory_order_acquire) ||
+         g_tacticalHooksActive.load(std::memory_order_acquire);
 }
 
 uint32_t arlandSceneGeneration() {
@@ -2185,6 +2250,14 @@ const char* arlandBattleStateName() {
 // shadow pass 0x39cfd0 is field-only). Restores engine-cleared caster flags
 // before this frame's caster draws are issued (§30m probe).
 void arlandCutinShadowMapCleared() {
+  // Sample the battle state here, before this frame's caster draws, not only at
+  // Present. The cut-in gate hold and dim hold are decided during the shadow
+  // pass, so a state read that happens at Present is a frame behind: leaving a
+  // cut-in, the hold stayed applied for one more frame and the shadow outlived
+  // the character model. Present still ticks (frames with no shadow pass, and
+  // the field-return watchdog); this is idempotent, so whichever runs first
+  // wins and the other returns on the unchanged vtable.
+  trackBattleStateTick();
   if (!cutinSnodeFlagEnabled() ||
       !g_battleActive.load(std::memory_order_acquire))
     return;
@@ -2357,13 +2430,22 @@ void battleShadowFrameTick() {
 
   if (!g_battleActive.load(std::memory_order_acquire))
     return;
-  // Delayed caster restore after the tactical showAll re-clear.
+  // Delayed caster restore after the tactical showAll re-clear. The deadline is
+  // a floor, not the condition: restoring while a cinematic is still running
+  // re-arms casters on actors that are hidden or mid-fade, which is a shadow
+  // under an invisible character. Wait for the battle to leave the cinematic
+  // states, which is the point at which everyone is on screen again.
   uint64_t restoreDeadline =
     g_snodeRestoreDeadlineMs.load(std::memory_order_acquire);
-  if (restoreDeadline && GetTickCount64() >= restoreDeadline &&
+  if (restoreDeadline && GetTickCount64() >= restoreDeadline) {
+    if (arlandInCinematicBattle()) {
       g_snodeRestoreDeadlineMs.compare_exchange_strong(
-        restoreDeadline, 0, std::memory_order_acq_rel))
-    restoreBattleSnodeFlags("tactical_restore");
+        restoreDeadline, GetTickCount64() + 100, std::memory_order_acq_rel);
+    } else if (g_snodeRestoreDeadlineMs.compare_exchange_strong(
+        restoreDeadline, 0, std::memory_order_acq_rel)) {
+      restoreBattleSnodeFlags("tactical_restore");
+    }
+  }
   const uint64_t tick = g_battleTickCounter.fetch_add(
     1, std::memory_order_relaxed);
   const uintptr_t scene = g_battleScene.load(std::memory_order_acquire);

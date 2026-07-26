@@ -52,10 +52,8 @@ These are optional improvements that are off by default and documented in [ADVAN
 | Anisotropic filtering                        | ✓      | ✓      | ✓      |
 | Shadow multiplier                            | ✓      | ✓      | ✓      |
 | Borderless windowed mode                     | ✓      | ✓      | ✓      |
-| Restored battle cut-in shadows               | ✓      | EN     | ✓      |
-| Cut-in scene kept at full brightness         | ✓      | EN     | ✓      |
-
-✓ available · EN English build only (Totori's multilingual build has no battle-state addresses mapped yet)
+| Restored battle cut-in shadows               | ✓      | ✓      | ✓      |
+| Cut-in scene kept at full brightness         | ✓      | ✓      | ✓      |
 
 Rare crashes have been observed during long sessions with the advanced graphics tweaks enabled at their highest settings; no individual feature has been confirmed as the cause. If you hit instability, lower or disable them — crashes append a report to `arland-fix.log` that helps pinpoint the cause.
 
