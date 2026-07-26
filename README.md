@@ -2,6 +2,9 @@
 
 This mod significantly improves performance in the Steam releases of **Atelier Rorona DX, Atelier Totori DX, and Atelier Meruru DX**, in every supported language. It removes severe menu hitches, reduces costly D3D11 synchronization stalls, prevents text corruption caused by the synchronization optimization, and adds game-side 2560×1440 and 3840×2160 rendering support.
 
+> [!IMPORTANT]
+> **Public testing release:** This mod has received substantial testing across all three games and is already suitable for most players who want a better Arland DX experience, but it has not yet reached 1.0. Broader testing, especially on Windows and a wider range of hardware, is still needed. Please [report any problems](https://github.com/nicoverbruggen/atelier-arland-fixes/discussions/new?category=bug-reports) and include `arland-fix.log` and your settings.
+
 The mod ships with a 64-bit `d3d11.dll` for the games, a 64-bit `arland-fix-launcher.exe`, and a 32-bit `msimg32.dll` for the two front-ends the games share. The game DLL combines the synchronization fix required by the Arland ports with the Arland-specific menu fixes discovered during this project. `arland-fix-launcher.exe` puts every setting in one window and starts the game from it. `msimg32.dll` is loaded by both of Koei Tecmo's front-ends: starting the game opens the launcher above instead, and their own settings editor gains 1920×1080, 2560×1440 and 3840×2160 in both windowed and fullscreen mode despite DPI, desktop-resolution, and display-mode filtering. Both of the original tools remain reachable from the launcher.
 
 > [!TIP]
