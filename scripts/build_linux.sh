@@ -73,13 +73,6 @@ if ! command -v zip >/dev/null 2>&1; then
   exit 0
 fi
 
-# Named for the commit it was built from, not a version: these are local builds,
-# and the useful question about one is which code is in it. "dirty" means the
-# tree had uncommitted changes, so the hash alone does not describe it.
-version="$(git -C "$repo" rev-parse --short HEAD 2>/dev/null || echo local)"
-if ! git -C "$repo" diff-index --quiet HEAD -- 2>/dev/null; then
-  version="$version-dirty"
-fi
 out="$repo/out"
 stage="$out/stage"
 rm -rf "$stage"
@@ -98,7 +91,8 @@ cp -r "$repo/licenses" "$stage/arland-fix/LICENSES"
 cp "$repo/vendor/minhook/LICENSE.txt" "$stage/arland-fix/LICENSES/MinHook.txt"
 cp "$repo/vendor/smaa/LICENSE.txt" "$stage/arland-fix/LICENSES/SMAA.txt"
 
-archive="$out/arland-fix-$version.zip"
+build_version="$(python3 "$repo/scripts/read_version.py" "$repo/VERSION")"
+archive="$out/arland-fix-$build_version.zip"
 rm -f "$archive"
 ( cd "$stage" && zip -qr "$archive" \
     d3d11.dll msimg32.dll arland-fix.ini arland-fix-launcher.exe arland-fix )
