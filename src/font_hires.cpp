@@ -364,7 +364,7 @@ const FontChoice& gameFont() {
   static const FontChoice totori{ "Nunito Regular",
     kEmbeddedFontNunito, kEmbeddedFontNunitoSize, 0.90f, 0 };
   static const FontChoice meruru{ "Cosmetica Medium",
-    kEmbeddedFontMgOpenCosmetica, kEmbeddedFontMgOpenCosmeticaSize, 0.80f, -5 };
+    kEmbeddedFontMgOpenCosmetica, kEmbeddedFontMgOpenCosmeticaSize, 0.80f, -2 };
   switch (currentTitle()) {
     case Title::Totori: return totori;
     case Title::Meruru: return meruru;
