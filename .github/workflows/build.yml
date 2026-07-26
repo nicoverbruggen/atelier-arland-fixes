@@ -17,12 +17,12 @@ jobs:
   build-x64:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
         with:
           python-version: '3.x'
       - run: pip install meson ninja
-      - uses: ilammy/msvc-dev-cmd@v1
+      - uses: TheMrMilchmann/setup-msvc-dev@v4
         with:
           arch: x64
       # b_vscrt=static_from_buildtype links the CRT statically for a release
@@ -33,38 +33,27 @@ jobs:
       # so it cannot ask for a runtime first.
       - run: meson setup build64 --buildtype release -Db_vscrt=static_from_buildtype
       - run: meson compile -C build64
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: d3d11
           path: |
             build64/d3d11.dll
             build64/arland-fix-launcher.exe
 
-  check-defaults:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.x'
-      # default.ini ships to users and repeats defaults that live in src/, so
-      # nothing but this stops the two drifting apart.
-      - run: python3 scripts/check_default_ini.py
-
   build-x86:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
         with:
           python-version: '3.x'
       - run: pip install meson ninja
-      - uses: ilammy/msvc-dev-cmd@v1
+      - uses: TheMrMilchmann/setup-msvc-dev@v4
         with:
           arch: x86
       - run: meson setup build32 --buildtype release -Db_vscrt=static_from_buildtype
       - run: meson compile -C build32
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: msimg32
           path: build32/msimg32.dll
@@ -79,15 +68,19 @@ jobs:
     needs: [build-x64, build-x86]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@v6
+      - uses: actions/download-artifact@v8
         with:
           name: d3d11
           path: dist
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: msimg32
           path: dist
+      # default.ini ships to users and repeats defaults that live in src/, so
+      # check it before packaging rather than spending a separate runner on it.
+      - name: Check shipped configuration defaults
+        run: python3 scripts/check_default_ini.py
       - name: Assemble the archive
         run: |
           # Shipped under its final name so the archive extracts straight into
@@ -105,18 +98,18 @@ jobs:
           cd dist
           zip -r ../arland-fix.zip \
             d3d11.dll msimg32.dll arland-fix.ini arland-fix-launcher.exe arland-fix
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: arland-fix
           path: arland-fix.zip
 
   release:
-    needs: [package, check-defaults]
+    needs: package
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@v6
+      - uses: actions/download-artifact@v8
         with:
           name: arland-fix
       - name: Name the archive for this tag
