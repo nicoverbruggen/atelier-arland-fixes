@@ -51,6 +51,7 @@ enum : int {
   IDC_BCUTINSHADOW,
   IDC_BCUTINDIM,
   IDC_VERBOSE,
+  IDC_DEBUGVIEW,     // [Debug] the one developer view that is active
   IDC_START,
   IDC_OPENENV,       // Koei Tecmo's own settings editor
   IDC_OPENLAUNCHER,  // Koei Tecmo's own launcher
@@ -92,9 +93,25 @@ int g_game = -1;   // index into kGames, -1 when the folder holds no game
 HWND g_hTabs = nullptr;
 HWND g_hDesc[32] = {};   // greyed notes; drawn in kSecondaryText
 int  g_descCount = 0;
-HWND g_pageCtrls[4][40] = {};   // which controls belong to which tab page
-int  g_pageCount[4] = {};
+// Five pages, but the fifth (Debug) is only inserted into the tab strip when
+// verbose logging is on -- its controls are always created, just unreachable.
+HWND g_pageCtrls[5][40] = {};   // which controls belong to which tab page
+int  g_pageCount[5] = {};
+HWND g_hDebugView = nullptr;
 HWND g_hStart = nullptr;   // focused at startup; see createControls
+
+// Adds or removes the Debug entry on the tab strip. Defined with the rest of
+// the tab handling; declared here because both resetToDefaults and WM_COMMAND
+// need it earlier.
+void syncDebugTab(bool show);
+
+// Which page a tab-strip position shows. Debug sits at position 3, ahead of
+// About; when it is hidden, About takes that slot while keeping its own page.
+int pageForTab(int tabIndex) {
+  const bool debugShown =
+    g_hTabs && SendMessageW(g_hTabs, TCM_GETITEMCOUNT, 0, 0) == 5;
+  return (debugShown || tabIndex < 3) ? tabIndex : tabIndex + 1;
+}
 HWND g_hGameLabel = nullptr;   // sits on the tab strip; painted transparent
 HWND g_hRepoLink = nullptr;    // SysLink at the bottom of the Display page
 
@@ -330,6 +347,15 @@ void iniWriteBool(const char* section, const char* key, bool on) {
 }
 
 // ---- combo helpers ---------------------------------------------------------
+
+// One view at a time: each replaces what is drawn rather than adding to it.
+const ComboItem kDebugViewItems[5] = {
+  { L"Off",                    "off" },
+  { L"Wireframe",              "wireframe" },
+  { L"SMAA edge detection",    "smaa-edges" },
+  { L"SMAA blend weights",     "smaa-weights" },
+  { L"Highlight scene target", "scene-target" },
+};
 
 void comboFill(HWND combo, const ComboItem* items, int count) {
   for (int i = 0; i < count; ++i)
@@ -645,6 +671,7 @@ void loadFromIni() {
   SendMessageW(g_hVerbose, BM_SETCHECK,
     iniBool("Diagnostics", "VerboseLogging", false) ? BST_CHECKED : BST_UNCHECKED, 0);
 
+
   // Last, once every quality control holds its loaded value: show which preset
   // that combination is, or Custom.
   refreshPreset();
@@ -689,6 +716,8 @@ void resetToDefaults() {
   SendMessageW(g_hBCutInShadow, BM_SETCHECK, BST_UNCHECKED, 0);
   SendMessageW(g_hBCutInDim, BM_SETCHECK, BST_CHECKED, 0);
   SendMessageW(g_hVerbose, BM_SETCHECK, BST_UNCHECKED, 0);
+  SendMessageW(g_hDebugView, CB_SETCURSEL, 0, 0);
+  syncDebugTab(false);
   refreshPreset();
   updateRenderResolution();
 }
@@ -761,6 +790,14 @@ void saveToIni() {
   iniWriteBool("Battle", "BattleCutInDimming", isChecked(g_hBCutInDim));
 
   iniWriteBool("Diagnostics", "VerboseLogging", isChecked(g_hVerbose));
+  // [Debug] is developer tooling and is deliberately absent from the shipped
+  // default.ini, so the key is written only when a view is actually selected
+  // and deleted when it is not. An ordinary user's ini never gains the section.
+  int debugViewSel = (int)SendMessageW(g_hDebugView, CB_GETCURSEL, 0, 0);
+  if (debugViewSel < 0 || debugViewSel > 4)
+    debugViewSel = 0;
+  WritePrivateProfileStringA("Debug", "View",
+    debugViewSel ? kDebugViewItems[debugViewSel].value : nullptr, g_iniPath);
 
   // Flush the cache so the file is on disk before we report success.
   WritePrivateProfileStringA(nullptr, nullptr, nullptr, g_iniPath);
@@ -1298,7 +1335,7 @@ void repaintUnder(HWND ctrl) {
 }
 
 void showPage(int page) {
-  for (int p = 0; p < 4; ++p)
+  for (int p = 0; p < 5; ++p)
     for (int i = 0; i < g_pageCount[p]; ++i)
       ShowWindow(g_pageCtrls[p][i], p == page ? SW_SHOW : SW_HIDE);
   // The outgoing page's labels leave their text behind them, so the page is
@@ -1445,6 +1482,30 @@ struct Layout {
   }
 };
 
+// The Debug page is developer tooling, so it is only reachable when verbose
+// logging is on. Toggling the checkbox adds or removes the strip entry
+// immediately rather than waiting for a relaunch -- the controls themselves
+// always exist, so nothing has to be created or destroyed here.
+void syncDebugTab(bool show) {
+  if (!g_hTabs)
+    return;
+  const int count = (int)SendMessageW(g_hTabs, TCM_GETITEMCOUNT, 0, 0);
+  if (show && count == 4) {
+    TCITEMW tab = {};
+    tab.mask = TCIF_TEXT;
+    tab.pszText = (LPWSTR)L"Debug";
+    SendMessageW(g_hTabs, TCM_INSERTITEMW, 3, (LPARAM)&tab);
+  } else if (!show && count == 5) {
+    // Leaving the selection on a page that is about to vanish would show an
+    // empty sheet, so step back to Display first.
+    if ((int)SendMessageW(g_hTabs, TCM_GETCURSEL, 0, 0) == 3) {
+      SendMessageW(g_hTabs, TCM_SETCURSEL, 0, 0);
+      showPage(0);
+    }
+    SendMessageW(g_hTabs, TCM_DELETEITEM, 3, 0);
+  }
+}
+
 void createControls(HWND w) {
   g_hTabs = CreateWindowExW(0, WC_TABCONTROLW, nullptr,
     WS_CHILD | WS_VISIBLE | WS_TABSTOP, S(12), S(12), S(676), S(376),
@@ -1458,6 +1519,7 @@ void createControls(HWND w) {
     tab.pszText = (LPWSTR)pageNames[i];
     SendMessageW(g_hTabs, TCM_INSERTITEMW, i, (LPARAM)&tab);
   }
+  syncDebugTab(iniBool("Diagnostics", "VerboseLogging", false));
 
   // Which game this folder is: the tool configures whatever it sits next to, so
   // this is the one fact worth stating outright. It sits on the tab strip's own
@@ -1602,10 +1664,44 @@ void createControls(HWND w) {
       L"Extra detail in arland-fix.log. Crash reports are always written.");
   }
 
-  // ---------------- page 3: About ----------------
-  // What is installed, where it came from, and what it is not.
+  // ---------------- page 3: Debug ----------------
+  // Developer views. Reachable only with verbose logging on (see syncDebugTab),
+  // and off in a normal install.
   {
     Layout page(w, 3);
+    page.heading(L"View");
+
+    g_hDebugView = mkCombo(w, 0, 0, 10, IDC_DEBUGVIEW);
+    comboFill(g_hDebugView, kDebugViewItems, 5);
+    char debugViewValue[24] = {};
+    if (!iniString("Debug", "View", debugViewValue, sizeof(debugViewValue)))
+      lstrcpynA(debugViewValue, "off", sizeof(debugViewValue));
+    comboSelectByValue(g_hDebugView, kDebugViewItems, 5, debugViewValue, 0);
+    page.row(L"Debug view", g_hDebugView,
+      L"One at a time: each replaces what you see rather than adding to it.");
+
+    page.fullNote(
+      L"\u2022  Wireframe draws 3D geometry as outlines. The HUD, menus and "
+      L"movies are left alone, so it shows model detail and where "
+      L"level-of-detail models swap as the camera moves.");
+    page.fullNote(
+      L"\u2022  SMAA edge detection outlines what the antialiasing pass found, "
+      L"over a dimmed scene. The HUD stays untouched, because the pass runs "
+      L"before the UI is drawn. Blend weights shows the following pass, which "
+      L"is worth a look when the edges are right but the result is not.");
+    page.fullNote(
+      L"\u2022  Highlight scene target tints the surface the antialiasing pass "
+      L"picked, at the moment it picks it. Green over the world but not the "
+      L"HUD means it found the right surface at the right time.");
+    page.fullNote(
+      L"These are diagnostics rather than settings. Turn verbose logging off "
+      L"to hide this tab.");
+  }
+
+  // ---------------- page 4: About ----------------
+  // What is installed, where it came from, and what it is not.
+  {
+    Layout page(w, 4);
     wchar_t installed[160];
     wsprintfW(installed, L"Mod version: %s", modVersion());
     page.label(installed);
@@ -1691,7 +1787,8 @@ LRESULT CALLBACK WndProc(HWND w, UINT msg, WPARAM wp, LPARAM lp) {
         return 0;
       }
       if (note && note->hwndFrom == g_hTabs && note->code == TCN_SELCHANGE) {
-        showPage((int)SendMessageW(g_hTabs, TCM_GETCURSEL, 0, 0));
+        showPage(pageForTab(
+          (int)SendMessageW(g_hTabs, TCM_GETCURSEL, 0, 0)));
         return 0;
       }
       break;
@@ -1726,6 +1823,20 @@ LRESULT CALLBACK WndProc(HWND w, UINT msg, WPARAM wp, LPARAM lp) {
       return (LRESULT)g_backgroundBrush;
     }
     case WM_COMMAND:
+      // Verbose logging gates the Debug page. Reflect it immediately: having
+      // to save and relaunch to find the tab you just enabled is a puzzle, not
+      // a safeguard.
+      if (HIWORD(wp) == BN_CLICKED && LOWORD(wp) == IDC_VERBOSE) {
+        const bool verbose = isChecked(g_hVerbose);
+        // Turning logging off takes the view with it. Leaving one selected
+        // behind a hidden tab would keep changing what the game draws with
+        // nothing on screen to say so, and no way to reach the control that
+        // did it. Saving then clears the key, since Off is not written.
+        if (!verbose)
+          SendMessageW(g_hDebugView, CB_SETCURSEL, 0, 0);
+        syncDebugTab(verbose);
+        return 0;
+      }
       // Base or supersampling changed: recompute the render label and the
       // Auto-disables-supersampling rule live.
       if (HIWORD(wp) == CBN_SELCHANGE && LOWORD(wp) == IDC_PRESET) {

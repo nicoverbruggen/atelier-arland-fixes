@@ -119,6 +119,16 @@ float4 CopyPS(float4 position : SV_POSITION,
   return colorTex.Sample(LinearSampler, texcoord);
 }
 
+// Debug: flat tint over the scene target, drawn at the injection point. If the
+// tint covers the world and not the HUD, both halves of the boundary are right:
+// the correct surface, at the correct moment. Alpha-blended so the scene stays
+// readable underneath.
+float4 HighlightPS(float4 position : SV_POSITION,
+                   float2 texcoord : TEXCOORD0,
+                   float4 offset[3] : TEXCOORD1) : SV_TARGET {
+  return float4(0.15, 0.85, 0.35, 0.22);
+}
+
 // Debug: visualize the edge-detection output (red = horizontal edge, green =
 // vertical) over a dimmed scene, so we can see what SMAA is flagging.
 float4 DebugEdgesPS(float4 position : SV_POSITION,
@@ -166,17 +176,11 @@ ID3D11PixelShader*  g_edgePS = nullptr;
 ID3D11PixelShader*  g_weightPS = nullptr;
 ID3D11PixelShader*  g_blendPS = nullptr;
 ID3D11PixelShader*  g_copyPS = nullptr;       // scene -> MSAA twin write-back
+ID3D11PixelShader*  g_highlightPS = nullptr;  // scene-target tint
+ID3D11BlendState*   g_tintBlend = nullptr;    // straight alpha, for the tint
 ID3D11PixelShader*  g_debugPS = nullptr;      // edges
 ID3D11PixelShader*  g_debugWeightPS = nullptr; // weights
 
-// 0 = off, 1 = show edges, 2 = show blend weights.
-int smaaDebugLevel() {
-  static const int level = [] {
-    const char* v = std::getenv("ARLAND_SMAA_DEBUG");
-    return v ? std::atoi(v) : 0;
-  }();
-  return level;
-}
 ID3D11InputLayout*  g_layout = nullptr;
 ID3D11Buffer*       g_quad = nullptr;
 ID3D11Buffer*       g_cb = nullptr;
@@ -239,6 +243,23 @@ bool initShared(ID3D11Device* dev) {
     compile(D3DCompile, "WeightPS", "ps_4_1", &wps) &&
     compile(D3DCompile, "BlendPS", "ps_4_1", &bps) &&
     compile(D3DCompile, "CopyPS", "ps_4_1", &cps);
+  if (ok && debugSceneTargetHighlight()) {
+    ID3DBlob* hps = nullptr;
+    if (compile(D3DCompile, "HighlightPS", "ps_4_1", &hps))
+      dev->CreatePixelShader(hps->GetBufferPointer(), hps->GetBufferSize(),
+        nullptr, &g_highlightPS);
+    release(hps);
+    D3D11_BLEND_DESC tb = {};
+    tb.RenderTarget[0].BlendEnable = TRUE;
+    tb.RenderTarget[0].SrcBlend = D3D11_BLEND_SRC_ALPHA;
+    tb.RenderTarget[0].DestBlend = D3D11_BLEND_INV_SRC_ALPHA;
+    tb.RenderTarget[0].BlendOp = D3D11_BLEND_OP_ADD;
+    tb.RenderTarget[0].SrcBlendAlpha = D3D11_BLEND_ONE;
+    tb.RenderTarget[0].DestBlendAlpha = D3D11_BLEND_ZERO;
+    tb.RenderTarget[0].BlendOpAlpha = D3D11_BLEND_OP_ADD;
+    tb.RenderTarget[0].RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL;
+    dev->CreateBlendState(&tb, &g_tintBlend);
+  }
   if (ok && smaaDebugLevel() > 0) {
     ID3DBlob* dps = nullptr;
     if (compile(D3DCompile, "DebugEdgesPS", "ps_4_1", &dps))
@@ -649,6 +670,16 @@ bool smaaRunPasses(ID3D11Device* dev, ID3D11DeviceContext* ctx,
   ctx->PSSetShader(g_blendPS, nullptr, 0);
   ctx->Draw(4, 0);
   ctx->PSSetShaderResources(0, 10, nullSRV);
+
+  if (g_highlightPS && g_tintBlend) {
+    ctx->OMSetRenderTargets(1, &colorRTV, nullptr);
+    ctx->OMSetBlendState(g_tintBlend, nullptr, 0xffffffff);
+    ctx->VSSetShader(g_edgeVS, nullptr, 0);
+    ctx->PSSetShader(g_highlightPS, nullptr, 0);
+    ctx->Draw(4, 0);
+    ctx->OMSetBlendState(g_blendState, nullptr, 0xffffffff);
+  }
+
   writeBackToTwin();
   return true;
 }

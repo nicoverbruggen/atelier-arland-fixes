@@ -453,3 +453,50 @@ UINT msaaSamples() {
 }
 
 }  // namespace atfix
+
+namespace atfix {
+
+DebugView debugView() {
+  static const DebugView view = [] {
+    char value[24] = { };
+    // The SMAA-specific switch predates the unified view and stays honoured.
+    DWORD length = GetEnvironmentVariableA(
+      "ARLAND_SMAA_DEBUG", value, sizeof(value));
+    if (length && length < sizeof(value)) {
+      if (value[0] == '1') return DebugView::SmaaEdges;
+      if (value[0] == '2') return DebugView::SmaaWeights;
+    }
+    length = GetEnvironmentVariableA(
+      "ARLAND_DEBUG_VIEW", value, sizeof(value));
+    if (!(length && length < sizeof(value))) {
+      value[0] = '\0';
+      if (const char* path = configPath())
+        GetPrivateProfileStringA("Debug", "View", "off",
+          value, sizeof(value), path);
+    }
+    if (!_stricmp(value, "wireframe"))    return DebugView::Wireframe;
+    if (!_stricmp(value, "smaa-edges"))   return DebugView::SmaaEdges;
+    if (!_stricmp(value, "smaa-weights")) return DebugView::SmaaWeights;
+    if (!_stricmp(value, "scene-target")) return DebugView::SceneTarget;
+    return DebugView::None;
+  }();
+  return view;
+}
+
+int smaaDebugLevel() {
+  switch (debugView()) {
+    case DebugView::SmaaEdges:   return 1;
+    case DebugView::SmaaWeights: return 2;
+    default:                     return 0;
+  }
+}
+
+bool debugWireframe() {
+  return debugView() == DebugView::Wireframe;
+}
+
+bool debugSceneTargetHighlight() {
+  return debugView() == DebugView::SceneTarget;
+}
+
+}  // namespace atfix

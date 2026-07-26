@@ -62,6 +62,8 @@ using PFN_ID3D11DeviceContext_Map = HRESULT (STDMETHODCALLTYPE *) (ID3D11DeviceC
   ID3D11Resource*, UINT, D3D11_MAP, UINT, D3D11_MAPPED_SUBRESOURCE*);
 using PFN_ID3D11DeviceContext_Unmap = void (STDMETHODCALLTYPE *) (ID3D11DeviceContext*,
   ID3D11Resource*, UINT);
+using PFN_ID3D11DeviceContext_RSSetState = void (STDMETHODCALLTYPE *) (ID3D11DeviceContext*,
+        ID3D11RasterizerState*);
 using PFN_ID3D11DeviceContext_RSSetViewports = void (STDMETHODCALLTYPE *) (ID3D11DeviceContext*,
   UINT, const D3D11_VIEWPORT*);
 using PFN_ID3D11DeviceContext_RSSetScissorRects = void (STDMETHODCALLTYPE *) (ID3D11DeviceContext*,
@@ -105,6 +107,7 @@ struct ContextProcs {
   PFN_ID3D11DeviceContext_UpdateSubresource             UpdateSubresource             = nullptr;
   PFN_ID3D11DeviceContext_Map                           Map                           = nullptr;
   PFN_ID3D11DeviceContext_Unmap                         Unmap                         = nullptr;
+  PFN_ID3D11DeviceContext_RSSetState                     RSSetState                    = nullptr;
   PFN_ID3D11DeviceContext_RSSetViewports                 RSSetViewports                = nullptr;
   PFN_ID3D11DeviceContext_RSSetScissorRects              RSSetScissorRects             = nullptr;
   PFN_ID3D11DeviceContext_Draw                          Draw                          = nullptr;

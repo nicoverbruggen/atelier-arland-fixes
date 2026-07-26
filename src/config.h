@@ -14,6 +14,28 @@ const char* configPath();
 // so the option is discoverable. Accepts true/false, 1/0, yes/no.
 bool arlandConfigBool(const char* section, const char* key, bool def);
 
+// ---- [Debug] --------------------------------------------------------------
+// Developer views: one at a time, since each replaces what is on screen rather
+// than adding to it. Off by default, and the launcher only offers them when
+// verbose logging is on, so a normal install never sees any of this.
+//
+// [Debug] View = off | wireframe | smaa-edges | smaa-weights | scene-target
+// ARLAND_DEBUG_VIEW overrides it, as does the older ARLAND_SMAA_DEBUG=1|2.
+enum class DebugView {
+  None,
+  Wireframe,      // depth-tested geometry as outlines; UI and movies untouched
+  SmaaEdges,      // SMAA pass 1, what the antialiasing detected
+  SmaaWeights,    // SMAA pass 2, the blend weights it derived
+  SceneTarget,    // tint the surface pre-UI SMAA picked, when it picks it
+};
+
+DebugView debugView();
+
+// Convenience readers over debugView(), so call sites stay legible.
+int smaaDebugLevel();               // 0 none, 1 edges, 2 weights
+bool debugWireframe();
+bool debugSceneTargetHighlight();
+
 // Shadow-map edge length: 1024 by default, or 2048/4096/8192 when the
 // [Rendering] ShadowMultiplier (2/4/8) opts in. See ARLAND_SHADOW_MULTIPLIER.
 unsigned int shadowMapResolution();

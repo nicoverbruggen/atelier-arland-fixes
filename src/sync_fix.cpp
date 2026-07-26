@@ -473,6 +473,7 @@ UINT resolutionRole(ID3D11Resource* resource) {
 static const GUID IID_MSAAResource = {0xe2728d94,0x9fdd,0x40d0,{0x87,0xa8,0x09,0xb6,0x2d,0xf3,0x14,0x9a}};
 static const GUID IID_MSAAState = {0xe2728d93,0x9fdd,0x40d0,{0x87,0xa8,0x09,0xb6,0x2d,0xf3,0x14,0x9a}};
 static const GUID IID_MSAABoundHost = {0xe2728d98,0x9fdd,0x40d0,{0x87,0xa8,0x09,0xb6,0x2d,0xf3,0x14,0x9a}};
+static const GUID IID_WireframeState = {0xe2728d99,0x9fdd,0x40d0,{0x87,0xa8,0x09,0xb6,0x2d,0xf3,0x14,0x9a}};
 static const GUID IID_ResolutionTrace = {0xe2728d99,0x9fdd,0x40d0,{0x87,0xa8,0x09,0xb6,0x2d,0xf3,0x14,0x9a}};
 static const GUID IID_CompositeTraceRole = {0xe2728d9a,0x9fdd,0x40d0,{0x87,0xa8,0x09,0xb6,0x2d,0xf3,0x14,0x9a}};
 static const GUID IID_ResolutionBufferData = {0xe2728d9b,0x9fdd,0x40d0,{0x87,0xa8,0x09,0xb6,0x2d,0xf3,0x14,0x9a}};
@@ -2567,6 +2568,119 @@ HRESULT STDMETHODCALLTYPE ID3D11Device_CreateRenderTargetView(
   return hr;
 }
 
+// Wireframe debug view.
+//
+// Applied per draw rather than per state-set, because it must not touch the UI
+// or movie playback -- both draw with depth testing off, as flat quads over the
+// finished scene, and outlining those just fills the screen with rectangles.
+// Depth testing being ON is what distinguishes 3D geometry from either.
+//
+// The game's own rasterizer states are never modified: each gets a wireframe
+// twin cached on it as private data, so repeated binds are a lookup rather than
+// a state creation, and the twin dies with the state it belongs to.
+struct WireframeTracking {
+  std::atomic<ID3D11RasterizerState*> requested{nullptr};  // not owned
+  std::atomic<bool> active{false};                         // twin bound now
+};
+
+WireframeTracking g_wireframeImm;
+WireframeTracking g_wireframeDef;
+
+WireframeTracking* wireframeTracking(ID3D11DeviceContext* context) {
+  return context->GetType() == D3D11_DEVICE_CONTEXT_IMMEDIATE
+    ? &g_wireframeImm : &g_wireframeDef;
+}
+
+// The wireframe counterpart of `requested`, or null if one cannot be made.
+// Non-owning: the twin is held either by the state it mirrors or by the static
+// stand-in for D3D11's solid default, so it outlives this call either way.
+ID3D11RasterizerState* wireframeTwinFor(ID3D11DeviceContext* context,
+                                        ID3D11RasterizerState* requested) {
+  if (requested) {
+    ID3D11RasterizerState* twin = nullptr;
+    UINT size = sizeof(twin);
+    if (SUCCEEDED(requested->GetPrivateData(IID_WireframeState, &size, &twin)) &&
+        twin) {
+      twin->Release();   // the state we mirror holds the reference
+      return twin;
+    }
+    D3D11_RASTERIZER_DESC desc = {};
+    requested->GetDesc(&desc);
+    desc.FillMode = D3D11_FILL_WIREFRAME;
+    desc.CullMode = D3D11_CULL_NONE;   // see both sides of the shell
+    ID3D11Device* device = nullptr;
+    context->GetDevice(&device);
+    ID3D11RasterizerState* created = nullptr;
+    if (device) {
+      if (SUCCEEDED(device->CreateRasterizerState(&desc, &created)) && created) {
+        requested->SetPrivateDataInterface(IID_WireframeState, created);
+        created->Release();   // now owned by `requested`
+      }
+      device->Release();
+    }
+    return created;
+  }
+
+  // Null = D3D11's solid default. One shared twin stands in for it.
+  static std::atomic<ID3D11RasterizerState*> defaultTwin{nullptr};
+  if (ID3D11RasterizerState* existing =
+        defaultTwin.load(std::memory_order_acquire))
+    return existing;
+  D3D11_RASTERIZER_DESC desc = {};
+  desc.FillMode = D3D11_FILL_WIREFRAME;
+  desc.CullMode = D3D11_CULL_NONE;
+  desc.DepthClipEnable = TRUE;
+  ID3D11Device* device = nullptr;
+  context->GetDevice(&device);
+  ID3D11RasterizerState* created = nullptr;
+  if (device) {
+    if (SUCCEEDED(device->CreateRasterizerState(&desc, &created)) && created) {
+      ID3D11RasterizerState* expected = nullptr;
+      if (!defaultTwin.compare_exchange_strong(expected, created,
+            std::memory_order_acq_rel)) {
+        created->Release();
+        created = expected;
+      }
+    }
+    device->Release();
+  }
+  return created;
+}
+
+// Called before every draw. Switches the bound rasterizer state only when the
+// depth-testing verdict changes, so a frame costs a handful of state sets
+// rather than two per draw.
+void applyWireframeForDraw(ID3D11DeviceContext* context) {
+  if (!debugWireframe())
+    return;
+  WireframeTracking* wf = wireframeTracking(context);
+  const bool want =
+    !smaaTrackedState(context)->depthDisabled.load(std::memory_order_relaxed);
+  if (want == wf->active.load(std::memory_order_relaxed))
+    return;
+  wf->active.store(want, std::memory_order_relaxed);
+  ID3D11RasterizerState* requested =
+    wf->requested.load(std::memory_order_relaxed);
+  ID3D11RasterizerState* wanted = want
+    ? wireframeTwinFor(context, requested) : requested;
+  getContextProcs(context)->RSSetState(context, wanted);
+  getRasterState(context)->dirty.store(true, std::memory_order_release);
+}
+
+void STDMETHODCALLTYPE ID3D11DeviceContext_RSSetState(
+        ID3D11DeviceContext*   pContext,
+        ID3D11RasterizerState* pRasterizerState) {
+  auto procs = getContextProcs(pContext);
+  WireframeTracking* wf = wireframeTracking(pContext);
+  wf->requested.store(pRasterizerState, std::memory_order_relaxed);
+  // Mid-3D-pass state changes keep the outline; anything else passes through.
+  if (debugWireframe() && wf->active.load(std::memory_order_relaxed)) {
+    procs->RSSetState(pContext, wireframeTwinFor(pContext, pRasterizerState));
+    return;
+  }
+  procs->RSSetState(pContext, pRasterizerState);
+}
+
 void STDMETHODCALLTYPE ID3D11DeviceContext_RSSetViewports(
         ID3D11DeviceContext* pContext,
         UINT                 NumViewports,
@@ -3837,6 +3951,7 @@ void STDMETHODCALLTYPE ID3D11DeviceContext_Draw(
   updateViewportScissor(pContext);
   gateHoldAtDraw(pContext);
   smaaDrawBoundary(pContext);
+  applyWireframeForDraw(pContext);
   traceResolutionDraw(pContext, "draw", VertexCount, 1);
 
   // Carry dialogue-snapshot identity through the three-vertex blur passes so
@@ -3881,6 +3996,7 @@ void STDMETHODCALLTYPE ID3D11DeviceContext_DrawIndexed(
   updateViewportScissor(pContext);
   gateHoldAtDraw(pContext);
   smaaDrawBoundary(pContext);
+  applyWireframeForDraw(pContext);
   traceResolutionDraw(pContext, "indexed", IndexCount, 1);
 
   // The 48-byte 1920x1080 quad is shared by other cutscene layers. Keep the
@@ -3944,6 +4060,7 @@ void STDMETHODCALLTYPE ID3D11DeviceContext_DrawInstanced(
   updateViewportScissor(pContext);
   gateHoldAtDraw(pContext);
   smaaDrawBoundary(pContext);
+  applyWireframeForDraw(pContext);
   traceResolutionDraw(
     pContext, "instanced", VertexCountPerInstance, InstanceCount);
   procs->DrawInstanced(pContext, VertexCountPerInstance, InstanceCount,
@@ -3959,6 +4076,7 @@ void STDMETHODCALLTYPE ID3D11DeviceContext_DrawIndexedInstanced(
   updateViewportScissor(pContext);
   gateHoldAtDraw(pContext);
   smaaDrawBoundary(pContext);
+  applyWireframeForDraw(pContext);
   traceResolutionDraw(
     pContext, "indexed-instanced", IndexCountPerInstance, InstanceCount);
   procs->DrawIndexedInstanced(pContext, IndexCountPerInstance, InstanceCount,
@@ -4247,12 +4365,15 @@ void hookContext(ID3D11DeviceContext* pContext) {
   HOOK_PROC(ID3D11DeviceContext, pContext, procs, 8,  PSSetShaderResources);
   HOOK_PROC(ID3D11DeviceContext, pContext, procs, 14, Map);
   HOOK_PROC(ID3D11DeviceContext, pContext, procs, 15, Unmap);
+  if (debugWireframe())
+    HOOK_PROC(ID3D11DeviceContext, pContext, procs, 43, RSSetState);
   HOOK_PROC(ID3D11DeviceContext, pContext, procs, 44, RSSetViewports);
   HOOK_PROC(ID3D11DeviceContext, pContext, procs, 45, RSSetScissorRects);
   HOOK_PROC(ID3D11DeviceContext, pContext, procs, 33, OMSetRenderTargets);
   HOOK_PROC(ID3D11DeviceContext, pContext, procs, 34, OMSetRenderTargetsAndUnorderedAccessViews);
-  // Feeds the depth-state scene/UI boundary, which all three games now use.
-  if (atfix::smaaEnabled() && atfix::smaaPreUI())
+  // Feeds the depth-state scene/UI boundary and the wireframe view's
+  // UI/movie exclusion, so either one needs it.
+  if ((atfix::smaaEnabled() && atfix::smaaPreUI()) || debugWireframe())
     HOOK_PROC(ID3D11DeviceContext, pContext, procs, 36, OMSetDepthStencilState);
   HOOK_PROC(ID3D11DeviceContext, pContext, procs, 48, UpdateSubresource);
 

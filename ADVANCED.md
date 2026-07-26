@@ -215,3 +215,14 @@ Most INI options also have an `ARLAND_`-prefixed override for a single session; 
 ## Logs and crash reports
 
 Runtime messages are written to `arland-fix.log` in the game directory; the previous session's log is kept as `arland-fix.log.old`. A normal log starts with the mod version, recognized game build, complete configuration and concise `FIXES` lines showing what installed successfully. Warnings and failures are included, with failures from hot rendering paths reported once unless verbose logging is enabled; raw hook addresses, repeated resource operations and battle-object telemetry also require verbose logging. If the game crashes, the mod appends a `CRASH` post-mortem to the log — the exception, the faulting address as module+offset, registers, and a stack scan — before the process exits. Include both files when reporting a problem.
+
+## Debug views
+
+Turning on verbose logging adds a **Debug** tab to the launcher, holding a single **Debug view** dropdown. These are diagnostics rather than quality settings: each one replaces what is drawn so a particular part of the mod can be checked by eye, which is why only one runs at a time. Off in a normal install.
+
+- **Wireframe** — draws 3D geometry as outlines. The HUD, menus and movies are left alone, since those are flat quads drawn with depth testing off. Shows model detail and where level-of-detail models swap as the camera moves.
+- **SMAA edge detection** — outlines what the antialiasing pass found, in red and green over a dimmed scene. The HUD stays untouched, because the pass runs before the UI is drawn — which also makes this the quickest way to confirm the pre-UI injection is working.
+- **SMAA blend weights** — the following pass. Worth a look when the edges look right but the result does not.
+- **Highlight scene target** — tints the surface the antialiasing pass picked, at the moment it picks it. Green over the world but not the HUD means it found the right surface at the right point in the frame; green over the HUD as well means it ran too late.
+
+In the INI the setting is `[Debug] View`, one of `off`, `wireframe`, `smaa-edges`, `smaa-weights` or `scene-target`. `ARLAND_DEBUG_VIEW` overrides it, and the older `ARLAND_SMAA_DEBUG=1|2` still selects the two SMAA views.
