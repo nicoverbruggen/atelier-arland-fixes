@@ -196,8 +196,8 @@ void installWindowTitleFix() {
       reinterpret_cast<void**>(&originalSetWindowTextA)))
     any = true;
 
-  log("Window-title ASCII substitution ", any ? "installed" : "failed",
-    " (system codepage ", static_cast<unsigned>(acp), ")");
+  log("FIXES window_title=", any ? "active" : "failed",
+    " system_codepage=", static_cast<unsigned>(acp));
 }
 
 }  // namespace atfix

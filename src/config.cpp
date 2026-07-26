@@ -301,8 +301,8 @@ bool modDisabled() {
 // Every setting that shaped a run, written once at startup. This exists because
 // a log without it cannot be diagnosed alone: a report of "supersampling does
 // nothing" is indistinguishable from "supersampling was never configured"
-// unless the log says which. Three parts, because a setting can come from three
-// places and the last two are invisible from the ini alone:
+// unless the log says which. The file is short, comments are stripped, and only
+// relevant environment variables are included.
 //
 //   CONFIG ini   -- the file as it reads on disk, comments stripped
 //   CONFIG env   -- every ARLAND_* variable, which override the ini
@@ -313,7 +313,7 @@ void logIniFile() {
     log("CONFIG no arland-fix.ini path could be resolved");
     return;
   }
-  log("CONFIG ini ", path);
+  log("CONFIG source ", path);
   HANDLE file = CreateFileA(path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE,
     nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
   if (file == INVALID_HANDLE_VALUE) {
@@ -413,6 +413,7 @@ void logConfiguration() {
       " borderless=", borderlessWindow() ? 1 : 0,
       " font=", font == UIFontMode::Original ? "original"
               : font == UIFontMode::Upscaled ? "upscaled" : "replaced",
+      " verbose=", verboseLogging() ? 1 : 0,
       " disabled=", modDisabled() ? 1 : 0);
 }
 

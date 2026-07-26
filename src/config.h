@@ -51,11 +51,9 @@ bool verboseLogging();
 // launcher's "Play without the mod" button passes to the game. See config.cpp.
 bool modDisabled();
 
-// Write the settings actually in force to the log, once, at startup: the ini as
-// it reads on disk, every ARLAND_* variable in the environment, and the
-// resolutions after clamping. A log that carries its own configuration can be
-// diagnosed on its own, without asking for the ini and hoping it is the one
-// that produced the run.
+// Write the settings actually in force to the log once at startup: the INI
+// path and uncommented values, relevant environment variables, and effective
+// values after resolution clamping.
 void logConfiguration();
 
 // How UI text is rendered: [Rendering] Font. "replaced" (the DEFAULT: re-render

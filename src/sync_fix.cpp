@@ -756,8 +756,9 @@ bool applyResolutionOverride(DXGI_SWAP_CHAIN_DESC* pDesc) {
         !g_mainRtWidth.load(std::memory_order_relaxed)) {
       g_mainRtWidth.store(seedWidth, std::memory_order_relaxed);
       g_mainRtHeight.store(seedHeight, std::memory_order_relaxed);
-      log("Main render size seeded from the configuration: ", std::dec,
-          seedWidth, "x", seedHeight);
+      if (verboseLogging())
+        log("Main render size seeded from the configuration: ", std::dec,
+            seedWidth, "x", seedHeight);
     }
   }
 
@@ -971,7 +972,8 @@ void smaaTotoriDrawBoundary(ID3D11DeviceContext* context) {
     g_smaaDoneThisFrame.store(true, std::memory_order_relaxed);
     atfix::smaaApplySceneColor(context, scene);
     static std::atomic<bool> logged{false};
-    if (!logged.exchange(true, std::memory_order_relaxed))
+    if (verboseLogging() &&
+        !logged.exchange(true, std::memory_order_relaxed))
       log("SMAA: Totori pre-UI depth-state boundary active");
     scene->Release();
   }
@@ -1220,8 +1222,8 @@ bool getOrCreateMSAAViews(ID3D11DeviceContext* context,
     depthResource->SetPrivateDataInterface(IID_MSAAResource, depthMsaa);
     hostRtv->SetPrivateDataInterface(IID_MSAAResource, *msaaRtv);
     hostDsv->SetPrivateDataInterface(IID_MSAAResource, *msaaDsv);
-    log("Created ", std::dec, samples, "x MSAA targets at ",
-        mainWidth, "x", mainHeight);
+    log("FIXES msaa=active samples=", std::dec, samples,
+        " size=", mainWidth, "x", mainHeight);
   } else {
     if (*msaaRtv) { (*msaaRtv)->Release(); *msaaRtv = nullptr; }
     if (*msaaDsv) { (*msaaDsv)->Release(); *msaaDsv = nullptr; }
@@ -1820,8 +1822,9 @@ HRESULT STDMETHODCALLTYPE ID3D11Device_CreateBuffer(
       (*ppBuffer)->SetPrivateDataInterface(
         IID_DialogScaledVertexBuffer, scaledBuffer);
       scaledBuffer->Release();
-      log("Created targeted dialogue quad companion at ",
-          std::dec, mainWidth, "x", mainHeight);
+      if (verboseLogging())
+        log("Created targeted dialogue quad companion at ",
+            std::dec, mainWidth, "x", mainHeight);
     } else {
       log("Failed to create targeted dialogue quad companion at ",
           std::dec, mainWidth, "x", mainHeight);
@@ -1989,7 +1992,9 @@ HRESULT STDMETHODCALLTYPE ID3D11Device_CreateTexture2D(
         g_mainRtHeight.store(desc.Height, std::memory_order_relaxed);
         mainWidth = desc.Width;
         mainHeight = desc.Height;
-        log("Detected main render size ", std::dec, mainWidth, "x", mainHeight);
+        if (verboseLogging())
+          log("Detected main render size ", std::dec,
+              mainWidth, "x", mainHeight);
       }
     } else if (mainWidth > 1920 && mainHeight > 1080 && !pData) {
       // Auxiliary targets follow the main one. Two sizes count as "full": the
@@ -2035,9 +2040,11 @@ HRESULT STDMETHODCALLTYPE ID3D11Device_CreateTexture2D(
         desc.Width = halfSizeBlurTarget ? mainWidth / 2 : mainWidth;
         desc.Height = halfSizeBlurTarget ? mainHeight / 2 : mainHeight;
         changed = true;
-        log("Resizing hard-coded ",
-            halfSizeBlurTarget ? "960x540 blur target" : "1920x1080 target",
-            " to ", std::dec, desc.Width, "x", desc.Height);
+        if (verboseLogging())
+          log("Resizing hard-coded ",
+              halfSizeBlurTarget ? "960x540 blur target"
+                                 : "1920x1080 target",
+              " to ", std::dec, desc.Width, "x", desc.Height);
       }
     }
 
@@ -2059,7 +2066,7 @@ HRESULT STDMETHODCALLTYPE ID3D11Device_CreateTexture2D(
         originalDesc.MiscFlags == 0 &&
         originalDesc.MipLevels == 1 && originalDesc.ArraySize == 1 &&
         originalDesc.SampleDesc.Count == 1;
-      if (!createShadowTwin)
+      if (!createShadowTwin && verboseLogging())
         log("SHADOWRES DECLINE 1024x1024 R24G8 candidate:",
             " data=", pData != nullptr,
             " usage=", std::dec, originalDesc.Usage,
@@ -2097,9 +2104,14 @@ HRESULT STDMETHODCALLTYPE ID3D11Device_CreateTexture2D(
         std::lock_guard lock(g_twinSrvNegMutex);
         g_twinSrvNegative.clear();   // new generation: re-probe SRVs
       }
-      log("SHADOWRES twin created ", std::dec, shadowRes, "x", shadowRes,
-          " for host=", *ppTexture, " bind=0x", std::hex,
-          originalDesc.BindFlags);
+      static std::atomic<bool> reportedShadowResolution{false};
+      if (!reportedShadowResolution.exchange(true, std::memory_order_relaxed))
+        log("FIXES shadow_resolution=active size=", std::dec,
+            shadowRes, "x", shadowRes);
+      if (verboseLogging())
+        log("SHADOWRES twin created ", std::dec, shadowRes, "x", shadowRes,
+            " for host=", *ppTexture, " bind=0x", std::hex,
+            originalDesc.BindFlags);
     } else {
       // Fail-safe: no twin means this host silently keeps the vanilla path.
       log("SHADOWRES twin creation FAILED hr=0x", std::hex, twinHr,
@@ -2320,7 +2332,7 @@ void updateViewportScissor(ID3D11DeviceContext* pContext) {
       if (shadowTarget && (resizeViewport || resizeScissor)) {
         static std::atomic<uint32_t> vpLogs{0};
         const uint32_t n = vpLogs.fetch_add(1, std::memory_order_relaxed);
-        if (n < 16 || n % 1024 == 0)
+        if (verboseLogging() && (n < 16 || n % 1024 == 0))
           log("SHADOWRES caster viewport/scissor 1024 -> ", std::dec,
               desc.Width, " (vp=", resizeViewport,
               " sc=", resizeScissor, ")");
@@ -2591,7 +2603,7 @@ void STDMETHODCALLTYPE ID3D11DeviceContext_CopyResource(
         procs->CopyResource(pContext, dstTwin, srcTwin);
         static std::atomic<uint32_t> mirrorLogs{0};
         const uint32_t n = mirrorLogs.fetch_add(1, std::memory_order_relaxed);
-        if (n < 16 || n % 4096 == 0)
+        if (verboseLogging() && (n < 16 || n % 4096 == 0))
           log("SHADOWRES mirrored CopyResource on twins");
         srcTwin->Release();
       }
@@ -2701,8 +2713,10 @@ void STDMETHODCALLTYPE ID3D11DeviceContext_CopySubresourceRegion(
       const UINT marker = 1;
       pDstResource->SetPrivateData(
         IID_DialogSnapshotResource, sizeof(marker), &marker);
-      log("Expanded dialogue snapshot copy from ", std::dec, fromWidth, "x",
-          fromHeight, " to ", mainWidth, "x", mainHeight);
+      if (verboseLogging())
+        log("Expanded dialogue snapshot copy from ", std::dec,
+            fromWidth, "x", fromHeight, " to ",
+            mainWidth, "x", mainHeight);
     } else if (texture2DDesc(pDstResource, &dstDesc) &&
                texture2DDesc(pSrcResource, &srcDesc) &&
                dstDesc.Width == mainWidth && dstDesc.Height == mainHeight &&
@@ -2744,7 +2758,7 @@ void STDMETHODCALLTYPE ID3D11DeviceContext_CopySubresourceRegion(
         pDstResource->SetPrivateData(
           IID_DialogSnapshotResource, sizeof(marker), &marker);
         static std::atomic<bool> saidSo { false };
-        if (!saidSo.exchange(true))
+        if (verboseLogging() && !saidSo.exchange(true))
           log("Snapshot copy taken from the render-resolution frame instead of"
               " the downscaled backbuffer (", std::dec, mainWidth, "x",
               mainHeight, ")");
@@ -2778,7 +2792,7 @@ void STDMETHODCALLTYPE ID3D11DeviceContext_CopySubresourceRegion(
           dstTwin, 0, 0, 0, 0, srcTwin, 0, nullptr);
         static std::atomic<uint32_t> mirrorLogs{0};
         const uint32_t n = mirrorLogs.fetch_add(1, std::memory_order_relaxed);
-        if (n < 16 || n % 4096 == 0)
+        if (verboseLogging() && (n < 16 || n % 4096 == 0))
           log("SHADOWRES mirrored A->B copy on twins");
         srcTwin->Release();
       }
@@ -2905,10 +2919,10 @@ void STDMETHODCALLTYPE ID3D11DeviceContext_OMSetRenderTargets(
       const uint32_t n = redirectLogs.fetch_add(1, std::memory_order_relaxed);
       if (RTVCount == 0 || !ppRTVs || !ppRTVs[0]) {
         pDSV = shadowTwinDsv;
-        if (n < 16 || n % 4096 == 0)
+        if (verboseLogging() && (n < 16 || n % 4096 == 0))
           log("SHADOWRES caster DSV redirected to twin");
       } else {
-        if (n < 16 || n % 256 == 0)
+        if (verboseLogging() && (n < 16 || n % 256 == 0))
           log("SHADOWRES DSV redirect SKIP: color RTV bound with shadow map");
         shadowTwinDsv->Release();
         shadowTwinDsv = nullptr;
@@ -3695,7 +3709,7 @@ void STDMETHODCALLTYPE ID3D11DeviceContext_PSSetShaderResources(
           substituted[i]->Release();
       static std::atomic<uint32_t> srvLogs{0};
       const uint32_t n = srvLogs.fetch_add(1, std::memory_order_relaxed);
-      if (n < 16 || n % 4096 == 0)
+      if (verboseLogging() && (n < 16 || n % 4096 == 0))
         log("SHADOWRES receiver SRV redirected to twin");
       return;
     }
@@ -3724,10 +3738,12 @@ void STDMETHODCALLTYPE ID3D11DeviceContext_ExecuteCommandList(
 }
 
 #define HOOK_PROC(iface, object, table, index, proc) \
-  hookProc(object, #iface "::" #proc, &table->proc, &iface ## _ ## proc, index)
+  allInstalled = hookProc(object, #iface "::" #proc, &table->proc, \
+    &iface ## _ ## proc, index) && allInstalled
 
 template<typename T>
-void hookProc(void* pObject, const char* pName, T** ppOrig, T* pHook, uint32_t index) {
+bool hookProc(void* pObject, const char* pName, T** ppOrig, T* pHook,
+              uint32_t index) {
   void** vtbl = *reinterpret_cast<void***>(pObject);
 
   MH_STATUS mh = MH_CreateHook(vtbl[index],
@@ -3745,17 +3761,19 @@ void hookProc(void* pObject, const char* pName, T** ppOrig, T* pHook, uint32_t i
       // is on the target and this entry would recurse into our own hook.
       *ppOrig = reinterpret_cast<T*>(vtbl[index]);
     }
-    return;
+    return mh == MH_ERROR_ALREADY_CREATED;
   }
 
   mh = MH_EnableHook(vtbl[index]);
 
   if (mh) {
     log("Failed to enable hook for ", pName, ": ", MH_StatusToString(mh));
-    return;
+    return false;
   }
 
-  log("Created hook for ", pName, " @ ", reinterpret_cast<void*>(pHook));
+  if (verboseLogging())
+    log("Created hook for ", pName, " @ ", reinterpret_cast<void*>(pHook));
+  return true;
 }
 
 void hookDevice(ID3D11Device* pDevice) {
@@ -3764,11 +3782,13 @@ void hookDevice(ID3D11Device* pDevice) {
   if (g_installedHooks & HOOK_DEVICE)
     return;
 
-  log("Hooking device ", pDevice,
-      " msaa=", msaaSamples(),
-      " resolution_trace=", resolutionTraceEnabled());
+  if (verboseLogging())
+    log("Hooking device ", pDevice,
+        " msaa=", msaaSamples(),
+        " resolution_trace=", resolutionTraceEnabled());
 
   DeviceProcs* procs = &g_deviceProcs;
+  bool allInstalled = true;
   HOOK_PROC(ID3D11Device, pDevice, procs, 3,  CreateBuffer);
   HOOK_PROC(ID3D11Device, pDevice, procs, 27, CreateDeferredContext);
   HOOK_PROC(ID3D11Device, pDevice, procs, 4,  CreateTexture1D);
@@ -3782,6 +3802,9 @@ void hookDevice(ID3D11Device* pDevice) {
     HOOK_PROC(ID3D11Device, pDevice, procs, 9, CreateRenderTargetView);
 
   g_installedHooks |= HOOK_DEVICE;
+  log("FIXES d3d11_device_hooks=",
+      allInstalled ? "active" : "partial_failure",
+      " anisotropic=", std::dec, anisotropyLevel());
 }
 
 void hookContext(ID3D11DeviceContext* pContext) {
@@ -3801,8 +3824,10 @@ void hookContext(ID3D11DeviceContext* pContext) {
   if (g_installedHooks & flag)
     return;
 
-  log("Hooking context ", pContext);
+  if (verboseLogging())
+    log("Hooking context ", pContext);
 
+  bool allInstalled = true;
   HOOK_PROC(ID3D11DeviceContext, pContext, procs, 50, ClearRenderTargetView);
   HOOK_PROC(ID3D11DeviceContext, pContext, procs, 53, ClearDepthStencilView);
   HOOK_PROC(ID3D11DeviceContext, pContext, procs, 52, ClearUnorderedAccessViewFloat);
@@ -3834,6 +3859,10 @@ void hookContext(ID3D11DeviceContext* pContext) {
   HOOK_PROC(ID3D11DeviceContext, pContext, procs, 48, UpdateSubresource);
 
   g_installedHooks |= flag;
+  log("FIXES d3d11_",
+      flag == HOOK_IMM_CTX ? "immediate_context_hooks="
+                           : "deferred_context_hooks=",
+      allInstalled ? "active" : "partial_failure");
 
   /* Immediate and deferred contexts share one vtable, so the second context to
      reach hookProc gets MH_ERROR_ALREADY_CREATED and its originals are NOT

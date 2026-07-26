@@ -16,8 +16,13 @@ endif
 version_data = configuration_data()
 version_data.set('VERSION_COMMA', ','.join(version_parts) + ',0')
 version_data.set_quoted('VERSION_STRING', meson.project_version() + '.0')
+version_data.set_quoted('VERSION_SHORT', meson.project_version())
 version_rc = configure_file(
   output : 'version.rc',
+  configuration : version_data)
+version_header = configure_file(
+  input : 'src/version.h.in',
+  output : 'version.h',
   configuration : version_data)
 resource_includes = include_directories('.')
 

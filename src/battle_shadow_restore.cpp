@@ -713,19 +713,21 @@ size_t dispatchBattleCharaShadows(uintptr_t helper, uintptr_t scene) {
         const size_t after = shadowLayerCount(helper, 0x48);
         dispatchedBattleCharas.insert(chara);
         ++dispatched;
-        atfix::log("BATTLE_SHADOW_DISPATCH chara=",
-          reinterpret_cast<void*>(chara), " vtable_rva=0x", std::hex,
-          vtable - reinterpret_cast<uintptr_t>(gameBase), std::dec,
-          " character=", reinterpret_cast<void*>(character),
-          " registry_before=", before, " registry_after=", after);
+        if (sceneTraceEnabled())
+          atfix::log("BATTLE_SHADOW_DISPATCH chara=",
+            reinterpret_cast<void*>(chara), " vtable_rva=0x", std::hex,
+            vtable - reinterpret_cast<uintptr_t>(gameBase), std::dec,
+            " character=", reinterpret_cast<void*>(character),
+            " registry_before=", before, " registry_after=", after);
       }
     }
   }
-  atfix::log("BATTLE_SHADOW_SCAN helper=", reinterpret_cast<void*>(helper),
-    " gamemode=", reinterpret_cast<void*>(gameMode),
-    " scene=", reinterpret_cast<void*>(scene),
-    " context_live=", contextLive,
-    " candidates=", candidates, " dispatched=", dispatched);
+  if (sceneTraceEnabled())
+    atfix::log("BATTLE_SHADOW_SCAN helper=", reinterpret_cast<void*>(helper),
+      " gamemode=", reinterpret_cast<void*>(gameMode),
+      " scene=", reinterpret_cast<void*>(scene),
+      " context_live=", contextLive,
+      " candidates=", candidates, " dispatched=", dispatched);
   return dispatched;
 }
 
@@ -906,11 +908,12 @@ void registerBattleCharaShadows() {
       g_registeredCharacters.insert(character);
     }
     ++registered;
-    atfix::log("BATTLE_SHADOW_REGISTER which=", which,
-      " helper=", reinterpret_cast<void*>(helper),
-      " chara=", reinterpret_cast<void*>(chara),
-      " character=", reinterpret_cast<void*>(character),
-      " registry_before=", before, " registry_after=", after);
+    if (sceneTraceEnabled())
+      atfix::log("BATTLE_SHADOW_REGISTER which=", which,
+        " helper=", reinterpret_cast<void*>(helper),
+        " chara=", reinterpret_cast<void*>(chara),
+        " character=", reinterpret_cast<void*>(character),
+        " registry_before=", before, " registry_after=", after);
   }
 
   // Registering into the battle helper only matters if the renderer traverses
@@ -935,12 +938,13 @@ void registerBattleCharaShadows() {
       *slot = helper;
     }
   }
-  atfix::log("BATTLE_SHADOW_REGISTER_SUMMARY which=", which,
-    " helper=", reinterpret_cast<void*>(helper),
-    " scene=", reinterpret_cast<void*>(scene), " registered=", registered,
-    " published=", published, " republished=", republished,
-    " saved=", reinterpret_cast<void*>(
-      g_savedGlobalHelper.load(std::memory_order_acquire)));
+  if (sceneTraceEnabled())
+    atfix::log("BATTLE_SHADOW_REGISTER_SUMMARY which=", which,
+      " helper=", reinterpret_cast<void*>(helper),
+      " scene=", reinterpret_cast<void*>(scene), " registered=", registered,
+      " published=", published, " republished=", republished,
+      " saved=", reinterpret_cast<void*>(
+        g_savedGlobalHelper.load(std::memory_order_acquire)));
 }
 
 // Re-register the party's *current* render nodes. If an attack cut-in swaps a
@@ -1085,9 +1089,10 @@ void clearBattleSnodeFlags(const char* site) {
       ++cleared;
     }
   }
-  atfix::log("CUTIN_SNODE_CLEAR site=", site, " cleared=", cleared,
-    " nodes=", nodes,
-    " state=", currentBattleState() ? currentBattleState() : "?");
+  if (sceneTraceEnabled())
+    atfix::log("CUTIN_SNODE_CLEAR site=", site, " cleared=", cleared,
+      " nodes=", nodes,
+      " state=", currentBattleState() ? currentBattleState() : "?");
 }
 
 
@@ -1149,7 +1154,8 @@ uintptr_t tracedDeferredHideArm(uintptr_t obj, uintptr_t target,
     // "Deferred-hide arm hook installed=1" is true even when the subsystem goes
     // on to do nothing, which is exactly how a silently inert caster clear cost
     // a day of debugging on 2026-07-26.
-    if (!g_deferredHideArmFired.exchange(true, std::memory_order_acq_rel))
+    if (!g_deferredHideArmFired.exchange(true, std::memory_order_acq_rel) &&
+        sceneTraceEnabled())
       atfix::log("Deferred-hide arm force-expired a caster fade (first hit)");
   }
   return result;
@@ -1208,7 +1214,7 @@ uintptr_t tracedShadowScenePass(uintptr_t self) {
   if (swapped)
     *slot = globalBefore;
 
-  if (battleActive && (call % 120) == 0)
+  if (sceneTraceEnabled() && battleActive && (call % 120) == 0)
     atfix::log("SCENE_PASS call=", call, " battle_active=1",
       " global=", reinterpret_cast<void*>(globalBefore),
       " battle_helper=", reinterpret_cast<void*>(battleHelper),
@@ -1257,10 +1263,11 @@ uintptr_t tracedShadowHelperInit(uintptr_t helper, uintptr_t id,
     g_battleTickCounter.store(0, std::memory_order_release);
     g_snodeRestoreDeadlineMs.store(0, std::memory_order_release);
     g_battleActive.store(true, std::memory_order_release);
-    atfix::log("==== BATTLE_START ms=", GetTickCount64(),
-      " gamemode=", reinterpret_cast<void*>(gameMode),
-      " helper=", reinterpret_cast<void*>(helper),
-      " scene=", reinterpret_cast<void*>(resource), " ====");
+    if (sceneTraceEnabled())
+      atfix::log("==== BATTLE_START ms=", GetTickCount64(),
+        " gamemode=", reinterpret_cast<void*>(gameMode),
+        " helper=", reinterpret_cast<void*>(helper),
+        " scene=", reinterpret_cast<void*>(resource), " ====");
     if (battleShadowRestoreEnabled() && g_battleAddrs->casterRestore &&
         gameMode &&
         locateBattleCharaContainer(gameMode, resource, "init", false)) {
@@ -1286,35 +1293,37 @@ uintptr_t tracedShadowHelperInit(uintptr_t helper, uintptr_t id,
       g_battleAddrs->casterRestore &&
       callerRva == g_battleAddrs->battlePublishRet)
     replayed = dispatchBattleCharaShadows(helper, resource);
-  // The per-frame scene shadow pass reads the active helper from the manager
-  // global (+helperSlotOffset) and early-outs when it is null; log it here to
-  // see whether battle leaves it unset while field publishes it.
-  const uintptr_t globalMgr = gameBase && g_battleAddrs &&
-      g_battleAddrs->managerSlot
-    ? *reinterpret_cast<const uintptr_t*>(
-        gameBase + g_battleAddrs->managerSlot) : 0;
-  const uintptr_t globalActiveHelper = globalMgr
-    ? *reinterpret_cast<const uintptr_t*>(
-        globalMgr + g_battleAddrs->helperSlotOffset) : 0;
-  atfix::log("SHADOW_HELPER_INIT caller_rva=0x", std::hex, callerRva,
-    std::dec,
-    " global_active_helper=", reinterpret_cast<void*>(globalActiveHelper),
-    " helper=", reinterpret_cast<void*>(helper),
-    " id=", id,
-    " resource=", reinterpret_cast<void*>(resource),
-    " config=", reinterpret_cast<void*>(config),
-    " slot08=", reinterpret_cast<void*>(
-      helper ? *reinterpret_cast<const uintptr_t*>(helper + 0x08) : 0),
-    " slot10=", reinterpret_cast<void*>(
-      helper ? *reinterpret_cast<const uintptr_t*>(helper + 0x10) : 0),
-    " slot18=", reinterpret_cast<void*>(
-      helper ? *reinterpret_cast<const uintptr_t*>(helper + 0x18) : 0),
-    " slot30=", reinterpret_cast<void*>(
-      helper ? *reinterpret_cast<const uintptr_t*>(helper + 0x30) : 0),
-    " slot38=", reinterpret_cast<void*>(
-      helper ? *reinterpret_cast<const uintptr_t*>(helper + 0x38) : 0),
-    " result=", result,
-    " replayed=", replayed);
+  if (sceneTraceEnabled()) {
+    // The per-frame scene shadow pass reads the active helper from the manager
+    // global (+helperSlotOffset) and early-outs when it is null; report it only
+    // for scene diagnostics so a normal run does not perform log-only reads.
+    const uintptr_t globalMgr = gameBase && g_battleAddrs &&
+        g_battleAddrs->managerSlot
+      ? *reinterpret_cast<const uintptr_t*>(
+          gameBase + g_battleAddrs->managerSlot) : 0;
+    const uintptr_t globalActiveHelper = globalMgr
+      ? *reinterpret_cast<const uintptr_t*>(
+          globalMgr + g_battleAddrs->helperSlotOffset) : 0;
+    atfix::log("SHADOW_HELPER_INIT caller_rva=0x", std::hex, callerRva,
+      std::dec,
+      " global_active_helper=", reinterpret_cast<void*>(globalActiveHelper),
+      " helper=", reinterpret_cast<void*>(helper),
+      " id=", id,
+      " resource=", reinterpret_cast<void*>(resource),
+      " config=", reinterpret_cast<void*>(config),
+      " slot08=", reinterpret_cast<void*>(
+        helper ? *reinterpret_cast<const uintptr_t*>(helper + 0x08) : 0),
+      " slot10=", reinterpret_cast<void*>(
+        helper ? *reinterpret_cast<const uintptr_t*>(helper + 0x10) : 0),
+      " slot18=", reinterpret_cast<void*>(
+        helper ? *reinterpret_cast<const uintptr_t*>(helper + 0x18) : 0),
+      " slot30=", reinterpret_cast<void*>(
+        helper ? *reinterpret_cast<const uintptr_t*>(helper + 0x30) : 0),
+      " slot38=", reinterpret_cast<void*>(
+        helper ? *reinterpret_cast<const uintptr_t*>(helper + 0x38) : 0),
+      " result=", result,
+      " replayed=", replayed);
+  }
   return result;
 }
 
@@ -1345,14 +1354,15 @@ uintptr_t tracedBattleActorInit(uintptr_t actor, uintptr_t scene) {
       deferred = true;
     }
   }
-  atfix::log("BATTLE_ACTOR_INIT actor=", reinterpret_cast<void*>(actor),
-    " scene=", reinterpret_cast<void*>(scene),
-    " helper=", reinterpret_cast<void*>(helper),
-    " character=", reinterpret_cast<void*>(character),
-    " already_initialized=", alreadyInitialized,
-    " context_before=", reinterpret_cast<void*>(contextBefore),
-    " result=", result,
-    " deferred=", deferred);
+  if (sceneTraceEnabled())
+    atfix::log("BATTLE_ACTOR_INIT actor=", reinterpret_cast<void*>(actor),
+      " scene=", reinterpret_cast<void*>(scene),
+      " helper=", reinterpret_cast<void*>(helper),
+      " character=", reinterpret_cast<void*>(character),
+      " already_initialized=", alreadyInitialized,
+      " context_before=", reinterpret_cast<void*>(contextBefore),
+      " result=", result,
+      " deferred=", deferred);
   return result;
 }
 
@@ -1753,7 +1763,8 @@ bool installTacticalSceneHooks(BYTE* base, const Game& game) {
         reinterpret_cast<void*>(&tracedDeferredHideArm),
         reinterpret_cast<void**>(&originalDeferredHideArm));
       g_deferredHideArmActive.store(armed, std::memory_order_release);
-      atfix::log("Deferred-hide arm hook installed=", armed);
+      if (sceneTraceEnabled())
+        atfix::log("Deferred-hide arm hook installed=", armed);
     }
   }
   return true;
@@ -1821,8 +1832,9 @@ uintptr_t tracedBattleModeCtor(uintptr_t self, uintptr_t a, uintptr_t b,
   g_battleSeenLiveMode.store(self, std::memory_order_release);
   g_battleDeadFrames.store(0, std::memory_order_release);
   g_battleActive.store(true, std::memory_order_release);
-  atfix::log("==== BATTLE_BEGIN ms=", GetTickCount64(),
-    " mode=", reinterpret_cast<void*>(self), " (mode ctor) ====");
+  if (sceneTraceEnabled())
+    atfix::log("==== BATTLE_BEGIN ms=", GetTickCount64(),
+      " mode=", reinterpret_cast<void*>(self), " (mode ctor) ====");
   return result;
 }
 
@@ -1844,8 +1856,9 @@ uintptr_t tracedBattleModeDtor(uintptr_t self) {
     g_battleRegistered.store(false, std::memory_order_release);
     g_battleDeadFrames.store(0, std::memory_order_release);
     g_snodeRestoreDeadlineMs.store(0, std::memory_order_release);
-    atfix::log("==== BATTLE_END ms=", GetTickCount64(),
-      " mode=", reinterpret_cast<void*>(self), " (mode dtor) ====");
+    if (sceneTraceEnabled())
+      atfix::log("==== BATTLE_END ms=", GetTickCount64(),
+        " mode=", reinterpret_cast<void*>(self), " (mode dtor) ====");
   } else {
     // Two live battle modes should be impossible. Say so rather than quietly
     // tearing down state that belongs to a different one.
@@ -1902,7 +1915,7 @@ void tracedFmCoreUpdate(uintptr_t self, float delta) {
         // helper away mid-fight, and the log is what would show that.
         static std::atomic<uint32_t> restores{0};
         const uint32_t seen = restores.fetch_add(1, std::memory_order_relaxed);
-        if (seen < 8)
+        if (seen < 8 && sceneTraceEnabled())
           atfix::log("BATTLE_SHADOW_FIELD_RESTORE helper=",
             reinterpret_cast<void*>(saved), " battle_active=",
             g_battleActive.load(std::memory_order_acquire));
@@ -1999,24 +2012,45 @@ void installBattleShadowRestore(BYTE* base, const Game& game) {
     installShadowConstructorTrace(base, game);
   const bool shadowMappingTraceInstalled = installShadowMappingTrace(base, game);
   const bool battleStateInstalled = installMeruruBattleStateHook(base, game);
-  if (game.atlasVariant == AtlasLaterArland || game.atlasVariant == AtlasTotori)
-    atfix::log("Battle-state hook installed=", battleStateInstalled);
+  const bool cutinRequested =
+    atfix::featureEnabled(atfix::Feature::CutInShadows) ||
+    atfix::featureEnabled(atfix::Feature::CutInDimHold);
+  bool tacticalInstalled = false;
   if (g_battleAddrs && g_battleAddrs->hideAllRva)
-    atfix::log("Tactical caster-clear hooks installed=",
-      installTacticalSceneHooks(base, game));
+    tacticalInstalled = installTacticalSceneHooks(base, game);
   const bool cutinFlagTraceInstalled = installCutinFlagTrace(base, game);
   if (cutinFlagTraceEnabled())
     atfix::log("Cutin flag trace installed=", cutinFlagTraceInstalled);
-  atfix::log("Battle-shadow hooks shadow_layers=", shadowLayerTraceInstalled,
-    " shadow_constructors=", shadowConstructorTraceInstalled,
-    " shadow_mapping=", shadowMappingTraceInstalled);
-  // Last, and reported on its own line: this is what decides whether battle
-  // start and end are known exactly or inferred from the frame watchdog.
-  atfix::log("Battle-mode gate installed=", installBattleModeGate(base),
-    " (0 = falling back to the frame watchdog)");
+  const bool battleGateInstalled = installBattleModeGate(base);
+  bool fieldRestoreInstalled = false;
   if (g_battleAddrs && g_battleAddrs->fmCoreUpdateRva)
-    atfix::log("Field-tick helper restore installed=",
-      installFieldTickRestore(base));
+    fieldRestoreInstalled = installFieldTickRestore(base);
+
+  const bool rorona = game.atlasVariant == AtlasRorona;
+  const bool battleShadowsRequested =
+    rorona && atfix::featureEnabled(atfix::Feature::BattleShadows);
+  const char* battleShadowsStatus = !rorona ? "game_native"
+    : !battleShadowsRequested ? "off"
+    : shadowMappingTraceInstalled ? "active" : "failed";
+  const bool stateTrackingInstalled =
+    shadowMappingTraceInstalled || battleStateInstalled;
+  const char* cutinStatus = !cutinRequested ? "off"
+    : tacticalInstalled ? "active" : "failed";
+  const char* stateTrackingStatus = !battleShadowRestoreEnabled() ? "off"
+    : stateTrackingInstalled ? "active" : "failed";
+  atfix::log("FIXES battle shadows=", battleShadowsStatus,
+    " state_tracking=", stateTrackingStatus,
+    " cutin_protection=", cutinStatus,
+    " battle_gate=", battleGateInstalled ? "active" : "fallback",
+    " field_restore=", rorona
+      ? (fieldRestoreInstalled ? "active" : "failed") : "not_applicable");
+  if (atfix::verboseLogging() || shadowLayerTraceEnabled() ||
+      shadowConstructorTraceEnabled() || shadowMappingTraceEnabled())
+    atfix::log("DIAGNOSTICS battle shadow_layers=", shadowLayerTraceInstalled,
+      " shadow_constructors=", shadowConstructorTraceInstalled,
+      " shadow_mapping=", shadowMappingTraceInstalled,
+      " actor_clear=",
+      g_deferredHideArmActive.load(std::memory_order_acquire));
 }
 
 // ==== E: state tracking (was global ns) ====
@@ -2130,10 +2164,11 @@ void trackBattleStateTick() {
   // <unknown> rather than as a null const char*: streaming null sets badbit and
   // would take the rest of the log with it, turning "this state is not in the
   // table" into "logging stopped". The RVA is what identifies the missing entry.
-  atfix::log("BATTLE_STATE ms=", GetTickCount64(), " state=",
-    name ? name : "<unknown>", " vt_rva=0x", std::hex,
-    gameBase ? vt - reinterpret_cast<uintptr_t>(gameBase) : vt, std::dec,
-    " obj=", reinterpret_cast<void*>(stateObj));
+  if (sceneTraceEnabled())
+    atfix::log("BATTLE_STATE ms=", GetTickCount64(), " state=",
+      name ? name : "<unknown>", " vt_rva=0x", std::hex,
+      gameBase ? vt - reinterpret_cast<uintptr_t>(gameBase) : vt, std::dec,
+      " obj=", reinterpret_cast<void*>(stateObj));
 }
 
 // The current battle state name, or nullptr outside battle.
@@ -2346,8 +2381,9 @@ void restorePublishedHelper(const char* reason) {
   if (saved) {
     if (uintptr_t* slot = globalActiveHelperSlot())
       *slot = saved;
-    atfix::log("BATTLE_SHADOW_RESTORE reason=", reason,
-      " restored=", reinterpret_cast<void*>(saved));
+    if (sceneTraceEnabled())
+      atfix::log("BATTLE_SHADOW_RESTORE reason=", reason,
+        " restored=", reinterpret_cast<void*>(saved));
   }
 }
 
@@ -2381,8 +2417,9 @@ void battleShadowFrameTick() {
                    gameMode)) &&
         g_battleDeadFrames.fetch_add(1, std::memory_order_acq_rel) >= 20) {
       restorePublishedHelper("gamemode_dead");
-      atfix::log("==== BATTLE_END ms=", GetTickCount64(),
-        " gamemode=", reinterpret_cast<void*>(gameMode), " ====");
+      if (sceneTraceEnabled())
+        atfix::log("==== BATTLE_END ms=", GetTickCount64(),
+          " gamemode=", reinterpret_cast<void*>(gameMode), " ====");
       g_battleActive.store(false, std::memory_order_release);
       g_lastBattleStateVt.store(0, std::memory_order_release);
       g_battleStateSlot.store(0, std::memory_order_release);

@@ -2059,12 +2059,15 @@ void detectAndInstallGameHooks() {
     supportedGame = true;
     frameAtlasCacheDefault.store(
       game.atlasVariant == AtlasRorona, std::memory_order_relaxed);
-    atfix::log("Recognized menu-fix executable ", game.executable,
-      game.exeBuild == BuildMultilingual ? " (multilingual build)"
-                                         : " (English build)");
+    atfix::log("GAME title=", atfix::titleName(atfix::currentTitle()),
+      " executable=", game.executable,
+      " build=", game.exeBuild == BuildMultilingual
+        ? "multilingual" : "English");
     const char* enabled = std::getenv("ARLAND_MENU_FIX");
-    if (enabled && enabled[0] == '0')
+    if (enabled && enabled[0] == '0') {
+      atfix::log("FIXES engine=off (ARLAND_MENU_FIX=0)");
       return;
+    }
     auto* target = reinterpret_cast<BYTE*>(module) + game.pathCheckRva;
     const std::array<BYTE, 18> expected = {
       0x40, game.pushedRegister, 0x48, 0x81, 0xec, 0xc0, 0x00, 0x00,
@@ -2079,7 +2082,8 @@ void detectAndInstallGameHooks() {
     gameBase = reinterpret_cast<BYTE*>(module);
     const bool textBitmapAllocatorInstalled =
       installTextBitmapAllocator(gameBase, game);
-    installHiResTextConsumer(gameBase, game);
+    const bool hiResTextConsumerInstalled =
+      installHiResTextConsumer(gameBase, game);
     // The BUC scope replays through cachedRenderText, so it needs the atlas
     // hooks; without them the ctor/dtor hooks would only count balloons.
     const bool bucTextCacheInstalled = atlasInstalled
@@ -2089,16 +2093,40 @@ void detectAndInstallGameHooks() {
     atfix::installBattleShadowRestore(gameBase, game);
     atfix::installFieldPhysics(gameBase, game);
     atfix::installWorldMapFix(gameBase, game);
-    atfix::log("Menu hooks pssg=", pathInstalled,
-      " atlas=", atlasInstalled,
-      " frame_atlas_cache=", frameAtlasCacheEnabled(),
-      " text_bitmap_cache=", textBitmapCacheEnabled(),
-      " text_bitmap_allocator=", textBitmapAllocatorInstalled,
-      " buc_text_cache=", bucTextCacheInstalled,
-      " stats=", menuStatsEnabled(),
-      " deep_stats=", deepStatsInstalled);
+    const bool hiresRequested = atfix::hiResTextEnabled();
+    const char* hiresStatus = game.exeBuild != BuildEnglish
+      ? "not_supported"
+      : !hiresRequested ? "off"
+      : textBitmapAllocatorInstalled && hiResTextConsumerInstalled
+        ? "active" : "failed";
+    const char* frameCacheStatus = game.atlasVariant != AtlasRorona
+      ? "not_applicable"
+      : !frameAtlasCacheEnabled() ? "off"
+      : atlasInstalled ? "active" : "failed";
+    const char* bucSetting = std::getenv("ARLAND_BUC_TEXT_CACHE");
+    const bool conversationCacheRequested =
+      !bucSetting || bucSetting[0] != '0';
+    const char* conversationCacheStatus =
+      game.atlasVariant != AtlasLaterArland ? "not_applicable"
+      : !conversationCacheRequested ? "off"
+      : bucTextCacheInstalled ? "active" : "failed";
+    atfix::log("FIXES engine menu_hitch=",
+      pathInstalled && atlasInstalled ? "active" : "failed",
+      " atlas_cache=", atlasInstalled ? "active" : "failed",
+      " frame_atlas_cache=", frameCacheStatus,
+      " high_res_text=", hiresStatus,
+      " conversation_cache=", conversationCacheStatus);
+    if (atfix::verboseLogging())
+      atfix::log("DIAGNOSTICS menu_stats=", menuStatsEnabled(),
+        " deep_stats=", deepStatsInstalled,
+        " text_bitmap_cache=", textBitmapCacheEnabled(),
+        " text_bitmap_allocator=", textBitmapAllocatorInstalled,
+        " hires_consumer=", hiResTextConsumerInstalled);
     return;
   }
+  atfix::log("GAME unsupported executable=", baseName(imagePath),
+    " text_size=", std::dec, textSize,
+    "; no game-specific fixes installed");
 }
 
 } // namespace
@@ -2162,14 +2190,17 @@ void traceMenuPresent(uint64_t durationMicros, uint64_t intervalMicros) {
   // the currently-down bit (0x8000) with our own edge detection — Wine does not
   // reliably implement GetAsyncKeyState's "recently pressed" low bit. The ms
   // timestamp matches against the ms on each SHADOW window line.
-  static bool markKeyWasDown[3] = {false, false, false};
-  const int markKeys[3] = {VK_F7, VK_F8, VK_F9};
-  for (int i = 0; i < 3; ++i) {
-    const bool down = (GetAsyncKeyState(markKeys[i]) & 0x8000) != 0;
-    if (down && !markKeyWasDown[i])
-      atfix::log("USER_MARK key=F", 7 + i, " ms=", GetTickCount64(),
-        " battle_active=", atfix::g_battleActive.load(std::memory_order_acquire));
-    markKeyWasDown[i] = down;
+  if (atfix::verboseLogging() || std::getenv("ARLAND_SCENE_TRACE")) {
+    static bool markKeyWasDown[3] = {false, false, false};
+    const int markKeys[3] = {VK_F7, VK_F8, VK_F9};
+    for (int i = 0; i < 3; ++i) {
+      const bool down = (GetAsyncKeyState(markKeys[i]) & 0x8000) != 0;
+      if (down && !markKeyWasDown[i])
+        atfix::log("USER_MARK key=F", 7 + i, " ms=", GetTickCount64(),
+          " battle_active=",
+          atfix::g_battleActive.load(std::memory_order_acquire));
+      markKeyWasDown[i] = down;
+    }
   }
   if (frameAtlasCacheEnabled()) {
     std::lock_guard lock(atlasMutex);

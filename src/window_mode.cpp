@@ -88,7 +88,7 @@ void restyle(HWND window, bool firstTime) {
         " attempts; leaving it alone from here");
     return;
   }
-  if (firstTime)
+  if (firstTime && verboseLogging())
     log("Borderless: applying to window ", window, ", current style 0x",
       std::hex, GetWindowLongPtrA(window, GWL_STYLE), std::dec,
       ", owned by ",
@@ -115,8 +115,8 @@ void restyle(HWND window, bool firstTime) {
     return;
   const LONG width = bounds.right - bounds.left;
   const LONG height = bounds.bottom - bounds.top;
-  log("Borderless window applied: ", std::dec, width, "x", height,
-    " at ", bounds.left, ",", bounds.top);
+  log("FIXES borderless=active size=", std::dec, width, "x", height,
+    " position=", bounds.left, ",", bounds.top);
   // The window always fills the monitor, so a display resolution smaller than
   // it is scaled up to fit. That is legitimate (it is how you downsample from a
   // higher render resolution to a cheaper present one) but it looks like a

@@ -338,8 +338,8 @@ bool loadFontFile() {
   if (!stbtt_InitFont(&g_font, g_ttf.data(),
         stbtt_GetFontOffsetForIndex(g_ttf.data(), 0)))
     return false;
-  log("HiResText: loaded arland-hires-font.ttf override (", std::dec,
-    static_cast<unsigned>(g_ttf.size()), " bytes)");
+  log("FIXES high_res_text_font=active source=arland-hires-font.ttf bytes=",
+    std::dec, static_cast<unsigned>(g_ttf.size()));
   return true;
 }
 
@@ -381,8 +381,8 @@ bool loadFont() {
   const FontChoice& f = gameFont();
   if (!stbtt_InitFont(&g_font, f.data, stbtt_GetFontOffsetForIndex(f.data, 0)))
     return false;
-  log("HiResText: using embedded font ", f.name, " (", std::dec, f.size,
-    " bytes)");
+  log("FIXES high_res_text_font=active source=embedded name=", f.name,
+    " bytes=", std::dec, f.size);
   return true;
 }
 void ensureInit() {
@@ -703,7 +703,8 @@ bool hiResTextEnabled() {
 bool hiResTextRerender(uintptr_t renderer, const char* utf8,
                        HiResAllocFn alloc, HiResFreeFn free) {
   static std::atomic<bool> logged = { false };
-  if (!logged.exchange(true, std::memory_order_relaxed))
+  if (verboseLogging() &&
+      !logged.exchange(true, std::memory_order_relaxed))
     log("HiResText: mode=", static_cast<int>(uiFontMode()),
       " enabled=", hiResTextEnabled() ? 1 : 0,
       " title=", static_cast<int>(currentTitle()),

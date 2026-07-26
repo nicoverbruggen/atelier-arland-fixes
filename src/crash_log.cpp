@@ -16,6 +16,7 @@
 #include <cstdlib>
 #include <cstring>
 
+#include "config.h"
 #include "crash_log.h"
 #include "log.h"
 
@@ -251,8 +252,10 @@ void installCrashLogger() {
     if (value && value[0] == '0')
       return false;
     previousFilter = SetUnhandledExceptionFilter(&crashFilter);
-    log("Crash logger installed (previous filter=",
-      reinterpret_cast<void*>(previousFilter), ")");
+    log("FIXES crash_logging=active");
+    if (verboseLogging())
+      log("Crash logger installed (previous filter=",
+        reinterpret_cast<void*>(previousFilter), ")");
     return true;
   }();
   (void)once;

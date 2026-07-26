@@ -395,11 +395,15 @@ bool installFieldPhysics(BYTE* base, const Game& game) {
     log("FIELDPHYS stabilizer needs the threshold rescale; leaving it off");
     wantStabilizer = false;
   }
-  if (!wantFix && !wantStabilizer && !fieldTraceEnabled())
+  if (!wantFix && !wantStabilizer && !fieldTraceEnabled()) {
+    log("FIXES field_physics=off");
     return false;
+  }
   const FieldPhysicsAddrs* addrs = addressesFor(game);
-  if (!addrs)
+  if (!addrs) {
+    log("FIXES field_physics=failed (unsupported executable)");
     return false;
+  }
 
   // One array covers all six builds for each function: no RIP displacement
   // falls inside either 16-byte window.
@@ -434,10 +438,11 @@ bool installFieldPhysics(BYTE* base, const Game& game) {
     g_moveThreshold = nullptr;   // never leave a rescaled value without the hook
     g_stabilizerActive = false;
   }
-  log("FIELDPHYS installed=", installed ? 1 : 0,
+  log("FIXES field_physics=", installed ? "active" : "failed",
       " engine_fix=", g_moveThreshold ? 1 : 0,
-      " stabilizer=", g_stabilizerActive ? 1 : 0,
-      " trace=", fieldTraceEnabled() ? 1 : 0);
+      " stabilizer=", g_stabilizerActive ? 1 : 0);
+  if (verboseLogging())
+    log("DIAGNOSTICS field_trace=", fieldTraceEnabled() ? 1 : 0);
   return installed;
 }
 

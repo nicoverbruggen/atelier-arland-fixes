@@ -197,7 +197,7 @@ These are environment variables, not INI keys: they are for narrowing down a pro
 
 | Variable | Effect |
 | --- | --- |
-| `ARLAND_VERBOSE_LOG=1` | Extra logging, same as `[Diagnostics] VerboseLogging`. Turns on the observing diagnostics below (the frame-time line, menu statistics, scene tracking and the memory probe), so a log can be asked for without anyone editing environment variables. The heavier traces stay opt-in individually, and `ARLAND_MENU_TRANSITION_TRACE` is deliberately never included because it changes the code path it reports on. |
+| `ARLAND_VERBOSE_LOG=1` | Extra logging, same as `[Diagnostics] VerboseLogging`. Adds implementation details such as hook addresses, resource redirections and battle-object state, and turns on the observing diagnostics below (the frame-time line, menu statistics, scene tracking and the memory probe), so a detailed log can be requested without anyone editing several environment variables. The heavier traces stay opt-in individually, and `ARLAND_MENU_TRANSITION_TRACE` is deliberately never included because it changes the code path it reports on. |
 | `ARLAND_MENU_STATS=1` | Per-drain menu timings and cache hit rates. |
 | `ARLAND_FIELD_TRACE=1` | Logs the field-map character's state around each loss of footing. |
 | `ARLAND_PRESENT_INTERVAL=0` | Forces vsync off (`1`, `2`, `3` present every Nth refresh). Useful with an external frame limiter. Unset, the game's own vsync is left alone; `0` will tear in exclusive fullscreen. |
@@ -214,4 +214,4 @@ Most INI options also have an `ARLAND_`-prefixed override for a single session; 
 
 ## Logs and crash reports
 
-Runtime messages are written to `arland-fix.log` in the game directory; the previous session's log is kept as `arland-fix.log.old`. If the game crashes, the mod appends a `CRASH` post-mortem to the log — the exception, the faulting address as module+offset, registers, and a stack scan — before the process exits. Include both files when reporting a problem.
+Runtime messages are written to `arland-fix.log` in the game directory; the previous session's log is kept as `arland-fix.log.old`. A normal log starts with the mod version, recognized game build, complete configuration and concise `FIXES` lines showing what installed successfully. Warnings and failures are always included, while raw hook addresses, repeated resource operations and battle-object telemetry require verbose logging. If the game crashes, the mod appends a `CRASH` post-mortem to the log — the exception, the faulting address as module+offset, registers, and a stack scan — before the process exits. Include both files when reporting a problem.

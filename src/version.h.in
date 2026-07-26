@@ -1,0 +1,4 @@
+// SPDX-License-Identifier: MIT
+#pragma once
+
+#define ARLAND_FIX_VERSION @VERSION_SHORT@

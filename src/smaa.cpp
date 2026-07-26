@@ -503,7 +503,8 @@ bool smaaRun(ID3D11Device* dev, ID3D11DeviceContext* ctx,
 
   if (!g_init.exchange(true)) {
     if (!initShared(dev)) g_broken = true;
-    else log("SMAA initialized (", std::dec, cd.Width, "x", cd.Height, ")");
+    else log("FIXES smaa=active size=", std::dec,
+      cd.Width, "x", cd.Height);
   }
   if (g_broken)
     return false;

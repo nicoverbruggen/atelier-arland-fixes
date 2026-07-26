@@ -29,6 +29,7 @@
 #include <cstdlib>
 #include <cstring>
 
+#include "config.h"
 #include "worldmap_fix.h"
 #include "log.h"
 #include "mem.h"
@@ -205,10 +206,14 @@ bool STDMETHODCALLTYPE tracedMove(uintptr_t self) {
 
 bool installWorldMapFix(BYTE* base, const Game& game) {
   const bool diagnostic = probeEnabled();
-  if (game.atlasVariant == AtlasRorona)
+  if (game.atlasVariant == AtlasRorona) {
+    log("FIXES world_map=not_applicable");
     return false;
-  if (!fixEnabled() && !diagnostic)
+  }
+  if (!fixEnabled() && !diagnostic) {
+    log("FIXES world_map=off");
     return false;
+  }
 
   g_addrs = addressesFor(game);
   if (!g_addrs) {
@@ -235,10 +240,12 @@ bool installWorldMapFix(BYTE* base, const Game& game) {
   const bool driverOk = moveOk && installMinHookDetour(driver,
     reinterpret_cast<void*>(&tracedDriver),
     reinterpret_cast<void**>(&originalDriver));
-  log("World-map cursor hooks driver_rva=0x", std::hex,
-      g_addrs->driver, " move_rva=0x", g_addrs->move, std::dec,
-      " move=", moveOk,
-      " driver=", driverOk, " fix=", fixEnabled());
+  log("FIXES world_map=", moveOk && driverOk ? "active" : "failed");
+  if (verboseLogging())
+    log("World-map cursor hooks driver_rva=0x", std::hex,
+        g_addrs->driver, " move_rva=0x", g_addrs->move, std::dec,
+        " move=", moveOk,
+        " driver=", driverOk, " fix=", fixEnabled());
   return moveOk && driverOk;
 }
 

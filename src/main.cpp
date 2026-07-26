@@ -8,6 +8,7 @@
 #include "supersample.h"
 #include "sync_fix.h"
 #include "util.h"
+#include "version.h"
 #include "window_mode.h"
 #include "window_title.h"
 
@@ -58,6 +59,9 @@ D3D11Proc loadSystemD3D11() {
   if (d3d11Proc.D3D11CreateDevice)
     return d3d11Proc;
 
+  log("Atelier Arland Fix version ", ARLAND_FIX_VERSION,
+      " verbose=", atfix::verboseLogging() ? 1 : 0);
+
   // Skipped when the mod is stood down: the point of that switch is a process
   // this DLL has not touched, and an installed exception filter is a thing it
   // has touched.
@@ -72,7 +76,7 @@ D3D11Proc loadSystemD3D11() {
   HMODULE libD3D11 = LoadLibraryExA("d3d11_proxy.dll", nullptr, LOAD_LIBRARY_SEARCH_APPLICATION_DIR);
 
   if (libD3D11) {
-    log("Using d3d11_proxy.dll");
+    log("D3D11 forwarding: d3d11_proxy.dll");
   } else {
     std::array<char, MAX_PATH + 1> path = { };
 
@@ -80,7 +84,9 @@ D3D11Proc loadSystemD3D11() {
       return D3D11Proc();
 
     std::strncat(path.data(), "\\d3d11.dll", MAX_PATH);
-    log("Using ", path.data());
+    log("D3D11 forwarding: system d3d11.dll");
+    if (atfix::verboseLogging())
+      log("D3D11 system path: ", path.data());
     libD3D11 = LoadLibraryA(path.data());
 
     if (!libD3D11) {
@@ -96,8 +102,12 @@ D3D11Proc loadSystemD3D11() {
 
   arland::initializeGameHooks();
 
-  log("D3D11CreateDevice             @ ", reinterpret_cast<void*>(d3d11Proc.D3D11CreateDevice));
-  log("D3D11CreateDeviceAndSwapChain @ ", reinterpret_cast<void*>(d3d11Proc.D3D11CreateDeviceAndSwapChain));
+  if (atfix::verboseLogging()) {
+    log("D3D11CreateDevice             @ ",
+      reinterpret_cast<void*>(d3d11Proc.D3D11CreateDevice));
+    log("D3D11CreateDeviceAndSwapChain @ ",
+      reinterpret_cast<void*>(d3d11Proc.D3D11CreateDeviceAndSwapChain));
+  }
   return d3d11Proc;
 }
 
@@ -292,7 +302,8 @@ void hookSwapChain(IDXGISwapChain* swapChain) {
       MH_StatusToString(status));
     return;
   }
-  log("Created transition Present hook @ ", vtable[8]);
+  if (atfix::verboseLogging())
+    log("Created transition Present hook @ ", vtable[8]);
 }
 
 HRESULT STDMETHODCALLTYPE tracedCreateSwapChain(
@@ -345,7 +356,7 @@ void hookFactoryForSwapChain(ID3D11Device* device) {
       if (status)
         log("Failed to hook IDXGIFactory::CreateSwapChain: ",
           MH_StatusToString(status));
-      else
+      else if (atfix::verboseLogging())
         log("Created transition CreateSwapChain hook @ ", vtable[10]);
     }
   }

@@ -270,7 +270,7 @@ ID3D11Texture2D* ssaaRedirectRenderTargetView(
           desc->Format, " differs from backbuffer format ", g_format);
     return nullptr;
   }
-  if (seen < 4)
+  if (seen < 4 && verboseLogging())
     log("SSAA backbuffer render target redirected to ", std::dec,
         g_renderWidth, "x", g_renderHeight);
   g_color->AddRef();
@@ -364,9 +364,11 @@ void ssaaNoteSwapChain(IDXGISwapChain* swapChain) {
   if (ok) {
     g_backbuffer = static_cast<const void*>(back);
     g_active.store(true, std::memory_order_relaxed);
-    log("Supersampling ", std::dec, renderWidth, "x", renderHeight,
-        " -> ", backDesc.Width, "x", backDesc.Height,
-        " (", int(downscaleSamples()), " samples/axis, format ", backDesc.Format, ")");
+    log("FIXES supersampling=initialized render=", std::dec,
+        renderWidth, "x", renderHeight,
+        " display=", backDesc.Width, "x", backDesc.Height,
+        " samples_per_axis=", int(downscaleSamples()),
+        " format=", backDesc.Format);
   } else {
     releaseAll();
     log("Supersampling setup failed; rendering at the backbuffer resolution");
@@ -388,9 +390,8 @@ void ssaaDownscale(IDXGISwapChain* swapChain) {
   if (firstFrame) {
     const uint32_t redirects = g_redirects.load(std::memory_order_relaxed);
     if (redirects)
-      log("SSAA active: ", std::dec, redirects,
-          " backbuffer render target(s) redirected to ",
-          g_renderWidth, "x", g_renderHeight);
+      log("FIXES supersampling=active redirects=", std::dec, redirects,
+          " render=", g_renderWidth, "x", g_renderHeight);
     else
       log("SSAA INACTIVE: this build never bound the backbuffer as a render"
           " target, so the frame is not being supersampled. Clear"
@@ -430,12 +431,14 @@ void ssaaDownscale(IDXGISwapChain* swapChain) {
     unsigned int drawnWidth = 0, drawnHeight = 0;
     largestViewportSeen(&drawnWidth, &drawnHeight);
     const float ratio = float(g_renderHeight) / float(g_displayHeight);
-    log("SSAA frame: render=", std::dec, g_renderWidth, "x", g_renderHeight,
-        " display=", g_displayWidth, "x", g_displayHeight,
-        " ratio=", ratio,
-        " samples/axis=", int(downscaleSamples()),
-        " msaa=", msaaTwinSamples(g_color),
-        " largest_viewport=", drawnWidth, "x", drawnHeight);
+    if (verboseLogging())
+      log("SSAA frame: render=", std::dec,
+          g_renderWidth, "x", g_renderHeight,
+          " display=", g_displayWidth, "x", g_displayHeight,
+          " ratio=", ratio,
+          " samples/axis=", int(downscaleSamples()),
+          " msaa=", msaaTwinSamples(g_color),
+          " largest_viewport=", drawnWidth, "x", drawnHeight);
     if (drawnWidth && (drawnWidth < g_renderWidth ||
                        drawnHeight < g_renderHeight))
       log("SSAA WARNING: the engine never drew at the full render size, so only"
