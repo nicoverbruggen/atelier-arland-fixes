@@ -32,6 +32,15 @@ jobs:
       # no useful message. A mod is dropped into a game folder, not installed,
       # so it cannot ask for a runtime first.
       - run: meson setup build64 --buildtype release -Db_vscrt=static_from_buildtype
+      # The launcher's manifest is embedded verbatim by the resource compiler,
+      # which does not parse it, and neither rc.exe nor windres complains about
+      # malformed XML. Windows does: it refuses to start the process with "the
+      # side-by-side configuration is incorrect" and puts the real reason only
+      # in the event log. So the well-formedness check has to happen here.
+      # Watch for "--" in a comment, which XML forbids and which the repo's
+      # prose style otherwise uses freely as an em dash.
+      - name: Check the launcher manifest is well-formed XML
+        run: python -c "import xml.dom.minidom; xml.dom.minidom.parse('src/config_gui/arland-fix-launcher.manifest')"
       - run: meson compile -C build64
       - uses: actions/upload-artifact@v7
         with:

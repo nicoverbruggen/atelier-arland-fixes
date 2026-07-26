@@ -7,10 +7,6 @@
       processorArchitecture="*"/>
   <description>Atelier Arland Fixes launcher</description>
 
-  <!-- The whole point of this manifest: without a dependency on ComCtl32
-       version 6 the process gets the 5.82 common controls, which are the flat
-       grey Windows-95 ones. With it, the tab control, buttons, checkboxes and
-       combo boxes are drawn by the visual style the OS is actually running. -->
   <dependency>
     <dependentAssembly>
       <assemblyIdentity
@@ -23,30 +19,15 @@
     </dependentAssembly>
   </dependency>
 
-  <!-- Declaring the versions of Windows this was tested against; without it
-       Windows applies compatibility shims aimed at much older software. -->
   <compatibility xmlns="urn:schemas-microsoft-com:compatibility.v1">
     <application>
-      <supportedOS Id="{8e0f7a12-bfb3-4fe8-b9a5-48fd50a15a9a}"/> <!-- 10 / 11 -->
-      <supportedOS Id="{1f676c76-80e1-4239-95bb-83d0f6d0da78}"/> <!-- 8.1 -->
-      <supportedOS Id="{4a2f28e3-53b9-4441-ba9c-d69d4a4a6e38}"/> <!-- 8 -->
-      <supportedOS Id="{35138b9a-5d96-4fbd-8e2d-a2440225f93a}"/> <!-- 7 -->
+      <supportedOS Id="{8e0f7a12-bfb3-4fe8-b9a5-48fd50a15a9a}"/>
+      <supportedOS Id="{1f676c76-80e1-4239-95bb-83d0f6d0da78}"/>
+      <supportedOS Id="{4a2f28e3-53b9-4441-ba9c-d69d4a4a6e38}"/>
+      <supportedOS Id="{35138b9a-5d96-4fbd-8e2d-a2440225f93a}"/>
     </application>
   </compatibility>
 
-  <!-- System DPI awareness. The layout is no longer fixed pixels: every
-       coordinate goes through a scale factor (see S() in main.cpp), so the
-       window can be laid out at the real DPI instead of being drawn small and
-       bitmap-stretched by Windows, which is what produced a soft, blurry
-       window on a 150% or 200% display.
-
-       System rather than per-monitor: the scale is decided once, when the
-       controls are created, and changing it afterwards would mean destroying
-       and rebuilding every control while the user has unsaved edits in them.
-       With system awareness, moving the window to a monitor at a different
-       scale gets Windows' bitmap scaling -- slightly soft, but correctly sized
-       and without losing what is on screen. For a settings window that is open
-       for a minute, that is the right trade. -->
   <asmv3:application xmlns:asmv3="urn:schemas-microsoft-com:asm.v3">
     <asmv3:windowsSettings>
       <dpiAware xmlns="http://schemas.microsoft.com/SMI/2005/WindowsSettings">true</dpiAware>

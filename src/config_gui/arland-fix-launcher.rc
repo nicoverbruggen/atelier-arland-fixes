@@ -1,9 +1,37 @@
 // Resources for arland-fix-launcher.exe.
 //
-// The manifest is the modern-controls switch (see the file itself). Resource id
-// 1 is CREATEPROCESS_MANIFEST_RESOURCE_ID, which is what the loader looks for in
-// an executable; type 24 is RT_MANIFEST. Spelling both as numbers keeps this
-// working under windres and rc alike without pulling in winuser.h.
+// Resource id 1 is CREATEPROCESS_MANIFEST_RESOURCE_ID, which is what the loader
+// looks for in an executable; type 24 is RT_MANIFEST. Spelling both as numbers
+// keeps this working under windres and rc alike without pulling in winuser.h.
+//
+// The manifest itself carries no comments, and should stay that way. The
+// resource compiler embeds it byte for byte without parsing it, so anything
+// written in there is handed to Windows at process start -- including comment
+// text. A comment containing "--" is invalid XML, which cost a release: the
+// process refused to start with "the side-by-side configuration is incorrect"
+// and the reason appeared only in the event log. What the manifest declares,
+// and why, is therefore recorded here instead.
+//
+// ComCtl32 version 6: without this dependency the process gets the 5.82 common
+// controls, which are the flat grey Windows-95 ones. With it, the tab control,
+// buttons, checkboxes and combo boxes are drawn by the visual style the OS is
+// actually running.
+//
+// supportedOS: declares the versions of Windows this was tested against (7
+// through 11). Without it Windows applies compatibility shims aimed at much
+// older software.
+//
+// dpiAware, system rather than per-monitor: the layout is no longer fixed
+// pixels, since every coordinate goes through a scale factor (see S() in
+// main.cpp), so the window can be laid out at the real DPI instead of being
+// drawn small and bitmap-stretched by Windows, which is what produced a soft,
+// blurry window on a 150% or 200% display. The scale is decided once, when the
+// controls are created, and changing it afterwards would mean destroying and
+// rebuilding every control while the user has unsaved edits in them. With
+// system awareness, moving the window to a monitor at a different scale gets
+// Windows' bitmap scaling: slightly soft, but correctly sized and without
+// losing what is on screen. For a settings window that is open for a minute,
+// that is the right trade.
 #include "version.rc"
 
 1 24 "arland-fix-launcher.manifest"
