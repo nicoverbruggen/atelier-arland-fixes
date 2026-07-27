@@ -14,8 +14,4 @@ extern const unsigned char kEmbeddedFontNunito[];
 extern const unsigned int kEmbeddedFontNunitoSize;
 extern const unsigned char kEmbeddedFontMgOpenCosmetica[];
 extern const unsigned int kEmbeddedFontMgOpenCosmeticaSize;
-// Inter, subset to Latin: the launcher's own UI font, not one of the in-game
-// replacements above. Compiled into arland-fix-launcher.exe, not the DLL.
-extern const unsigned char kEmbeddedFontInter[];
-extern const unsigned int kEmbeddedFontInterSize;
 }  // namespace atfix

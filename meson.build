@@ -52,12 +52,6 @@ else
     input : 'vendor/font/Nunito-Regular.ttf',
     output : 'embedded_font_nunito.cpp',
     command : [py, embed_font, '@INPUT@', '@OUTPUT@', 'kEmbeddedFontNunito'])
-  # The launcher's own UI font (see src/config_gui/main.cpp createUiFont),
-  # subset to Latin because that is all that window shows.
-  embedded_inter = custom_target('embedded_font_inter',
-    input : 'vendor/font/Inter-Regular.ttf',
-    output : 'embedded_font_inter.cpp',
-    command : [py, embed_font, '@INPUT@', '@OUTPUT@', 'kEmbeddedFontInter'])
   embedded_mgopen = custom_target('embedded_font_mgopen',
     input : 'vendor/font/Cosmetica-Medium.ttf',
     output : 'embedded_font_mgopen.cpp',
@@ -118,13 +112,10 @@ else
          version_rc,
          files('src/config_gui/arland-fix-launcher.manifest'),
        ],
-       include_directories : resource_includes),
-     # Inter, subset to Latin, so the launcher renders identically on Windows
-     # and under Wine instead of inheriting whichever UI face each happens to
-     # default to. See createUiFont.
-     embedded_inter],
+       include_directories : resource_includes)],
     win_subsystem : 'windows',
-    # The generated font source includes src/embedded_font.h by name.
+    # No embedded font here: the launcher draws in the platform's own UI face,
+    # so it carries no typeface of its own. See createUiFont.
     include_directories : include_directories('src'),
     dependencies : [
       cpp.find_library('comctl32'),

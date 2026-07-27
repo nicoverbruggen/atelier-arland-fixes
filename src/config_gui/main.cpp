@@ -38,7 +38,6 @@
 #include <cstring>
 #include <vector>
 
-#include "../embedded_font.h"
 
 namespace {
 
@@ -1238,44 +1237,21 @@ HWND mkButton(HWND parent, const wchar_t* text, int x, int y, int w, int id,
   return c;
 }
 
-// The font the running version of Windows actually uses for UI text, which is
-// Segoe UI on 10 and 11 and whatever succeeds it later. Asking the OS is the
-// only way that stays right across versions; DEFAULT_GUI_FONT is still the
-// 1990s bitmap face and is the single biggest reason a plain Win32 window looks
-// dated. Falls back to it only if the query fails.
-// Register the bundled font with this process only. AddFontMemResourceEx makes
-// it available to CreateFont by family name without installing anything on the
-// system or touching a file, and it is released when the process exits.
-bool registerBundledFont() {
-  static const bool registered = [] {
-    DWORD faces = 0;
-    return AddFontMemResourceEx(
-      const_cast<unsigned char*>(atfix::kEmbeddedFontInter),
-      atfix::kEmbeddedFontInterSize, nullptr, &faces) != nullptr;
-  }();
-  return registered;
-}
-
-// The font the window draws in.
+// The font the window draws in: whatever the platform says its UI font is.
 //
-// Asking the OS (SPI_GETNONCLIENTMETRICS) gets Segoe UI on Windows, which is
-// right and is kept. Under Wine the same call gets whatever the prefix
-// defaults to -- usually Tahoma, or Wine's metric-compatible clone of it, or a
-// DejaVu fallback -- and that is the whole reason this window looked
-// considerably worse on SteamOS than on Windows: same code, different face.
-// So the bundled face is substituted there and only there. It is Inter, subset
-// to Latin and embedded the way the DLL embeds its own replacement faces, so
-// it costs an OFL font and no new dependency.
+// SPI_GETNONCLIENTMETRICS gets Segoe UI on Windows 10 and 11 and whatever
+// succeeds it later, and under Wine gets the prefix's own UI face. Asking the
+// OS is the only thing that stays right across versions; DEFAULT_GUI_FONT is
+// still the 1990s bitmap face, and falling back to it only if the query fails
+// is what keeps a plain Win32 window from looking dated.
 //
-// The system metrics are consulted on both platforms for the SIZE: that is
-// what carries the display's DPI and, on Windows, the user's "make text
-// bigger" preference, both of which should be obeyed. Under Wine only the face
-// is replaced, and if registration fails the system font is used unchanged --
-// a missing font is a cosmetic fallback rather than an unreadable window.
+// No face is substituted and none is bundled. An earlier version shipped its
+// own, on the theory that one face across both platforms was worth more than
+// either looking native; it is not. The window should look like the desktop it
+// is running on, and that is as true of a Proton prefix as it is of Windows.
 //
-// Inter is the face because it was drawn for user interfaces at small sizes,
-// which is exactly this window: a tall x-height, open apertures, and shapes
-// that stay distinct at 12px where a text face goes muddy.
+// The size comes from the system metrics either way, which is what carries the
+// display's DPI and, on Windows, the user's "make text bigger" preference.
 HFONT createUiFont() {
   NONCLIENTMETRICSW metrics = {};
   metrics.cbSize = sizeof(metrics);
@@ -1289,21 +1265,6 @@ HFONT createUiFont() {
     // resolve to unsmoothed rendering and is what makes small text look ragged
     // there even with a good face.
     font.lfQuality = CLEARTYPE_QUALITY;
-    // Windows keeps its own face at its own size: Segoe UI, or whatever
-    // succeeds it, at exactly the size the system asked for. That is what
-    // makes the window look like the rest of the desktop, and it is the point
-    // of deferring on this platform.
-    if (!nativeStyling() && registerBundledFont()) {
-      lstrcpynW(font.lfFaceName, L"Inter", LF_FACESIZE);
-      // Rendered a size up from what the system asked for. Not compensation --
-      // Inter's x-height is close to Segoe UI's, so it needs none -- but a
-      // deliberate choice: this window is read at arm's length on a handheld or
-      // across a room on a TV as often as it is at a desk, and the default
-      // desktop size is small for both. It scales WITH the user's text-size
-      // setting rather than replacing it, so someone who has already asked for
-      // larger text still gets larger text.
-      font.lfHeight = font.lfHeight * 115 / 100;
-    }
     if (HFONT created = CreateFontIndirectW(&font))
       return created;
   }
@@ -1689,11 +1650,13 @@ void syncDebugTab(bool show) {
   if (!g_hTabs)
     return;
   const int count = (int)SendMessageW(g_hTabs, TCM_GETITEMCOUNT, 0, 0);
+  bool changed = false;
   if (show && count == 4) {
     TCITEMW tab = {};
     tab.mask = TCIF_TEXT;
     tab.pszText = (LPWSTR)L"Debug";
     SendMessageW(g_hTabs, TCM_INSERTITEMW, 3, (LPARAM)&tab);
+    changed = true;
   } else if (!show && count == 5) {
     // Leaving the selection on a page that is about to vanish would show an
     // empty sheet, so step back to Display first.
@@ -1702,7 +1665,15 @@ void syncDebugTab(bool show) {
       showPage(0);
     }
     SendMessageW(g_hTabs, TCM_DELETEITEM, 3, 0);
+    changed = true;
   }
+  // Adding or removing an entry makes the tab control repaint its whole
+  // client area, page included -- and the page contents are siblings sitting
+  // on top of it rather than its children, so nothing invalidates them and
+  // they are simply erased. The page has to be put back explicitly, which is
+  // the same repaint a tab switch does.
+  if (changed)
+    repaintUnder(g_hTabs);
 }
 
 void createControls(HWND w) {
