@@ -23,6 +23,15 @@
 #include <commctrl.h>
 #include <shellapi.h>
 #include <shlobj.h>
+#include <uxtheme.h>
+#include <vssym32.h>
+
+// SysLink's self-measuring message. The Windows SDK defines it as an alias for
+// LM_GETIDEALHEIGHT; MinGW's commctrl.h carries neither name, so it is spelled
+// out here rather than losing the measurement on the cross-build.
+#ifndef LM_GETIDEALSIZE
+#define LM_GETIDEALSIZE (WM_USER + 0x301)
+#endif
 
 #include <cstdlib>
 #include <algorithm>
@@ -91,7 +100,7 @@ int g_game = -1;   // index into kGames, -1 when the folder holds no game
 
 // Handles to the controls we read from and write to.
 HWND g_hTabs = nullptr;
-HWND g_hDesc[32] = {};   // greyed notes; drawn in kSecondaryText
+HWND g_hDesc[32] = {};   // greyed notes; drawn in g_secondaryText
 int  g_descCount = 0;
 // Five pages, but the fifth (Debug) is only inserted into the tab strip when
 // verbose logging is on -- its controls are always created, just unreachable.
@@ -124,28 +133,73 @@ HWND g_hPreset, g_hWinMode, g_hLang,
      g_hAniso, g_hSmaa, g_hBShadow, g_hBCutInShadow, g_hBCutInDim, g_hVerbose;
 
 HFONT g_uiFont = nullptr;
+HFONT g_headingFont = nullptr;   // the same face, bold; headings only
 
-// The window paints itself white rather than taking the system's colours.
+// Everything vertical is derived from the font rather than written down.
 //
-// Windows draws dialogs on COLOR_BTNFACE, a light grey, while a themed tab page
-// is white -- so a window that mixes the two has a grey surround and a white
-// panel, and every label has to be told which one it is standing on. Wine
-// happens to render the dialog face white, so the same build looked coherent
-// there and mismatched on Windows. Choosing white everywhere makes the two
-// platforms agree and removes the distinction entirely.
+// This is the whole reason the window fell apart on Windows and held together
+// under Proton. S() below is built from the display DPI alone, but the font
+// height comes from lfMessageFont, which carries the DPI *and* Windows'
+// separate "Make text bigger" setting. Wine has exactly one knob for both
+// (HKEY_CURRENT_USER\Control Panel\Desktop\LogPixels) and no text-size
+// multiplier at all, so there the two can only ever move together and a
+// hardcoded S(18) row happened to fit its text. On Windows they move
+// independently, so every fixed height was wrong by a different amount --
+// which is what "all over the place" looked like.
 //
-// The text colours are fixed for the same reason: with the background pinned,
-// a system text colour from a dark scheme would be white on white.
-const COLORREF kBackground = RGB(255, 255, 255);
-const COLORREF kText = RGB(0, 0, 0);
-const COLORREF kSecondaryText = RGB(102, 102, 102);
-HBRUSH g_backgroundBrush = nullptr;
+// So no control height is a constant any more. One line of text is measured
+// once, and the rows, checkboxes and buttons are expressed in terms of it.
+int g_lineHeight = 0;   // one line of g_uiFont, device pixels
+
+// The tab control's display area in the PARENT's client coordinates, from
+// TCM_ADJUSTRECT rather than from an assumption about the header height. The
+// header is as tall as the theme and the font make it, which is not the same on
+// the two platforms, and is not knowable before the font is set.
+RECT g_pageRect = {};
+
+// How far down the tallest page reached. The window is 700x440 because that
+// fits 720p, but that only holds while the text is the size we expect; a
+// Windows text-size setting can push the busiest page past the bottom of the
+// tab. Tracked while the pages are built so the window can be grown to fit
+// afterwards instead of silently clipping the last row.
+int g_contentBottom = 0;
+
+// Two styling regimes, chosen by platform.
+//
+// On Windows: take what the OS gives. The system UI font at the system size,
+// the dialog face behind the window, and the tab control's own themed page
+// behind the page contents. Forcing white here was the mistake -- a themed tab
+// control paints its body during WM_PAINT, so an override in WM_ERASEBKGND is
+// simply overpainted, and the result was white controls sitting on a page that
+// had stayed whatever the theme wanted. Rather than fight that, the controls
+// are matched TO the theme's page colour and the tab is left alone.
+//
+// Under Wine: keep the overrides. There the face and the colours are whatever
+// the prefix happens to default to, which is what made the same build look
+// worse on the Deck than on Windows, so the bundled font and the flat white
+// surface stay. Wine's tab body really is white, so one colour throughout is
+// coherent there in a way it is not on Windows.
+//
+// Two backgrounds rather than one, because on Windows they genuinely differ:
+// the window surround is the dialog face and the tab page is the theme's tab
+// body. Under Wine both are set to white, which collapses the distinction back
+// to the single surface that regime wants.
+COLORREF g_windowBack = RGB(255, 255, 255);   // behind the window as a whole
+COLORREF g_pageBack   = RGB(255, 255, 255);   // behind the tab page contents
+COLORREF g_text       = RGB(0, 0, 0);
+COLORREF g_secondaryText = RGB(102, 102, 102);
+HBRUSH g_windowBrush = nullptr;
+HBRUSH g_pageBrush = nullptr;
+
+// Defined with the rest of the platform detection, below; the font and the
+// paint handlers above it both need to know which regime is in force.
+bool nativeStyling();
 
 // Every coordinate in this file is a logical unit at 100%, and the control
 // helpers scale on the way to CreateWindow -- so the layout is written once and
 // the scale is decided once, rather than each literal having to know about it.
 //
-// The base layout is 484x548, chosen to fit a 1280x720 screen with its frame
+// The base layout is 700x440, chosen to fit a 1280x720 screen with its frame
 // and a taskbar, because that is the smallest screen this has to work on: a
 // 720p TV, a handheld, or Big Picture on either. Scaling up (for a controller
 // at TV distance) is therefore always optional and always clamped to the
@@ -986,23 +1040,67 @@ bool resolveGameFolder() {
 // Let the user pick a game folder; we edit the arland-fix.ini inside it.
 // ---- window construction ---------------------------------------------------
 
+// The font goes on at creation, not in a sweep afterwards.
+//
+// Order matters here. The old code created every control, laid the window out,
+// and only then walked the children setting the font -- so every height had
+// been decided against the wrong font, and the tab control's header changed
+// height after the page contents had already been positioned inside it.
+void setFont(HWND ctrl, HFONT font = nullptr) {
+  if (ctrl)
+    SendMessageW(ctrl, WM_SETFONT, (WPARAM)(font ? font : g_uiFont), TRUE);
+}
+
+// One line of UI text. Measured once, from the font the window actually draws
+// in, and everything vertical is expressed against it.
+void measureUiFont(HWND w) {
+  g_lineHeight = S(16);   // only if the DC cannot be had
+  HDC dc = GetDC(w);
+  if (!dc)
+    return;
+  HFONT previous = (HFONT)SelectObject(dc, g_uiFont);
+  TEXTMETRICW tm = {};
+  if (GetTextMetricsW(dc, &tm) && tm.tmHeight > 0)
+    g_lineHeight = tm.tmHeight;
+  SelectObject(dc, previous);
+  ReleaseDC(w, dc);
+}
+
+// The heights, all in terms of one line of text plus the padding that control
+// needs around it. A themed combo box and a themed push button are both sized
+// from their font by the system, so following the font is what keeps our row
+// pitch in step with what is actually drawn.
+int labelHeight()   { return g_lineHeight; }
+int controlHeight() { return g_lineHeight + S(10); }
+int checkHeight()   { return std::max(g_lineHeight, S(16)); }
+int buttonHeight()  { return g_lineHeight + S(12); }
+
 HWND mkLabel(HWND parent, const wchar_t* text, int x, int y, int w, int h,
              DWORD extraStyle = 0) {
-  return CreateWindowExW(0, L"STATIC", text,
+  HWND c = CreateWindowExW(0, L"STATIC", text,
     WS_CHILD | WS_VISIBLE | extraStyle,
     S(x), S(y), S(w), S(h), parent, nullptr, nullptr, nullptr);
+  setFont(c);
+  return c;
 }
 
 HWND mkCheck(HWND parent, const wchar_t* text, int x, int y, int w, int id) {
-  return CreateWindowExW(0, L"BUTTON", text,
-    WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, S(x), S(y), S(w), S(20), parent,
-    (HMENU)(INT_PTR)id, nullptr, nullptr);
+  HWND c = CreateWindowExW(0, L"BUTTON", text,
+    WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, S(x), S(y), S(w), checkHeight(),
+    parent, (HMENU)(INT_PTR)id, nullptr, nullptr);
+  setFont(c);
+  return c;
 }
 
 HWND mkCombo(HWND parent, int x, int y, int w, int id) {
-  return CreateWindowExW(0, L"COMBOBOX", nullptr,
+  // The height passed to a CBS_DROPDOWNLIST combo is how far the list drops,
+  // not how tall the closed control is -- the system decides that from the
+  // font. Hence controlHeight() for the row pitch and S(200) here.
+  HWND c = CreateWindowExW(0, L"COMBOBOX", nullptr,
     WS_CHILD | WS_VISIBLE | WS_TABSTOP | CBS_DROPDOWNLIST | WS_VSCROLL,
     S(x), S(y), S(w), S(200), parent, (HMENU)(INT_PTR)id, nullptr, nullptr);
+  setFont(c);
+  return c;
 }
 
 // Start one of Koei Tecmo's own front-ends from the game folder.
@@ -1131,10 +1229,13 @@ bool stockToolPresent(const char* exeName) {
 
 HWND mkButton(HWND parent, const wchar_t* text, int x, int y, int w, int id,
               bool isDefault = false) {
-  return CreateWindowExW(0, L"BUTTON", text,
+  HWND c = CreateWindowExW(0, L"BUTTON", text,
     WS_CHILD | WS_VISIBLE | WS_TABSTOP |
       (isDefault ? BS_DEFPUSHBUTTON : BS_PUSHBUTTON),
-    S(x), S(y), S(w), S(26), parent, (HMENU)(INT_PTR)id, nullptr, nullptr);
+    S(x), S(y), S(w), buttonHeight(), parent, (HMENU)(INT_PTR)id, nullptr,
+    nullptr);
+  setFont(c);
+  return c;
 }
 
 // The font the running version of Windows actually uses for UI text, which is
@@ -1158,17 +1259,19 @@ bool registerBundledFont() {
 // The font the window draws in.
 //
 // Asking the OS (SPI_GETNONCLIENTMETRICS) gets Segoe UI on Windows, which is
-// right, and whatever Wine defaults to elsewhere -- usually Tahoma or a DejaVu
-// fallback. That is the whole reason this window looked considerably worse on
-// SteamOS than on Windows: same code, different face. Bundling one font and
-// using it on both makes them agree, and it is the same Nunito the DLL already
-// embeds, so it costs a licence we already ship and no new dependency.
+// right and is kept. Under Wine the same call gets whatever the prefix
+// defaults to -- usually Tahoma, or Wine's metric-compatible clone of it, or a
+// DejaVu fallback -- and that is the whole reason this window looked
+// considerably worse on SteamOS than on Windows: same code, different face.
+// So the bundled face is substituted there and only there. It is Inter, subset
+// to Latin and embedded the way the DLL embeds its own replacement faces, so
+// it costs an OFL font and no new dependency.
 //
-// The system metrics are still consulted, for the SIZE: that is what carries
-// the display's DPI and the user's "make text bigger" preference, both of which
-// should still be obeyed. Only the face is replaced. If registration fails the
-// system font is used unchanged, so a missing font is a cosmetic fallback
-// rather than an unreadable window.
+// The system metrics are consulted on both platforms for the SIZE: that is
+// what carries the display's DPI and, on Windows, the user's "make text
+// bigger" preference, both of which should be obeyed. Under Wine only the face
+// is replaced, and if registration fails the system font is used unchanged --
+// a missing font is a cosmetic fallback rather than an unreadable window.
 //
 // Inter is the face because it was drawn for user interfaces at small sizes,
 // which is exactly this window: a tall x-height, open apertures, and shapes
@@ -1186,7 +1289,11 @@ HFONT createUiFont() {
     // resolve to unsmoothed rendering and is what makes small text look ragged
     // there even with a good face.
     font.lfQuality = CLEARTYPE_QUALITY;
-    if (registerBundledFont()) {
+    // Windows keeps its own face at its own size: Segoe UI, or whatever
+    // succeeds it, at exactly the size the system asked for. That is what
+    // makes the window look like the rest of the desktop, and it is the point
+    // of deferring on this platform.
+    if (!nativeStyling() && registerBundledFont()) {
       lstrcpynW(font.lfFaceName, L"Inter", LF_FACESIZE);
       // Rendered a size up from what the system asked for. Not compensation --
       // Inter's x-height is close to Segoe UI's, so it needs none -- but a
@@ -1201,6 +1308,23 @@ HFONT createUiFont() {
       return created;
   }
   return (HFONT)GetStockObject(DEFAULT_GUI_FONT);
+}
+
+// The same font, bold, for the section headings.
+//
+// Without it a heading is the same weight, size and colour as the label under
+// it, so the sections it is supposed to divide read as one undifferentiated
+// column. Derived from the real UI font rather than built from scratch, so it
+// inherits the size, the DPI and the face -- including the fallback, if the
+// bundled font did not register.
+HFONT createHeadingFont() {
+  LOGFONTW font = {};
+  if (g_uiFont && GetObjectW(g_uiFont, sizeof(font), &font)) {
+    font.lfWeight = FW_SEMIBOLD;
+    if (HFONT created = CreateFontIndirectW(&font))
+      return created;
+  }
+  return g_uiFont;
 }
 
 // The DPI the window will be laid out at. GetDpiForSystem is Windows 10 and
@@ -1278,6 +1402,67 @@ bool runningUnderWine() {
   return wine;
 }
 
+// Whether to defer to the platform's own look. True on Windows, where the
+// visual style is worth having and fighting it is what went wrong; false under
+// Wine, where the defaults are the reason the overrides exist.
+bool nativeStyling() { return !runningUnderWine(); }
+
+// The colour a themed tab control paints its page in.
+//
+// Asked for rather than assumed, because it is a property of whichever visual
+// style the user is running and has never been reliably white. The theme
+// usually defines the body as a bitmap rather than a flat colour, so
+// GetThemeColor is not dependable here; drawing the part into a scratch bitmap
+// and reading the middle pixel gets the real answer for a flat fill and the
+// dominant one for a gradient, which is what we want to match controls to.
+//
+// Falls back to the dialog face when there is no theme at all -- classic mode
+// or high contrast -- which is exactly what an unthemed tab page is drawn in.
+COLORREF themedTabBodyColor() {
+  HTHEME theme = OpenThemeData(nullptr, L"TAB");
+  if (!theme)
+    return GetSysColor(COLOR_BTNFACE);
+
+  COLORREF sampled = CLR_INVALID;
+  if (HDC screen = GetDC(nullptr)) {
+    if (HDC scratch = CreateCompatibleDC(screen)) {
+      if (HBITMAP surface = CreateCompatibleBitmap(screen, 64, 64)) {
+        HGDIOBJ previous = SelectObject(scratch, surface);
+        RECT area = { 0, 0, 64, 64 };
+        // Primed with the dialog face first: a fresh bitmap holds whatever was
+        // in that memory, and a theme part that is partly transparent would
+        // otherwise leave us sampling it. Priming makes the worst case the
+        // colour an unthemed page would have used anyway.
+        if (HBRUSH prime = CreateSolidBrush(GetSysColor(COLOR_BTNFACE))) {
+          FillRect(scratch, &area, prime);
+          DeleteObject(prime);
+        }
+        if (SUCCEEDED(DrawThemeBackground(theme, scratch, TABP_BODY, 0, &area,
+                                          nullptr)))
+          sampled = GetPixel(scratch, 32, 32);
+        SelectObject(scratch, previous);
+        DeleteObject(surface);
+      }
+      DeleteDC(scratch);
+    }
+    ReleaseDC(nullptr, screen);
+  }
+  CloseThemeData(theme);
+  return sampled == CLR_INVALID ? GetSysColor(COLOR_WINDOW) : sampled;
+}
+
+// Decide the palette once, before any brush or control exists.
+void initStyling() {
+  if (!nativeStyling())
+    return;   // the white-everywhere defaults above are the Wine regime
+  g_windowBack = GetSysColor(COLOR_BTNFACE);
+  g_pageBack = themedTabBodyColor();
+  // Taken from the system too, so a dark or high-contrast scheme stays legible
+  // instead of being black text on a background chosen for a light one.
+  g_text = GetSysColor(COLOR_WINDOWTEXT);
+  g_secondaryText = GetSysColor(COLOR_GRAYTEXT);
+}
+
 // Wear the icon of whichever game this folder holds. The window is about that
 // game, and on a taskbar with several of these open it is the only thing that
 // tells them apart. Nothing to clean up: the icons live as long as the process.
@@ -1295,29 +1480,12 @@ void applyGameIcon(HWND w) {
     SendMessageW(w, WM_SETICON, ICON_SMALL, (LPARAM)smallIcon);
 }
 
-void applyFont(HWND parent) {
-  // Use the system UI font on every child.
-  for (HWND c = GetWindow(parent, GW_CHILD); c; c = GetWindow(c, GW_HWNDNEXT))
-    SendMessageW(c, WM_SETFONT, (WPARAM)g_uiFont, TRUE);
-}
-
 // Remember a control so the tab can show or hide it with its page.
 void onPage(int page, HWND ctrl) {
   if (ctrl && g_pageCount[page] < 40)
     g_pageCtrls[page][g_pageCount[page]++] = ctrl;
 }
 
-
-// A one-line note under the control it explains: indented past the control's
-// label so it reads as subordinate, and drawn grey (see WM_CTLCOLORSTATIC).
-HWND mkDesc(HWND parent, const wchar_t* text, int x, int y, int width) {
-  // Two lines' worth of height: a static word-wraps on its own, so a longer
-  // note reflows instead of being clipped. Rows are pitched to suit.
-  HWND h = mkLabel(parent, text, x, y, width, 32);
-  if (g_descCount < 20)
-    g_hDesc[g_descCount++] = h;
-  return h;
-}
 
 // Repaint the whole area a control covers, background included. The labels are
 // drawn without a background of their own (see WM_CTLCOLORSTATIC), so whatever
@@ -1367,21 +1535,32 @@ struct Layout {
   int page;
   int y;
 
+  // Starts inside the tab control's real display area, wherever the theme and
+  // the font put it, rather than at a guessed header height.
   Layout(HWND parentWindow, int tabPage)
-    : parent(parentWindow), page(tabPage), y(S(46)) {}
+    : parent(parentWindow), page(tabPage), y(g_pageRect.top + S(10)) {}
 
-  // Columns, in logical units. Checkbox rows use a nearer note column: a
-  // checkbox carries its own label, so leaving its note out at the combo note
-  // column strands it across a gap of empty space.
-  static int left()          { return S(24); }
+  // Every page reports how far it got, so the window can be sized to the
+  // tallest of them.
+  ~Layout() { g_contentBottom = std::max(g_contentBottom, y); }
+
+  // Columns, measured from the page's own edges. Checkbox rows use a nearer
+  // note column: a checkbox carries its own label, so leaving its note out at
+  // the combo note column strands it across a gap of empty space.
+  //
+  // The offsets are the same ones the window has always used; what changed is
+  // that they hang off g_pageRect instead of off the origin, so a tab border of
+  // a different thickness moves the contents with it rather than under it.
+  static int left()          { return g_pageRect.left + S(8); }
+  static int right()         { return g_pageRect.right - S(8); }
   static int labelWidth()    { return S(150); }
-  static int controlLeft()   { return S(180); }
+  static int controlLeft()   { return left() + S(156); }
   static int controlWidth()  { return S(230); }
-  static int noteLeft()      { return S(430); }
-  static int noteWidth()     { return S(250); }
-  static int checkNoteLeft() { return S(300); }
-  static int checkNoteWidth(){ return S(376); }
-  static int fullWidth()     { return S(656); }
+  static int noteLeft()      { return left() + S(406); }
+  static int noteWidth()     { return right() - noteLeft(); }
+  static int checkNoteLeft() { return left() + S(276); }
+  static int checkNoteWidth(){ return right() - checkNoteLeft(); }
+  static int fullWidth()     { return right() - left(); }
 
   int measure(const wchar_t* text, int width) const {
     HDC dc = GetDC(parent);
@@ -1396,9 +1575,10 @@ struct Layout {
   }
 
   HWND place(const wchar_t* cls, const wchar_t* text, DWORD style,
-             int x, int top, int width, int height) {
+             int x, int top, int width, int height, HFONT font = nullptr) {
     HWND control = CreateWindowExW(0, cls, text, WS_CHILD | WS_VISIBLE | style,
       x, top, width, height, parent, nullptr, nullptr, nullptr);
+    setFont(control, font);
     onPage(page, control);
     return control;
   }
@@ -1416,31 +1596,37 @@ struct Layout {
   // label + control + note. The row is as tall as whichever of the two sides
   // needs more room.
   void row(const wchar_t* labelText, HWND control, const wchar_t* noteText) {
-    place(L"STATIC", labelText, 0, left(), y + S(4), labelWidth(), S(18));
+    // The label is centred against the control rather than nudged down by a
+    // fixed four pixels, which only looked centred at one font size.
+    place(L"STATIC", labelText, 0, left(),
+      y + (controlHeight() - labelHeight()) / 2, labelWidth(), labelHeight());
     // Combos are moved with their dropdown extent, not their visible height:
     // for a combo box the height passed here is how far the list drops.
     MoveWindow(control, controlLeft(), y, controlWidth(), S(200), TRUE);
     onPage(page, control);
-    int used = S(24);
+    int used = controlHeight();
     if (noteText)
       used = std::max(used, note(noteText, noteLeft(), noteWidth(), y));
     y += used + S(12);
   }
 
   void checkRow(HWND check, const wchar_t* noteText) {
-    MoveWindow(check, left(), y + S(2), checkNoteLeft() - left() - S(16), S(20),
-      TRUE);
+    MoveWindow(check, left(), y, checkNoteLeft() - left() - S(16),
+      checkHeight(), TRUE);
     onPage(page, check);
-    int used = S(22);
+    int used = checkHeight();
     if (noteText)
       used = std::max(used, note(noteText, checkNoteLeft(), checkNoteWidth(), y));
     y += used + S(12);
   }
 
+  // Bold, and with more air above it than below, so it binds to the rows it
+  // introduces rather than floating between two groups.
   void heading(const wchar_t* text) {
-    y += S(8);
-    place(L"STATIC", text, 0, left(), y, fullWidth(), S(18));
-    y += S(24);
+    y += S(10);
+    place(L"STATIC", text, 0, left(), y, fullWidth(), labelHeight(),
+      g_headingFont);
+    y += labelHeight() + S(8);
   }
 
   // Full-width text in the primary colour: a statement of fact rather than an
@@ -1457,28 +1643,41 @@ struct Layout {
   }
 
   void buttons(HWND a, HWND b, HWND c) {
-    const int width = S(150);
     const int gap = S(12);
-    MoveWindow(a, left(), y, width, S(26), TRUE);
-    MoveWindow(b, left() + width + gap, y, width, S(26), TRUE);
-    MoveWindow(c, left() + 2 * (width + gap), y, width, S(26), TRUE);
+    // Divided out of the page width rather than fixed at 150, so three buttons
+    // always span the same column as everything else however wide the text
+    // makes them.
+    const int width = (fullWidth() - 2 * gap) / 3;
+    const int height = buttonHeight();
+    MoveWindow(a, left(), y, width, height, TRUE);
+    MoveWindow(b, left() + width + gap, y, width, height, TRUE);
+    MoveWindow(c, left() + 2 * (width + gap), y, width, height, TRUE);
     onPage(page, a); onPage(page, b); onPage(page, c);
-    y += S(26) + S(12);
+    y += height + S(12);
   }
 
   // A line belonging to the control above it, so it starts at the control
   // column rather than the label margin.
   void under(HWND control) {
     MoveWindow(control, controlLeft(), y,
-      fullWidth() - (controlLeft() - left()), S(18), TRUE);
+      fullWidth() - (controlLeft() - left()), labelHeight(), TRUE);
     onPage(page, control);
-    y += S(18) + S(10);
+    y += labelHeight() + S(10);
   }
 
+  // A SysLink measures itself: LM_GETIDEALSIZE takes the width it will be
+  // given and reports the height that width needs. Asked rather than assumed,
+  // for the same reason the notes are measured -- and with a fallback, since
+  // the message needs ComCtl32 v6 and Wine does not necessarily answer it.
   void link(HWND control) {
-    MoveWindow(control, left(), y, fullWidth(), S(20), TRUE);
+    int height = labelHeight() + S(4);
+    SIZE ideal = {};
+    if (SendMessageW(control, LM_GETIDEALSIZE, (WPARAM)fullWidth(),
+                     (LPARAM)&ideal) && ideal.cy > 0)
+      height = std::max(height, (int)ideal.cy);
+    MoveWindow(control, left(), y, fullWidth(), height, TRUE);
     onPage(page, control);
-    y += S(20) + S(12);
+    y += height + S(12);
   }
 };
 
@@ -1507,9 +1706,25 @@ void syncDebugTab(bool show) {
 }
 
 void createControls(HWND w) {
+  // Before anything is placed: the font decides every height below it.
+  measureUiFont(w);
+
+  // The frame is derived from the client area and the button height rather
+  // than from the 700x440 the window happens to be, so the bottom row sits a
+  // fixed margin off the bottom edge at any font size.
+  RECT client = {};
+  GetClientRect(w, &client);
+  const int margin = S(12);
+  int buttonTop = client.bottom - S(14) - buttonHeight();
+
   g_hTabs = CreateWindowExW(0, WC_TABCONTROLW, nullptr,
-    WS_CHILD | WS_VISIBLE | WS_TABSTOP, S(12), S(12), S(676), S(376),
+    WS_CHILD | WS_VISIBLE | WS_TABSTOP, margin, margin,
+    client.right - 2 * margin, buttonTop - 2 * margin,
     w, (HMENU)(INT_PTR)IDC_TABS, nullptr, nullptr);
+  // Set before the items go in and before the page rect is taken: the header's
+  // height comes from this font, and everything on the pages is positioned
+  // against that height.
+  setFont(g_hTabs);
   SetWindowSubclass(g_hTabs, TabProc, 0, 0);
   TCITEMW tab = {};
   tab.mask = TCIF_TEXT;
@@ -1521,15 +1736,41 @@ void createControls(HWND w) {
   }
   syncDebugTab(iniBool("Diagnostics", "VerboseLogging", false));
 
+  // Where the pages may actually draw. TCM_ADJUSTRECT is the only thing that
+  // knows how tall this theme's header turned out with this font; mapping the
+  // result into the parent's coordinates is what lets the page contents stay
+  // children of the main window while being positioned against the tab.
+  GetClientRect(g_hTabs, &g_pageRect);
+  SendMessageW(g_hTabs, TCM_ADJUSTRECT, FALSE, (LPARAM)&g_pageRect);
+  MapWindowPoints(g_hTabs, w, (POINT*)&g_pageRect, 2);
+
   // Which game this folder is: the tool configures whatever it sits next to, so
   // this is the one fact worth stating outright. It sits on the tab strip's own
   // row, right-aligned, where it reads as a heading for the window rather than
   // competing with the tabs. Created AFTER the tab control so it is above it in
   // z-order, and painted transparently (see WM_CTLCOLORSTATIC) so the strip
   // shows through instead of a white block sitting on it.
+  //
+  // Positioned from the strip's own item rectangle rather than from a fixed
+  // y of 18: the strip is as tall as the theme and the font make it, and a
+  // constant that sat neatly on it under Wine sat across its lower border on
+  // Windows. Centred against the tab item, and ending where the tabs' right
+  // edge is.
   wchar_t heading[160];
   wsprintfW(heading, L"%s", g_gameName ? g_gameName : L"No game detected");
-  g_hGameLabel = mkLabel(w, heading, 360, 18, 320, 18, SS_RIGHT);
+  RECT strip = {};
+  SendMessageW(g_hTabs, TCM_GETITEMRECT, 0, (LPARAM)&strip);
+  MapWindowPoints(g_hTabs, w, (POINT*)&strip, 2);
+  const int labelTop =
+    strip.top + ((strip.bottom - strip.top) - labelHeight()) / 2;
+  const int labelRight = g_pageRect.right - S(4);
+  const int labelLeft =
+    std::max((int)strip.right + S(12), labelRight - S(320));
+  g_hGameLabel = CreateWindowExW(0, L"STATIC", heading,
+    WS_CHILD | WS_VISIBLE | SS_RIGHT | SS_ENDELLIPSIS,
+    labelLeft, labelTop, labelRight - labelLeft, labelHeight(),
+    w, nullptr, nullptr, nullptr);
+  setFont(g_hGameLabel);
 
   // ---------------- page 0: Display ----------------
   {
@@ -1721,6 +1962,12 @@ void createControls(HWND w) {
     g_hRepoLink = CreateWindowExW(0, WC_LINK, markup,
       WS_CHILD | WS_VISIBLE | WS_TABSTOP, 0, 0, 10, 10, w,
       (HMENU)(INT_PTR)IDC_REPOLINK, nullptr, nullptr);
+    // A SysLink does not inherit the parent's font, and it is the one control
+    // here that is not built by a helper that sets it, so it has to be told
+    // explicitly -- otherwise it renders in the stock system face while
+    // everything around it is in the window's own, which is exactly the
+    // mismatch this window exists to avoid.
+    setFont(g_hRepoLink);
     page.link(g_hRepoLink);
   }
 
@@ -1731,38 +1978,103 @@ void createControls(HWND w) {
   // this window is opened on the way into the game, not to change something, so
   // Enter should start playing. That matters most on a controller or a
   // handheld, where the alternative is driving a cursor across the window.
-  g_hStart = mkButton(w, L"&Play with mod", 24, 400, 130, IDC_START, true);
+  // Grow the window if the tallest page outran the space set aside for it.
+  //
+  // The alternative is what the fixed layout did: clip the last row, with
+  // nothing on screen to say a control is missing. Clamped to the monitor's
+  // work area, so this can never push the button row off the bottom of the
+  // screen -- if the text is too large to fit even a full-height window, the
+  // clipping comes back, but only in the case where nothing else would fit
+  // either.
+  if (g_contentBottom + S(10) > g_pageRect.bottom) {
+    int grow = g_contentBottom + S(10) - g_pageRect.bottom;
+    RECT frame = { 0, 0, client.right, client.bottom + grow };
+    AdjustWindowRect(&frame, (DWORD)GetWindowLongPtrW(w, GWL_STYLE), FALSE);
+    int outerHeight = frame.bottom - frame.top;
+
+    RECT work = {};
+    const bool haveWork = cursorWorkArea(&work);
+    if (haveWork && outerHeight > work.bottom - work.top) {
+      grow -= outerHeight - (work.bottom - work.top);
+      outerHeight = work.bottom - work.top;
+    }
+    if (grow > 0) {
+      RECT current = {};
+      GetWindowRect(w, &current);
+      // Grown symmetrically, so a window that was centred stays centred.
+      int top = current.top - grow / 2;
+      if (haveWork) {
+        if (top + outerHeight > work.bottom)
+          top = work.bottom - outerHeight;
+        if (top < work.top)
+          top = work.top;
+      }
+      SetWindowPos(w, nullptr, current.left, top,
+        current.right - current.left, outerHeight,
+        SWP_NOZORDER | SWP_NOACTIVATE);
+
+      client.bottom += grow;
+      buttonTop += grow;
+      g_pageRect.bottom += grow;
+      MoveWindow(g_hTabs, margin, margin, client.right - 2 * margin,
+        buttonTop - 2 * margin, TRUE);
+    }
+  }
+
+  //
+  // Placed against the measured button row and the window's own edges rather
+  // than at literal coordinates, so the row stays on the same baseline as the
+  // tab control above it whatever the font does to the button height.
+  const int buttonH = buttonHeight();
+  const int closeW = S(90);
+  const int wideW = S(150);
+  const int rightEdge = client.right - margin;
+
+  g_hStart = CreateWindowExW(0, L"BUTTON", L"&Play with mod",
+    WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON,
+    margin, buttonTop, wideW, buttonH, w, (HMENU)(INT_PTR)IDC_START,
+    nullptr, nullptr);
+  setFont(g_hStart);
   if (!g_gameExePath[0])
     EnableWindow(g_hStart, FALSE);
 
   // Distinct mnemonics across the whole window: P play, R reset, C close,
   // E editor, O original launcher, W play without the mod.
-  mkButton(w, L"&Reset to defaults", 456, 400, 130, IDC_RESET);
-  mkButton(w, L"&Close", 594, 400, 90, IDC_CLOSE);
+  HWND reset = CreateWindowExW(0, L"BUTTON", L"&Reset to defaults",
+    WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
+    rightEdge - closeW - S(12) - wideW, buttonTop, wideW, buttonH, w,
+    (HMENU)(INT_PTR)IDC_RESET, nullptr, nullptr);
+  setFont(reset);
+  HWND close = CreateWindowExW(0, L"BUTTON", L"&Close",
+    WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
+    rightEdge - closeW, buttonTop, closeW, buttonH, w,
+    (HMENU)(INT_PTR)IDC_CLOSE, nullptr, nullptr);
+  setFont(close);
 
   showPage(0);
-
-  applyFont(w);
 }
 
-// The tab control paints its own page background from the visual style: white
-// under Wine, but a light grey on Windows. Everything sitting on that page is
-// painted white (see kBackground), so on Windows the controls appeared as white
-// patches on a grey panel.
+// Under Wine, paint the tab page in the one flat colour that regime uses.
 //
-// This paints the page white and leaves the tab strip alone. The default
-// handler runs first, so the tabs, their selected state and the border are all
-// still drawn by the theme; only the display area is then filled.
-// TCM_ADJUSTRECT is what says where that area is, rather than guessing at the
-// header height.
+// On Windows this does nothing, deliberately. A themed tab control draws its
+// body during WM_PAINT, not WM_ERASEBKGND, so a fill here is drawn and then
+// immediately painted over -- which is why the page stayed the theme's colour
+// however white the brush was, while the controls on it obeyed the brush and
+// became white patches. On that platform the page is the theme's to paint, and
+// the controls are matched to it instead (see initStyling and WM_CTLCOLOR).
+//
+// Where it does apply, the default handler runs first, so the tabs, their
+// selected state and the border are still drawn normally; only the display
+// area is then filled. TCM_ADJUSTRECT says where that area is, rather than
+// guessing at the header height.
 LRESULT CALLBACK TabProc(HWND tabs, UINT msg, WPARAM wp, LPARAM lp,
                          UINT_PTR, DWORD_PTR) {
-  if (msg == WM_ERASEBKGND) {
+  if (msg == WM_ERASEBKGND && !nativeStyling()) {
     const LRESULT handled = DefSubclassProc(tabs, msg, wp, lp);
     RECT page = {};
     GetClientRect(tabs, &page);
     SendMessageW(tabs, TCM_ADJUSTRECT, FALSE, (LPARAM)&page);
-    FillRect((HDC)wp, &page, g_backgroundBrush);
+    FillRect((HDC)wp, &page, g_pageBrush);
     return handled;
   }
   if (msg == WM_NCDESTROY)
@@ -1807,20 +2119,23 @@ LRESULT CALLBACK WndProc(HWND w, UINT msg, WPARAM wp, LPARAM lp) {
       // is not the window background, so it takes no background of its own.
       if ((HWND)lp == g_hGameLabel) {
         SetBkMode((HDC)wp, TRANSPARENT);
-        SetTextColor((HDC)wp, kSecondaryText);
+        SetTextColor((HDC)wp, g_secondaryText);
         return (LRESULT)GetStockObject(NULL_BRUSH);
       }
-      SetBkColor((HDC)wp, kBackground);
-      SetTextColor((HDC)wp, kText);
+      // Every other static and checkbox stands on the tab page, so all of them
+      // get the page's colour -- the theme's on Windows, the flat white under
+      // Wine. This is what stops them reading as patches laid over the panel.
+      SetBkColor((HDC)wp, g_pageBack);
+      SetTextColor((HDC)wp, g_text);
       // The one-line notes under each control are secondary text, so they are
       // drawn grey rather than competing with the labels they explain.
       for (int i = 0; i < g_descCount; ++i) {
         if ((HWND)lp == g_hDesc[i]) {
-          SetTextColor((HDC)wp, kSecondaryText);
+          SetTextColor((HDC)wp, g_secondaryText);
           break;
         }
       }
-      return (LRESULT)g_backgroundBrush;
+      return (LRESULT)g_pageBrush;
     }
     case WM_COMMAND:
       // Verbose logging gates the Debug page. Reflect it immediately: having
@@ -1952,8 +2267,12 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int) {
   const DWORD windowStyle =
     (WS_OVERLAPPEDWINDOW & ~(WS_MAXIMIZEBOX | WS_THICKFRAME)) | WS_VISIBLE;
   chooseScale(windowStyle);
+  // Before the font and the brushes: both are chosen by the regime it picks.
+  initStyling();
   g_uiFont = createUiFont();
-  g_backgroundBrush = CreateSolidBrush(kBackground);
+  g_headingFont = createHeadingFont();
+  g_windowBrush = CreateSolidBrush(g_windowBack);
+  g_pageBrush = CreateSolidBrush(g_pageBack);
 
   // This tool edits the files beside it, so both must be there. Saying which
   // one is missing is the whole of the diagnosis for a misplaced copy.
@@ -1980,7 +2299,7 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int) {
   wc.lpfnWndProc = WndProc;
   wc.hInstance = hInst;
   wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
-  wc.hbrBackground = g_backgroundBrush;
+  wc.hbrBackground = g_windowBrush;
   wc.lpszClassName = L"ArlandConfigWindow";
   RegisterClassExW(&wc);
 

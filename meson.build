@@ -128,6 +128,9 @@ else
     include_directories : include_directories('src'),
     dependencies : [
       cpp.find_library('comctl32'),
+      # OpenThemeData/DrawThemeBackground, for sampling the visual style's tab
+      # page colour so the controls on it match. See themedTabBodyColor.
+      cpp.find_library('uxtheme'),
       cpp.find_library('shell32'),
       # GetFileVersionInfo, for reading the installed mod's version off d3d11.dll
       cpp.find_library('version'),
