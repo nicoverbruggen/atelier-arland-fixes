@@ -1,5 +1,8 @@
 # Technical overview
 
+> [!NOTE]
+> This technical overview is maintained and kept up-to-date with a large language model to ensure it matches the source code, as such, it wasn't all personally written by the author, who just did some minor editing here. As a player you may find the TL;DR sections interesting.
+
 ## Historical background
 
 This repository combines established synchronization work with new Arland-specific research. The components should not be conflated:
