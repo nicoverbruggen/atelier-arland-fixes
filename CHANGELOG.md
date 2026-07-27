@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.9.1
+
+### Fixed
+
+- **Fixed styling of the launcher app on Windows.** On Windows, the launcher didn't really look that great. It should look better now.
+
 ## v0.9
 
 ### Added
