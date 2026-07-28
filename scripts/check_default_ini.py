@@ -21,7 +21,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-SECTIONS = ("Rendering", "Battle", "Diagnostics")
+SECTIONS = ("Rendering", "Battle", "Launcher", "Diagnostics")
 
 # Read through readResPair with the key names as parameters, so they never
 # appear beside a section literal. Deprecated in favour of DisplayWidth/Height
@@ -44,6 +44,10 @@ PATTERNS = (
     # WritePrivateProfileStringA("Section", "Key", "value", path) -- the seeding
     # that makes an option discoverable, which writes its default.
     re.compile(rf'WritePrivateProfileStringA\("({SECTION_ALT})",\s*"(\w+)",\s*"([^"]*)"'),
+    # GetPrivateProfileStringW(L"Section", L"Key", L"default", ...). The 32-bit
+    # launcher proxy reads wide: its ini sits beside the game, and a Steam
+    # library path can hold characters the ANSI code page cannot represent.
+    re.compile(rf'GetPrivateProfileStringW\(L"({SECTION_ALT})",\s*L"(\w+)",\s*L"([^"]*)"'),
 )
 # Reads whose default is elsewhere, recorded for presence only. Two shapes: the
 # "\x01 means absent" idiom, and game.cpp's feature descriptor table, whose rows

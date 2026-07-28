@@ -6,7 +6,9 @@
 // editor) import msimg32, so this one DLL is loaded into each and does a
 // different job in each:
 //
-//   ArlandDXLauncher.exe -> start arland-fix-launcher.exe instead, if it is installed
+//   ArlandDXLauncher.exe -> start arland-fix-launcher.exe instead, if it is
+//                           installed, or the game itself when arland-fix.ini
+//                           asks for that with [Launcher] SkipLauncher
 //   ArlandDXEnv.exe      -> add 1440p and 4K to the resolution list
 //
 // Everything else that loads it just gets the two forwarded GDI entry points.
@@ -272,6 +274,13 @@ bool installModeBuilderHook(std::uint8_t* target) {
 // we run that instead, and the stock one never puts a window on screen, so a
 // plain drop-in install replaces it with no extra steps.
 //
+// [Launcher] SkipLauncher in arland-fix.ini turns that into a straight start of
+// the game: neither front-end appears and the configured settings are used as
+// they stand. Only the destination changes -- everything below about when the
+// substitution happens and how long this process lives applies unchanged, which
+// is what keeps the Steam session, the overlay and Steam Input attached either
+// way.
+//
 // Two things about *when* and *for how long* this happens are load-bearing, and
 // both were learned the hard way:
 //
@@ -300,14 +309,98 @@ bool installModeBuilderHook(std::uint8_t* target) {
 // original launcher and settings editor when its own buttons open them, which
 // is what stops those buttons from being bounced straight back here.
 
-std::array<wchar_t, 32768> g_configurator = { };
+// What the redirect starts: our launcher normally, the game itself when
+// SkipLauncher is set. `g_startsGame` only picks the wording in the log.
+std::array<wchar_t, 32768> g_startTarget = { };
+bool g_startsGame = false;
 std::array<wchar_t, 32768> g_gameDirectory = { };
 std::uint8_t* g_entryPoint = nullptr;
 std::array<std::uint8_t, 5> g_entryOriginal = { };
 
+// `directory` + `name`, where g_gameDirectory keeps its trailing backslash, so
+// this is a plain concatenation. False if the result does not fit.
+bool pathInGameDirectory(const wchar_t* name, std::array<wchar_t, 32768>& out) {
+  const std::size_t directoryLength =
+    static_cast<std::size_t>(lstrlenW(g_gameDirectory.data()));
+  const std::size_t nameLength = static_cast<std::size_t>(lstrlenW(name));
+  if (directoryLength + nameLength + 1 > out.size())
+    return false;
+  std::memcpy(out.data(), g_gameDirectory.data(),
+    directoryLength * sizeof(wchar_t));
+  std::memcpy(out.data() + directoryLength, name,
+    (nameLength + 1) * sizeof(wchar_t));
+  return true;
+}
+
+// [Launcher] SkipLauncher in arland-fix.ini, read the way the mod reads every
+// other boolean (t/T/1/y/Y is true). Read wide, because the ini sits in the
+// game folder and a Steam library path can hold characters the ANSI code page
+// cannot represent.
+//
+// Deliberately read-only: unlike the DLL's own options this one is never seeded
+// when it is absent. Creating arland-fix.ini from here would leave config.cpp's
+// first-use seeding thinking the file already exists, and the rest of the
+// defaults would never be written into it.
+bool skipLauncherRequested() {
+  std::array<wchar_t, 32768> ini = { };
+  if (!pathInGameDirectory(L"arland-fix.ini", ini))
+    return false;
+  std::array<wchar_t, 16> value = { };
+  GetPrivateProfileStringW(L"Launcher", L"SkipLauncher", L"false",
+    value.data(), static_cast<DWORD>(value.size()), ini.data());
+  return value[0] == L't' || value[0] == L'T' || value[0] == L'1' ||
+         value[0] == L'y' || value[0] == L'Y';
+}
+
+struct GameExecutables {
+  const wchar_t* english;
+  const wchar_t* multilingual;
+};
+
+// The three games, under the same executable names the mod's own launcher
+// matches on (kGames in src/config_gui/main.cpp). Each ships as two builds, an
+// English one and a multilingual one carrying Japanese, Simplified Chinese and
+// Traditional Chinese, normally installed side by side.
+constexpr std::array<GameExecutables, 3> SupportedGames = {{
+  { L"A11R_x64_Release_en.exe", L"A11R_x64_Release.exe" },
+  { L"A12V_x64_Release_en.exe", L"A12V_x64_Release.exe" },
+  { L"A13V_x64_Release_EN.exe", L"A13V_x64_Release.exe" },
+}};
+
+// Which executable a straight start runs, decided exactly as Koei Tecmo's
+// launcher and our own decide it: [Lang] Language in ArlandDX_Settings.ini
+// selects the multilingual build for 1 (Japanese), 3 (Simplified Chinese) and 4
+// (Traditional Chinese), and the English build for anything else. The two
+// builds do not each carry every language, so this matters. If the build the
+// language calls for is not installed the other one is used rather than
+// starting nothing.
+bool resolveGameExecutable(std::array<wchar_t, 32768>& out) {
+  std::array<wchar_t, 16> language = { };
+  std::array<wchar_t, 32768> settings = { };
+  if (pathInGameDirectory(L"ArlandDX_Settings.ini", settings))
+    GetPrivateProfileStringW(L"Lang", L"Language", L"2", language.data(),
+      static_cast<DWORD>(language.size()), settings.data());
+  const bool english = language[0] != L'1' && language[0] != L'3' &&
+                       language[0] != L'4';
+
+  for (const GameExecutables& game : SupportedGames) {
+    const wchar_t* candidates[2] = {
+      english ? game.english : game.multilingual,
+      english ? game.multilingual : game.english,
+    };
+    for (const wchar_t* name : candidates) {
+      if (pathInGameDirectory(name, out) &&
+          GetFileAttributesW(out.data()) != INVALID_FILE_ATTRIBUTES)
+        return true;
+    }
+  }
+  out[0] = L'\0';
+  return false;
+}
+
 // Put the executable's own entry point back and run it, for the case where the
-// configurator cannot be started after all. The launcher then comes up as if
-// the mod were not installed.
+// target cannot be started after all. The launcher then comes up as if the mod
+// were not installed.
 void runOriginalEntryPoint() {
   DWORD oldProtect = 0;
   if (VirtualProtect(g_entryPoint, g_entryOriginal.size(),
@@ -326,21 +419,29 @@ void redirectedEntryPoint() {
   STARTUPINFOW startup = { };
   startup.cb = sizeof(startup);
   PROCESS_INFORMATION process = { };
-  // Our launcher is 64-bit and this proxy is 32-bit; CreateProcess spans that
+  // Both targets are 64-bit and this proxy is 32-bit; CreateProcess spans that
   // difference, and the child inherits our environment either way -- which is
   // how the Steam variables reach the game and stop it restarting itself
-  // through Steam.
-  if (!CreateProcessW(g_configurator.data(), nullptr, nullptr, nullptr, FALSE,
+  // through Steam. Starting the game from here rather than from our launcher
+  // makes it a child of this process instead of a grandchild, which is the
+  // same relationship our launcher gives it and the one Steam follows.
+  if (!CreateProcessW(g_startTarget.data(), nullptr, nullptr, nullptr, FALSE,
       0, nullptr, g_gameDirectory.data(), &startup, &process)) {
-    launcherLog("configurator failed to start; running the stock launcher");
+    launcherLog(g_startsGame
+      ? "the game failed to start; running the stock launcher"
+      : "configurator failed to start; running the stock launcher");
     runOriginalEntryPoint();
     return;
   }
   CloseHandle(process.hThread);
-  launcherLog("configurator started; holding this process open behind it");
+  launcherLog(g_startsGame
+    ? "game started; holding this process open behind it"
+    : "configurator started; holding this process open behind it");
   WaitForSingleObject(process.hProcess, INFINITE);
   CloseHandle(process.hProcess);
-  launcherLog("configurator closed; ending the stock launcher");
+  launcherLog(g_startsGame
+    ? "game closed; ending the stock launcher"
+    : "configurator closed; ending the stock launcher");
   ExitProcess(0);
 }
 
@@ -366,12 +467,18 @@ bool armRedirect() {
   const std::size_t directoryLength = static_cast<std::size_t>(name - path.data());
   std::memcpy(g_gameDirectory.data(), path.data(),
     directoryLength * sizeof(wchar_t));
-  std::memcpy(g_configurator.data(), path.data(),
-    directoryLength * sizeof(wchar_t));
-  std::memcpy(g_configurator.data() + directoryLength,
-    L"arland-fix-launcher.exe", sizeof(L"arland-fix-launcher.exe"));
 
-  if (GetFileAttributesW(g_configurator.data()) == INVALID_FILE_ATTRIBUTES) {
+  // Where the redirect goes. SkipLauncher asks for the game itself; without it
+  // (the default) this is our launcher, exactly as before.
+  g_startsGame = skipLauncherRequested();
+  if (g_startsGame) {
+    if (!resolveGameExecutable(g_startTarget)) {
+      launcherLog("SkipLauncher is set but no game executable is installed "
+        "here; leaving the stock launcher alone");
+      return false;
+    }
+  } else if (!pathInGameDirectory(L"arland-fix-launcher.exe", g_startTarget) ||
+      GetFileAttributesW(g_startTarget.data()) == INVALID_FILE_ATTRIBUTES) {
     launcherLog("no configurator installed; leaving the stock launcher alone");
     return false;
   }
@@ -408,7 +515,9 @@ bool armRedirect() {
   VirtualProtect(g_entryPoint, g_entryOriginal.size(), oldProtect, &ignored);
   FlushInstructionCache(GetCurrentProcess(), g_entryPoint,
     g_entryOriginal.size());
-  launcherLog("redirect armed at the launcher entry point");
+  launcherLog(g_startsGame
+    ? "redirect armed at the launcher entry point (straight to the game)"
+    : "redirect armed at the launcher entry point");
   return true;
 }
 

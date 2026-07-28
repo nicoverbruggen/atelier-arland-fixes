@@ -16,6 +16,21 @@ Koei Tecmo's own launcher and settings editor are still available, from the butt
 
 To bypass the substitution outside the launcher, set `ARLAND_NO_REDIRECT=1` in the environment. The original launcher then opens untouched.
 
+### Skipping the launcher
+
+Once everything is configured the way you want it, the launcher is a window you press one button in. Setting
+
+```ini
+[Launcher]
+SkipLauncher=true
+```
+
+in `arland-fix.ini` makes Play in Steam go straight into the game, with the settings already in the file. The checkbox for it sits beside **Play with mod** in the launcher, so ticking it and starting the game is one gesture.
+
+Nothing else changes. The game is started exactly as the launcher starts it, from the same process Steam launched and with the same environment, so the Steam session, the overlay, playtime tracking and Steam Input behave as they do without this set. The language you chose still decides which of the game's two executables runs. What you give up is the chance to change a setting on the way in: the launcher no longer opens by itself, so run `arland-fix-launcher.exe` from the game folder when you want to adjust something or turn this back off.
+
+If no game executable is found beside the launcher, the setting is ignored and Koei Tecmo's own launcher opens as it otherwise would.
+
 ## Wine and Proton
 
 Copy both DLLs into the game directory as described in the README, then add this to the game's Steam Launch Options:

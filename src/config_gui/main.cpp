@@ -58,6 +58,7 @@ enum : int {
   IDC_BSHADOW,
   IDC_BCUTINSHADOW,
   IDC_BCUTINDIM,
+  IDC_SKIPLAUNCHER,  // start the game from Steam without stopping here
   IDC_VERBOSE,
   IDC_DEBUGVIEW,     // [Debug] the one developer view that is active
   IDC_START,
@@ -129,7 +130,8 @@ const wchar_t* const kRepositoryUrl =
   L"https://github.com/nicoverbruggen/atelier-arland-fixes";
 HWND g_hPreset, g_hWinMode, g_hLang,
      g_hFont, g_hBase, g_hSS, g_hRendLbl, g_hMsaa, g_hShadow,
-     g_hAniso, g_hSmaa, g_hBShadow, g_hBCutInShadow, g_hBCutInDim, g_hVerbose;
+     g_hAniso, g_hSmaa, g_hBShadow, g_hBCutInShadow, g_hBCutInDim,
+     g_hSkipLauncher, g_hVerbose;
 
 HFONT g_uiFont = nullptr;
 HFONT g_headingFont = nullptr;   // the same face, bold; headings only
@@ -720,6 +722,10 @@ void loadFromIni() {
   SendMessageW(g_hBCutInDim, BM_SETCHECK,
     iniBool("Battle", "BattleCutInDimming", true) ? BST_CHECKED : BST_UNCHECKED, 0);
 
+  // [Launcher]: read by the 32-bit msimg32 proxy, not by the DLL.
+  SendMessageW(g_hSkipLauncher, BM_SETCHECK,
+    iniBool("Launcher", "SkipLauncher", false) ? BST_CHECKED : BST_UNCHECKED, 0);
+
   // [Diagnostics].
   SendMessageW(g_hVerbose, BM_SETCHECK,
     iniBool("Diagnostics", "VerboseLogging", false) ? BST_CHECKED : BST_UNCHECKED, 0);
@@ -768,6 +774,7 @@ void resetToDefaults() {
   SendMessageW(g_hBShadow, BM_SETCHECK, BST_CHECKED, 0);
   SendMessageW(g_hBCutInShadow, BM_SETCHECK, BST_UNCHECKED, 0);
   SendMessageW(g_hBCutInDim, BM_SETCHECK, BST_CHECKED, 0);
+  SendMessageW(g_hSkipLauncher, BM_SETCHECK, BST_UNCHECKED, 0);
   SendMessageW(g_hVerbose, BM_SETCHECK, BST_UNCHECKED, 0);
   SendMessageW(g_hDebugView, CB_SETCURSEL, 0, 0);
   syncDebugTab(false);
@@ -842,6 +849,8 @@ void saveToIni() {
   iniWriteBool("Battle", "BattleCutInShadows", isChecked(g_hBCutInShadow));
   iniWriteBool("Battle", "BattleCutInDimming", isChecked(g_hBCutInDim));
 
+  iniWriteBool("Launcher", "SkipLauncher", isChecked(g_hSkipLauncher));
+
   iniWriteBool("Diagnostics", "VerboseLogging", isChecked(g_hVerbose));
   // [Debug] is developer tooling and is deliberately absent from the shipped
   // default.ini, so the key is written only when a view is actually selected
@@ -866,7 +875,7 @@ void saveToIni() {
 // changing a setting back to its old value correctly counts as unchanged.
 struct UiState {
   int font, base, ss, msaa, shadow, aniso, winMode, lang;
-  int smaa, battleShadows, cutInShadows, cutInDimming, verbose;
+  int smaa, battleShadows, cutInShadows, cutInDimming, skipLauncher, verbose;
 };
 UiState g_savedState;
 
@@ -884,6 +893,7 @@ UiState currentState() {
   s.battleShadows = isChecked(g_hBShadow);
   s.cutInShadows = isChecked(g_hBCutInShadow);
   s.cutInDimming = isChecked(g_hBCutInDim);
+  s.skipLauncher = isChecked(g_hSkipLauncher);
   s.verbose = isChecked(g_hVerbose);
   return s;
 }
@@ -2010,12 +2020,34 @@ void createControls(HWND w) {
     EnableWindow(g_hStart, FALSE);
 
   // Distinct mnemonics across the whole window: P play, R reset, C close,
-  // E editor, O original launcher, W play without the mod.
+  // E editor, O original launcher, W play without the mod, S skip.
   HWND reset = CreateWindowExW(0, L"BUTTON", L"&Reset to defaults",
     WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
     rightEdge - closeW - S(12) - wideW, buttonTop, wideW, buttonH, w,
     (HMENU)(INT_PTR)IDC_RESET, nullptr, nullptr);
   setFont(reset);
+
+  // [Launcher] SkipLauncher, beside Play with mod because that is what it is
+  // about: the next launch from Steam does what that button does, without
+  // stopping here first. It belongs to no tab page, so it is not registered
+  // with onPage and stays visible whichever page is showing -- which also
+  // means it stands on the window background rather than a tab page, and
+  // WM_CTLCOLORBTN colours it accordingly.
+  //
+  // Saved by saveToIni like every other setting, so ticking it and pressing
+  // Play with mod is one gesture rather than two.
+  // Two lines, because the qualifier is the half that is easy to get wrong:
+  // this is about the launch Steam performs, not about the window in front of
+  // you. BS_MULTILINE is what makes the break in the caption take effect.
+  const int skipLeft = margin + wideW + S(16);
+  const int skipHeight = 2 * checkHeight();
+  g_hSkipLauncher = CreateWindowExW(0, L"BUTTON",
+    L"&Skip the launcher\n(when launching via Steam)",
+    WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTOCHECKBOX | BS_MULTILINE,
+    skipLeft, buttonTop + (buttonH - skipHeight) / 2,
+    std::max(S(60), (rightEdge - closeW - S(12) - wideW) - S(12) - skipLeft),
+    skipHeight, w, (HMENU)(INT_PTR)IDC_SKIPLAUNCHER, nullptr, nullptr);
+  setFont(g_hSkipLauncher);
   HWND close = CreateWindowExW(0, L"BUTTON", L"&Close",
     WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
     rightEdge - closeW, buttonTop, closeW, buttonH, w,
@@ -2092,6 +2124,15 @@ LRESULT CALLBACK WndProc(HWND w, UINT msg, WPARAM wp, LPARAM lp) {
         SetBkMode((HDC)wp, TRANSPARENT);
         SetTextColor((HDC)wp, g_secondaryText);
         return (LRESULT)GetStockObject(NULL_BRUSH);
+      }
+      // The skip checkbox is the one control that sits in the button row
+      // rather than on a page, so it takes the window's own background. With
+      // the page colour it would read as a patch laid on the strip, which is
+      // exactly what the rule below exists to prevent everywhere else.
+      if ((HWND)lp == g_hSkipLauncher) {
+        SetBkColor((HDC)wp, g_windowBack);
+        SetTextColor((HDC)wp, g_text);
+        return (LRESULT)g_windowBrush;
       }
       // Every other static and checkbox stands on the tab page, so all of them
       // get the page's colour -- the theme's on Windows, the flat white under
