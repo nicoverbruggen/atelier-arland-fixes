@@ -1,10 +1,14 @@
 # Changelog
 
-## Unreleased
+## v0.9.2
 
 ### Added
 
 - **An option to skip the launcher.** Once the mod is configured the way you want it, the launcher is a window you press one button in. Setting `SkipLauncher=true` under `[Launcher]` in `arland-fix.ini`, or ticking the box beside **Play with mod** in the launcher, makes Play in Steam go straight into the game with the settings already saved. Only the destination changes: the game is started by the same process at the same point in startup that the launcher would have been, with the same environment, so the Steam session, the overlay, playtime tracking and Steam Input behave exactly as they do without it, and the language you chose still decides which of the game's two executables runs. The launcher no longer opens by itself while this is set, so run `arland-fix-launcher.exe` from the game folder to change a setting or turn it back off. Off by default, and if no game is found beside the launcher the setting is ignored and Koei Tecmo's own launcher opens as before. See [ADVANCED.md](ADVANCED.md).
+
+### Fixed
+
+- **Prevented malformed Atelier Totori DX inventory data from corrupting saves and crashing combat, in both the English and multilingual executables.** Totori trusted a saved container limit even when it exceeded the game's fixed 999-item array, allowing ordinary item operations to write through unrelated game state and equipment. The mod now clamps that limit, repairs damaged item and character-skill records while loading, and bounds the remaining effect lookups used at battle entry and by bombs/Crafts. Runtime validation repaired an affected save—including its visibly broken skill lists—and the normally saved result passed a complete structural scan; an unaffected save remained clean. Rorona and Meruru use a different item system and explicitly leave this fix inactive.
 
 ## v0.9.1
 

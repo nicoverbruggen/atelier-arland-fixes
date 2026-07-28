@@ -69,6 +69,7 @@ else
     'src/smaa.cpp',
     'src/field_physics.cpp',
     'src/worldmap_fix.cpp',
+    'src/item_guard.cpp',
     'src/supersample.cpp',
     'src/font_hires.cpp',
     'src/menu_fix.cpp',

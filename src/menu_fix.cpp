@@ -20,6 +20,7 @@
 #include "config.h"
 #include "field_physics.h"
 #include "worldmap_fix.h"
+#include "item_guard.h"
 #include "font_hires.h"
 #include "game.h"
 #include "log.h"
@@ -2093,6 +2094,7 @@ void detectAndInstallGameHooks() {
     atfix::installBattleShadowRestore(gameBase, game);
     atfix::installFieldPhysics(gameBase, game);
     atfix::installWorldMapFix(gameBase, game);
+    atfix::installItemGuard(gameBase, game);
     const bool hiresRequested = atfix::hiResTextEnabled();
     const char* hiresStatus = game.exeBuild != BuildEnglish
       ? "not_supported"
