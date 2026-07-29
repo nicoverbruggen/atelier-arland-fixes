@@ -76,7 +76,7 @@
 // valid. This check stays builder-local because equipment and materials
 // legitimately use ids outside the action-item table.
 // ARLAND_ITEM_SANITIZE=0 disables persistent recovery for comparison.
-// ARLAND_ITEM_SAVE_TRACE=1 is a separate provenance diagnostic:
+// ARLAND_ITEM_SAVE_TRACE=1 is a separate save-data change-tracking diagnostic:
 // it shadows only the 30 saved item records, mirrors the engine's central
 // equip/swap operation, and compares live memory with that model immediately
 // before each save. An unexpected difference proves that some other in-memory
@@ -178,6 +178,10 @@ static_assert(!actionItemIdUsable(164));
 
 using ScanProc = int (STDMETHODCALLTYPE*)(uintptr_t item, int32_t type);
 using SaveProc = int (STDMETHODCALLTYPE*)(uintptr_t self, uintptr_t stream);
+using ActualLoadProc = int (STDMETHODCALLTYPE*)(uintptr_t self);
+using PreviewLoadProc = int (STDMETHODCALLTYPE*)(uintptr_t self);
+using PreviewRecordProc = void (STDMETHODCALLTYPE*)(uintptr_t name);
+using PreviewLabelProc = char* (STDMETHODCALLTYPE*)(uintptr_t record);
 using EquipProc = uintptr_t (STDMETHODCALLTYPE*)(
   uintptr_t set, uintptr_t oldItem, uint32_t slot, uintptr_t newItem);
 using RecalcProc = void (STDMETHODCALLTYPE*)(uintptr_t set);
@@ -194,32 +198,48 @@ struct ItemGuardAddrs {
   uintptr_t containerOwner;
   uintptr_t saveWriter;
   uintptr_t saveLoader;
-  uintptr_t inventoryWriter;
+  uintptr_t actualLoad;
   uintptr_t inventoryLoader;
   uintptr_t equipMutation;
   uintptr_t itemEffectBuild;
   uintptr_t skillInfo;
   uintptr_t recalc;
+  uintptr_t previewLoad;
+  uintptr_t previewRecord;
+  uintptr_t previewRecordRet;
+  uintptr_t previewLabel;
   std::array<BYTE, 16> effectExpected;
   std::array<BYTE, 16> traitExpected;
   std::array<BYTE, 16> writerExpected;
   std::array<BYTE, 16> loaderExpected;
-  std::array<BYTE, 16> inventoryWriterExpected;
+  std::array<BYTE, 16> actualLoadExpected;
   std::array<BYTE, 16> inventoryLoaderExpected;
   std::array<BYTE, 16> equipExpected;
   std::array<BYTE, 16> itemEffectBuildExpected;
   std::array<BYTE, 16> skillExpected;
   std::array<BYTE, 16> recalcExpected;
+  std::array<BYTE, 16> previewLoadExpected;
+  std::array<BYTE, 16> previewRecordExpected;
+  std::array<BYTE, 16> previewLabelExpected;
 };
 
 // Both leaves open with the same two instructions in both builds; only the
 // RIP-relative displacement of the table lea differs, which is why these rows
-// are per build rather than shared.
+// are per build rather than shared. The actual-load boundary was identified by
+// a runtime stack comparison: save-list previews reach the common deserializer
+// through the 0x286190/0x4a3080 tail-call path, while a selected save calls it
+// directly from 0x2891d0/0x4a60c0. atre.py homolog confirmed the multilingual
+// routine bidirectionally, and callsites found exactly those two deserializer
+// callers in each build. The preview record builder and row-label formatter
+// were then traced from the English save-list builder at 0x2aa10. Its
+// multilingual homologue is 0x246da0; the corresponding direct calls identify
+// 0x2498f0 and 0x249b00 independently of the weaker whole-function match.
 constexpr ItemGuardAddrs kTotoriEn {
   0x25b3d0, 0x25b450, 0xd328d0,
   0xd22730, 0xd23b80, 0xd30670, 0xd30688,
-  0x23eb30, 0x23eff0, 0x23a4c0, 0x23a990, 0x2307d0, 0x25a010,
+  0x23eb30, 0x23eff0, 0x2891d0, 0x23a990, 0x2307d0, 0x25a010,
   0x230e50, 0x22ed20,
+  0x286190, 0x2d490, 0x2db8e, 0x2d6a0,
   { 0x45, 0x33, 0xc0, 0x4c, 0x8d, 0x0d, 0xc6, 0xa2,
     0x9e, 0x00, 0x48, 0x83, 0xc1, 0x20, 0x66, 0x90 },
   { 0x45, 0x33, 0xc0, 0x4c, 0x8d, 0x49, 0x0c, 0x4c,
@@ -228,8 +248,8 @@ constexpr ItemGuardAddrs kTotoriEn {
     0x44, 0x24, 0x20, 0xfe, 0xff, 0xff, 0xff, 0x48 },
   { 0x48, 0x8b, 0xc4, 0x56, 0x57, 0x41, 0x54, 0x41,
     0x56, 0x41, 0x57, 0x48, 0x81, 0xec, 0x40, 0x0b },
-  { 0x40, 0x55, 0x48, 0x8b, 0xec, 0x48, 0x83, 0xec,
-    0x50, 0x48, 0xc7, 0x45, 0xd0, 0xfe, 0xff, 0xff },
+  { 0x40, 0x53, 0x48, 0x83, 0xec, 0x50, 0x48, 0x8b,
+    0x05, 0xf3, 0x37, 0xa2, 0x00, 0x48, 0x33, 0xc4 },
   { 0x4c, 0x8b, 0x02, 0x48, 0x8d, 0x0d, 0x96, 0x7d,
     0xae, 0x00, 0x49, 0x8b, 0xc0, 0xba, 0x28, 0x00 },
   { 0x40, 0x57, 0x48, 0x83, 0xec, 0x70, 0x48, 0xc7,
@@ -240,12 +260,19 @@ constexpr ItemGuardAddrs kTotoriEn {
     0x4c, 0x8d, 0x0d, 0x41, 0x44, 0xa1, 0x00, 0x4d },
   { 0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x6c,
     0x24, 0x10, 0x48, 0x89, 0x74, 0x24, 0x18, 0x48 },
+  { 0x40, 0x53, 0x48, 0x83, 0xec, 0x20, 0x48, 0x8b,
+    0xd9, 0x48, 0x8d, 0x51, 0x20, 0x48, 0x83, 0xc1 },
+  { 0x40, 0x57, 0xb8, 0xc0, 0x10, 0x00, 0x00, 0xe8,
+    0xd4, 0x8d, 0x56, 0x00, 0x48, 0x2b, 0xe0, 0x48 },
+  { 0x40, 0x57, 0x48, 0x81, 0xec, 0x80, 0x00, 0x00,
+    0x00, 0x48, 0xc7, 0x44, 0x24, 0x30, 0xfe, 0xff },
 };
 constexpr ItemGuardAddrs kTotoriMulti {
   0x477d00, 0x477d80, 0x109aa50,
   0x108a8b0, 0x108bd00, 0x10987f0, 0x1098808,
-  0x45b340, 0x45b800, 0x456cd0, 0x456600, 0x44cf80, 0x476940,
+  0x45b340, 0x45b800, 0x4a60c0, 0x456600, 0x44cf80, 0x476940,
   0x44d600, 0x44b4d0,
+  0x4a3080, 0x2498f0, 0x24a14e, 0x249b00,
   { 0x45, 0x33, 0xc0, 0x4c, 0x8d, 0x0d, 0x46, 0xa4,
     0xc2, 0x00, 0x48, 0x83, 0xc1, 0x20, 0x66, 0x90 },
   { 0x45, 0x33, 0xc0, 0x4c, 0x8d, 0x49, 0x0c, 0x4c,
@@ -254,8 +281,8 @@ constexpr ItemGuardAddrs kTotoriMulti {
     0x44, 0x24, 0x20, 0xfe, 0xff, 0xff, 0xff, 0x48 },
   { 0x48, 0x8b, 0xc4, 0x56, 0x57, 0x41, 0x54, 0x41,
     0x56, 0x41, 0x57, 0x48, 0x81, 0xec, 0x40, 0x0b },
-  { 0x40, 0x55, 0x48, 0x8b, 0xec, 0x48, 0x83, 0xec,
-    0x50, 0x48, 0xc7, 0x45, 0xd0, 0xfe, 0xff, 0xff },
+  { 0x40, 0x53, 0x48, 0x83, 0xec, 0x50, 0x48, 0x8b,
+    0x05, 0xb3, 0x5e, 0xb6, 0x00, 0x48, 0x33, 0xc4 },
   { 0x48, 0x8b, 0x02, 0x48, 0x8d, 0x0d, 0x66, 0x41,
     0xc3, 0x00, 0x0f, 0x10, 0x00, 0x0f, 0x11, 0x01 },
   { 0x40, 0x57, 0x48, 0x83, 0xec, 0x70, 0x48, 0xc7,
@@ -266,6 +293,12 @@ constexpr ItemGuardAddrs kTotoriMulti {
     0x4c, 0x8d, 0x15, 0x61, 0x12, 0xb7, 0x00, 0x4d },
   { 0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x6c,
     0x24, 0x10, 0x48, 0x89, 0x74, 0x24, 0x18, 0x48 },
+  { 0x40, 0x53, 0x48, 0x83, 0xec, 0x20, 0x48, 0x8b,
+    0xd9, 0x48, 0x8d, 0x51, 0x20, 0x48, 0x83, 0xc1 },
+  { 0x40, 0x57, 0xb8, 0xc0, 0x10, 0x00, 0x00, 0xe8,
+    0x74, 0x9f, 0x5c, 0x00, 0x48, 0x2b, 0xe0, 0x48 },
+  { 0x40, 0x57, 0x48, 0x81, 0xec, 0x80, 0x00, 0x00,
+    0x00, 0x48, 0xc7, 0x44, 0x24, 0x30, 0xfe, 0xff },
 };
 
 const ItemGuardAddrs* addressesFor(const Game& game) {
@@ -292,12 +325,24 @@ ScanProc originalEffectScan = nullptr;
 ScanProc originalTraitScan = nullptr;
 SaveProc originalSaveWriter = nullptr;
 SaveProc originalSaveLoader = nullptr;
-SaveProc originalInventoryWriter = nullptr;
+ActualLoadProc originalActualLoad = nullptr;
 SaveProc originalInventoryLoader = nullptr;
+PreviewLoadProc originalPreviewLoad = nullptr;
+PreviewRecordProc originalPreviewRecord = nullptr;
+PreviewLabelProc originalPreviewLabel = nullptr;
 EquipProc originalEquipMutation = nullptr;
 ItemEffectBuildProc originalItemEffectBuild = nullptr;
 RecalcProc recalcEquipmentSet = nullptr;
 uintptr_t g_skillTable = 0;
+uintptr_t g_previewRecordRet = 0;
+thread_local bool g_actualSaveLoad = false;
+thread_local bool g_previewLoadActive = false;
+thread_local bool g_previewNeedsRepair = false;
+thread_local bool g_previewResultReady = false;
+thread_local bool g_previewResultNeedsRepair = false;
+
+constexpr size_t kSaveSlotCount = 99;
+std::array<std::atomic<bool>, kSaveSlotCount> g_saveNeedsRepair{};
 
 using ItemBytes = std::array<BYTE, kItemStride>;
 constexpr size_t kItemCount = kSetCount * 3;
@@ -664,6 +709,14 @@ ItemRangeSummary sanitizeItemRange(
   return summary;
 }
 
+bool itemRangeNeedsRepair(uintptr_t records, size_t count) {
+  for (size_t slot = 0; slot < count; ++slot) {
+    if (!itemStructurallyUsable(records + slot * kItemStride))
+      return true;
+  }
+  return false;
+}
+
 bool itemListGeometryValid(
     uintptr_t owner, int32_t kind, size_t capacity, uintptr_t records) {
   int32_t liveKind = -1;
@@ -676,6 +729,12 @@ bool itemListGeometryValid(
     liveCapacity == int32_t(capacity) &&
     liveRecords == records &&
     readableRange(records, capacity * kItemStride);
+}
+
+bool itemListLimitNeedsRepair(uintptr_t owner, size_t capacity) {
+  int32_t limit = 0;
+  return tryRead(owner + 4, limit) &&
+    (limit < 0 || limit > int32_t(capacity));
 }
 
 bool clampItemListLimit(
@@ -693,6 +752,18 @@ bool clampItemListLimit(
       " old=", limit, " new=", clamped,
       " physical_capacity=", capacity);
   return true;
+}
+
+bool loadedInventoryNeedsRepair() {
+  if (!itemListGeometryValid(g_carriedOwner, 0, kCarriedCount,
+                             g_carriedArray) ||
+      !itemListGeometryValid(g_containerOwner, 1, kContainerCount,
+                             g_containerArray))
+    return false;
+  return itemListLimitNeedsRepair(g_carriedOwner, kCarriedCount) ||
+    itemListLimitNeedsRepair(g_containerOwner, kContainerCount) ||
+    itemRangeNeedsRepair(g_carriedArray, kCarriedCount) ||
+    itemRangeNeedsRepair(g_containerArray, kContainerCount);
 }
 
 ItemRangeSummary sanitizeLoadedInventory() {
@@ -851,6 +922,44 @@ bool skillsNeedRebuild(uintptr_t set, size_t setIndex) {
     if (!skillSource(setIndex, slot, source))
       return false;
     if (!skillEntryValid(set + kSkillBase + slot * kSkillStride, source))
+      return true;
+  }
+  return false;
+}
+
+bool loadedEquipmentNeedsRepair() {
+  if (!g_skillTable || !recalcEquipmentSet)
+    return false;
+  for (size_t setIndex = 0; setIndex < kSetCount; ++setIndex) {
+    const uintptr_t set = g_arrayBase + setIndex * kSetStride;
+    for (size_t slot = 0; slot < 3; ++slot) {
+      if (!itemStructurallyUsable(
+            set + kItemBase + slot * kItemStride))
+        return true;
+    }
+
+    int32_t character = 0;
+    int32_t level = 0;
+    int32_t levelCopy = 0;
+    float relationship = 0.0f;
+    uint32_t partyFlag = 0;
+    std::memcpy(&character, reinterpret_cast<const void*>(set),
+                sizeof(character));
+    std::memcpy(&level, reinterpret_cast<const void*>(set + 4),
+                sizeof(level));
+    std::memcpy(&levelCopy, reinterpret_cast<const void*>(set + 0x17c),
+                sizeof(levelCopy));
+    std::memcpy(&relationship,
+                reinterpret_cast<const void*>(set + 0x180),
+                sizeof(relationship));
+    std::memcpy(&partyFlag, reinterpret_cast<const void*>(set + 0x188),
+                sizeof(partyFlag));
+    if ((level > 0 && character != int32_t(setIndex)) ||
+        skillsNeedRebuild(set, setIndex) ||
+        levelCopy != level ||
+        !std::isfinite(relationship) || relationship < 0.0f ||
+        relationship > 100.0f ||
+        (partyFlag != 0 && partyFlag != 0x100))
       return true;
   }
   return false;
@@ -1053,8 +1162,102 @@ void describeLoadedBaseline() {
       " invalid_index_fields=", invalidFields);
 }
 
+bool parseSaveSlot(uintptr_t text, size_t& slot) {
+  std::array<char, 11> name{};
+  if (!readableRange(text, name.size()))
+    return false;
+  std::memcpy(name.data(), reinterpret_cast<const void*>(text), name.size());
+  if (std::memcmp(name.data(), "GAMEDATA", 8) != 0 ||
+      name[8] < '0' || name[8] > '9' ||
+      name[9] < '0' || name[9] > '9' || name[10] != '\0')
+    return false;
+  slot = size_t(name[8] - '0') * 10 + size_t(name[9] - '0');
+  return slot < kSaveSlotCount;
+}
+
+int STDMETHODCALLTYPE previewLoadDetour(uintptr_t self) {
+  g_previewLoadActive = true;
+  g_previewNeedsRepair = false;
+  g_previewResultReady = false;
+  g_previewResultNeedsRepair = false;
+  const int result = originalPreviewLoad(self);
+  g_previewLoadActive = false;
+  g_previewResultReady = true;
+  g_previewResultNeedsRepair = g_previewNeedsRepair;
+  return result;
+}
+
+void STDMETHODCALLTYPE previewRecordDetour(uintptr_t name) {
+  const uintptr_t caller =
+    reinterpret_cast<uintptr_t>(arlandReturnAddress());
+  size_t slot = 0;
+  const bool namedSlot = parseSaveSlot(name, slot);
+  originalPreviewRecord(name);
+  if (caller != g_previewRecordRet)
+    return;
+
+  const bool needsRepair =
+    namedSlot && g_previewResultReady && g_previewResultNeedsRepair;
+  if (namedSlot) {
+    const bool previous = g_saveNeedsRepair[slot].exchange(
+      needsRepair, std::memory_order_relaxed);
+    if (needsRepair && !previous)
+      log("ITEMCHECK save slot=", slot + 1, " needs repair on load");
+  }
+  g_previewResultReady = false;
+  g_previewResultNeedsRepair = false;
+}
+
+char* STDMETHODCALLTYPE previewLabelDetour(uintptr_t record) {
+  char* result = originalPreviewLabel(record);
+  size_t slot = 0;
+  if (!parseSaveSlot(record + 8, slot) ||
+      !g_saveNeedsRepair[slot].load(std::memory_order_relaxed))
+    return result;
+
+  constexpr size_t kLabelOffset = 0x849;
+  constexpr size_t kLabelCapacity = 0x400;
+  constexpr char kMarker[] = " [TBR]";
+  char* const expected =
+    reinterpret_cast<char*>(record + kLabelOffset);
+  if (result != expected ||
+      !readableRange(reinterpret_cast<uintptr_t>(result), kLabelCapacity))
+    return result;
+
+  size_t length = 0;
+  while (length < kLabelCapacity && result[length])
+    ++length;
+  if (length == kLabelCapacity ||
+      length + sizeof(kMarker) > kLabelCapacity)
+    return result;
+
+  size_t titleEnd = 0;
+  while (titleEnd < length && result[titleEnd] != '\n')
+    ++titleEnd;
+  constexpr size_t kMarkerLength = sizeof(kMarker) - 1;
+  std::memmove(result + titleEnd + kMarkerLength, result + titleEnd,
+               length - titleEnd + 1);
+  std::memcpy(result + titleEnd, kMarker, kMarkerLength);
+  return result;
+}
+
+int STDMETHODCALLTYPE actualLoadDetour(uintptr_t self) {
+  const bool previous = g_actualSaveLoad;
+  g_actualSaveLoad = true;
+  const int result = originalActualLoad(self);
+  g_actualSaveLoad = previous;
+  return result;
+}
+
 int STDMETHODCALLTYPE saveLoaderDetour(uintptr_t self, uintptr_t stream) {
   const int result = originalSaveLoader(self, stream);
+  if (g_previewLoadActive) {
+    g_previewNeedsRepair =
+      g_previewNeedsRepair || loadedEquipmentNeedsRepair();
+    return result;
+  }
+  if (!g_actualSaveLoad)
+    return result;
   const SanitizeSummary repaired = sanitizeLoadedEquipment();
   if (repaired.sets) {
     log("ITEMSANITIZE repaired loaded save: sets=", repaired.sets,
@@ -1077,6 +1280,13 @@ int STDMETHODCALLTYPE saveLoaderDetour(uintptr_t self, uintptr_t stream) {
 int STDMETHODCALLTYPE inventoryLoaderDetour(
     uintptr_t self, uintptr_t stream) {
   const int result = originalInventoryLoader(self, stream);
+  if (g_previewLoadActive) {
+    g_previewNeedsRepair =
+      g_previewNeedsRepair || loadedInventoryNeedsRepair();
+    return result;
+  }
+  if (!g_actualSaveLoad)
+    return result;
   const ItemRangeSummary repaired = sanitizeLoadedInventory();
   if (repaired.salvaged || repaired.cleared || repaired.clampedLimits) {
     log("ITEMSANITIZE repaired loaded inventory: salvaged_items=",
@@ -1096,17 +1306,6 @@ int STDMETHODCALLTYPE saveWriterDetour(uintptr_t self, uintptr_t stream) {
                 : " (exact match)");
   }
   return originalSaveWriter(self, stream);
-}
-
-int STDMETHODCALLTYPE inventoryWriterDetour(
-    uintptr_t self, uintptr_t stream) {
-  const ItemRangeSummary repaired = sanitizeLoadedInventory();
-  if (repaired.salvaged || repaired.cleared || repaired.clampedLimits) {
-    log("ITEMSANITIZE repaired inventory before save: salvaged_items=",
-        repaired.salvaged, " cleared_items=", repaired.cleared,
-        " clamped_limits=", repaired.clampedLimits);
-  }
-  return originalInventoryWriter(self, stream);
 }
 
 bool globalItemIndex(uintptr_t set, uint32_t slot, size_t& index) {
@@ -1192,28 +1391,37 @@ bool installItemSaveHandling(BYTE* base, const ItemGuardAddrs& addrs) {
 
   BYTE* writer = base + addrs.saveWriter;
   BYTE* loader = base + addrs.saveLoader;
-  BYTE* inventoryWriter = base + addrs.inventoryWriter;
+  BYTE* actualLoad = base + addrs.actualLoad;
   BYTE* inventoryLoader = base + addrs.inventoryLoader;
   BYTE* equip = base + addrs.equipMutation;
   BYTE* skill = base + addrs.skillInfo;
   BYTE* recalc = base + addrs.recalc;
+  BYTE* previewLoad = base + addrs.previewLoad;
+  BYTE* previewRecord = base + addrs.previewRecord;
+  BYTE* previewLabel = base + addrs.previewLabel;
 
   bool sanitizerReady = false;
   if (wantSanitizer) {
     sanitizerReady = matches(loader, addrs.loaderExpected) &&
-      matches(inventoryWriter, addrs.inventoryWriterExpected) &&
+      matches(actualLoad, addrs.actualLoadExpected) &&
       matches(inventoryLoader, addrs.inventoryLoaderExpected) &&
       matches(skill, addrs.skillExpected) &&
-      matches(recalc, addrs.recalcExpected);
+      matches(recalc, addrs.recalcExpected) &&
+      matches(previewLoad, addrs.previewLoadExpected) &&
+      matches(previewRecord, addrs.previewRecordExpected) &&
+      matches(previewLabel, addrs.previewLabelExpected);
     if (sanitizerReady) {
       g_skillTable = ripTarget(skill + 8, 3, 7);
       recalcEquipmentSet = reinterpret_cast<RecalcProc>(recalc);
+      g_previewRecordRet =
+        reinterpret_cast<uintptr_t>(base) + addrs.previewRecordRet;
       sanitizerReady =
         readableRange(g_skillTable, kSetCount * sizeof(uintptr_t));
     }
     if (!sanitizerReady) {
       g_skillTable = 0;
       recalcEquipmentSet = nullptr;
+      g_previewRecordRet = 0;
       log("FIXES item_save_sanitize=failed (address validation)");
     }
   }
@@ -1224,7 +1432,43 @@ bool installItemSaveHandling(BYTE* base, const ItemGuardAddrs& addrs) {
   if (wantTrace) {
     traceReady = matches(writer, addrs.writerExpected) &&
       matches(equip, addrs.equipExpected) &&
-      matches(loader, addrs.loaderExpected);
+      matches(loader, addrs.loaderExpected) &&
+      matches(actualLoad, addrs.actualLoadExpected);
+  }
+
+  // Install the display path from the outside in. Each hook is transparent
+  // until the next one succeeds: the label sees no marked slots without the
+  // record hook, and the record hook sees no preview result without the
+  // preview scope.
+  const bool previewLabelOk = sanitizerReady &&
+    installMinHookDetour(previewLabel,
+      reinterpret_cast<void*>(&previewLabelDetour),
+      reinterpret_cast<void**>(&originalPreviewLabel));
+  const bool previewRecordOk = previewLabelOk &&
+    installMinHookDetour(previewRecord,
+      reinterpret_cast<void*>(&previewRecordDetour),
+      reinterpret_cast<void**>(&originalPreviewRecord));
+  const bool previewLoadOk = previewRecordOk &&
+    installMinHookDetour(previewLoad,
+      reinterpret_cast<void*>(&previewLoadDetour),
+      reinterpret_cast<void**>(&originalPreviewLoad));
+  const bool previewMarkerOk =
+    previewLabelOk && previewRecordOk && previewLoadOk;
+  sanitizerReady = sanitizerReady && previewMarkerOk;
+
+  // Totori calls the same chunk deserializers while building save-list
+  // previews. Only the dedicated selected-save routine should authorize
+  // repair or save-data change tracking. Install this scope first; by itself
+  // it is transparent, so a later partial hook failure cannot change game
+  // data.
+  const bool actualLoadOk = (sanitizerReady || traceReady) &&
+    installMinHookDetour(actualLoad,
+      reinterpret_cast<void*>(&actualLoadDetour),
+      reinterpret_cast<void**>(&originalActualLoad));
+  sanitizerReady = sanitizerReady && actualLoadOk;
+  traceReady = traceReady && actualLoadOk;
+
+  if (wantTrace) {
     writerOk = traceReady && installMinHookDetour(writer,
       reinterpret_cast<void*>(&saveWriterDetour),
       reinterpret_cast<void**>(&originalSaveWriter));
@@ -1234,14 +1478,9 @@ bool installItemSaveHandling(BYTE* base, const ItemGuardAddrs& addrs) {
     traceReady = writerOk && equipOk;
   }
 
-  bool inventoryWriterOk = false;
   bool inventoryLoaderOk = false;
   if (sanitizerReady) {
-    inventoryWriterOk = installMinHookDetour(inventoryWriter,
-      reinterpret_cast<void*>(&inventoryWriterDetour),
-      reinterpret_cast<void**>(&originalInventoryWriter));
-    inventoryLoaderOk = inventoryWriterOk &&
-      installMinHookDetour(inventoryLoader,
+    inventoryLoaderOk = installMinHookDetour(inventoryLoader,
         reinterpret_cast<void*>(&inventoryLoaderDetour),
         reinterpret_cast<void**>(&originalInventoryLoader));
   }
@@ -1249,7 +1488,7 @@ bool installItemSaveHandling(BYTE* base, const ItemGuardAddrs& addrs) {
   // Install the shared loader detour last. It sanitizes independently of the
   // optional tracer; a partially installed trace hook remains transparent.
   const bool sanitizerHooksReady =
-    sanitizerReady && inventoryWriterOk && inventoryLoaderOk;
+    sanitizerReady && inventoryLoaderOk;
   const bool loaderOk = (sanitizerHooksReady || traceReady) &&
     installMinHookDetour(loader,
     reinterpret_cast<void*>(&saveLoaderDetour),
@@ -1257,16 +1496,18 @@ bool installItemSaveHandling(BYTE* base, const ItemGuardAddrs& addrs) {
   if (wantSanitizer) {
     log("FIXES item_save_sanitize=",
         sanitizerHooksReady && loaderOk ? "active" : "failed",
+        " actual_load=", actualLoadOk,
         " equipment_loader=", loaderOk,
         " inventory_loader=", inventoryLoaderOk,
-        " inventory_writer=", inventoryWriterOk);
+        " preview_marker=", previewMarkerOk);
   }
   if (wantTrace) {
     log("DIAGNOSTICS item_save_trace=",
         traceReady && loaderOk ? "active" : "failed",
+        " actual_load=", actualLoadOk,
         " writer=", writerOk, " equip=", equipOk, " loader=", loaderOk);
   }
-  return loaderOk || inventoryWriterOk || inventoryLoaderOk;
+  return loaderOk || inventoryLoaderOk;
 }
 
 }  // namespace
