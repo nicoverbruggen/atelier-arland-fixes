@@ -12,7 +12,7 @@ Starting the game normally opens it. Both of the games' own front-ends load `msi
 
 If `arland-fix-launcher.exe` is not installed, the original launcher opens exactly as before, so an incomplete install cannot leave the game unstartable.
 
-Koei Tecmo's own launcher and settings editor are still available, from the buttons on the launcher's Display tab. Those open the real ones: the substitution does not apply to a launcher opened this way, so they cannot loop back. The settings editor also still gains the extra resolutions described under [Resolution](#resolution).
+Koei Tecmo's own launcher and settings editor are still available, from the buttons on the launcher's Display tab. Those open the real ones, entirely unmodified: the substitution does not apply to a launcher opened this way, so they cannot loop back.
 
 To bypass the substitution outside the launcher, set `ARLAND_NO_REDIRECT=1` in the environment. The original launcher then opens untouched.
 
@@ -43,9 +43,9 @@ The same `arland-fix.ini` file used on Windows configures the mod under Wine or 
 
 ## Resolution
 
-The launcher DLL always exposes 1920×1080, 2560×1440, and 3840×2160 in both launcher states even when DPI or display-mode enumeration would normally hide them. Keeping 1920×1080 visible is intentional for Steam Deck and other lower-resolution handhelds, where a high-DPI desktop can otherwise prevent the launcher from exposing 1080p; it also supports higher-resolution rendering for downsampling and normal docked use.
+Set the resolution in the mod's launcher, on its Display tab. It always offers 1920×1080, 2560×1440, and 3840×2160, unlike Koei Tecmo's settings editor, which filters its list through Windows display-mode reporting and can hide a resolution the game and screen can use — most noticeably on Steam Deck and other high-DPI handhelds, where even 1080p can go missing, and in docked use. (Earlier releases patched that editor to add the modes back; they no longer do, since the mod's launcher makes it unnecessary.)
 
-Independently of the launcher, `arland-fix.ini` sets two resolutions:
+The launcher writes the same two resolutions that can be set by hand in `arland-fix.ini`:
 
 ```ini
 [Rendering]
