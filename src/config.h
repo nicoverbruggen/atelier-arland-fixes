@@ -40,9 +40,9 @@ bool debugSceneTargetHighlight();
 // [Rendering] ShadowMultiplier (2/4/8) opts in. See ARLAND_SHADOW_MULTIPLIER.
 unsigned int shadowMapResolution();
 
-// Display (backbuffer / present) resolution: [Rendering] DisplayWidth/Height,
-// falling back to the legacy Width/Height keys. False when unset, meaning the
-// swap chain keeps the size the game itself requested (the old launcher's res).
+// Display (backbuffer / present) resolution: [Rendering] DisplayWidth/Height.
+// False when unset, meaning the swap chain keeps the size the game itself
+// requested.
 bool displayResolution(unsigned int* width, unsigned int* height);
 
 // Internal render resolution: [Rendering] RenderWidth/Height, falling back to
@@ -82,8 +82,8 @@ void logConfiguration();
 // each string from the embedded scalable font (National Park), multi-line and
 // glyph-atlas-cached, falling back to upscaling for glyphs it can't resolve),
 // "upscaled" (filter-upscale the baked glyphs, preserving the engine's exact
-// layout), or "original" (the untouched baked bitmap font; "off" stays accepted
-// as a legacy alias). A arland-hires-font.ttf beside the DLL
+// layout), or "original" (the untouched baked bitmap font; "off" is accepted
+// as a synonym). A arland-hires-font.ttf beside the DLL
 // overrides the embedded font. ARLAND_UIFONT overrides the mode.
 enum class UIFontMode { Original, Upscaled, Replaced };
 UIFontMode uiFontMode();

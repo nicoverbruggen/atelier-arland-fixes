@@ -7,8 +7,8 @@
 // It reads and writes the same keys the DLL parses in src/config.cpp (and SMAA
 // in smaa.cpp, AnisotropicFiltering in sync_fix.cpp), using the exact same
 // GetPrivateProfileStringA / WritePrivateProfileStringA API so the on-disk
-// format matches the mod. On save it touches only the known keys, so any other
-// or legacy keys already in the file are preserved. It also writes the game's
+// format matches the mod. On save it touches only the known keys, so anything
+// else already in the file is preserved. It also writes the game's
 // own ArlandDX_Settings.ini where a setting spans both.
 //
 // It configures whichever game folder it is run from, which is not always the
@@ -632,9 +632,10 @@ void loadFromIni() {
   iniString("Rendering", "Font", buf, sizeof(buf));
   SendMessageW(g_hFont, CB_SETCURSEL, fontIndexFromRaw(buf), 0);
 
-  // Base (display) resolution: DisplayWidth/Height, falling back to the legacy
-  // Width/Height keys the mod still reads. Blank => Auto. A concrete value that
-  // is not one of the listed presets is added as its own item so it round-trips.
+  // Base (display) resolution: DisplayWidth/Height, or Width/Height when those
+  // are absent, which migrates a file written by an earlier version onto the
+  // current keys on the next save. Blank => Auto. A concrete value that is not
+  // one of the listed presets is added as its own item so it round-trips.
   char w[16] = {}, h[16] = {};
   if (!iniString("Rendering", "DisplayWidth", w, sizeof(w)))
     iniString("Rendering", "Width", w, sizeof(w));
@@ -788,14 +789,13 @@ bool isChecked(HWND ctrl) {
 
 void saveToIni() {
   // Write only the known keys. WritePrivateProfileStringA leaves every other
-  // line in the file untouched, so unknown / legacy keys are preserved.
+  // line in the file untouched, so anything unrecognized is preserved.
   WritePrivateProfileStringA("Rendering", "Font",
     comboValue(g_hFont, kFontItems, 3), g_iniPath);
 
   // Base resolution -> DisplayWidth/DisplayHeight. "Auto" writes them blank
   // (never "0"); an empty string keeps the key present with no value, which the
-  // mod reads as "unset". The legacy Width/Height keys are left untouched, so
-  // they are preserved (DisplayWidth takes precedence in the mod).
+  // mod reads as "unset".
   unsigned bw, bh;
   char num[16] = {};
   if (selectedBase(&bw, &bh)) {

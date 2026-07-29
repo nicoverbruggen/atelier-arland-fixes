@@ -42,10 +42,10 @@ const char* configPath() {
     if (result[0] &&
         GetFileAttributesA(result.data()) == INVALID_FILE_ATTRIBUTES) {
       WritePrivateProfileStringA("Rendering", "MSAA", "1", result.data());
-      // Display = backbuffer / panel resolution (blank uses the game's own,
-      // i.e. the old launcher's, resolution). Render = internal render target
-      // (blank equals Display). A Render larger than Display supersamples the
-      // whole frame down to Display at present.
+      // Display = backbuffer / panel resolution (blank keeps whatever the
+      // game's own settings selected). Render = internal render target (blank
+      // equals Display). A Render larger than Display supersamples the whole
+      // frame down to Display at present.
       WritePrivateProfileStringA("Rendering", "DisplayWidth", "", result.data());
       WritePrivateProfileStringA("Rendering", "DisplayHeight", "", result.data());
       WritePrivateProfileStringA("Rendering", "RenderWidth", "", result.data());
@@ -173,11 +173,9 @@ static bool displayMaximum(UINT* width, UINT* height) {
 }
 
 bool displayResolution(UINT* width, UINT* height) {
-  // New DisplayWidth/Height, falling back to the legacy Width/Height keys.
-  // Blank on both means the caller leaves the swap chain at the size the game
-  // itself requested (the old launcher's resolution).
-  if (!readResPair("DisplayWidth", "DisplayHeight", width, height) &&
-      !readResPair("Width", "Height", width, height))
+  // Blank means the caller leaves the swap chain at the size the game itself
+  // requested, whatever its own settings selected.
+  if (!readResPair("DisplayWidth", "DisplayHeight", width, height))
     return false;
 
   UINT maxWidth = 0;
@@ -261,7 +259,7 @@ UIFontMode uiFontMode() {
       std::strncpy(value, "replaced", sizeof(value) - 1);
     }
     if (!_strnicmp(value, "original", 8) || !_strnicmp(value, "off", 3))
-      return UIFontMode::Original;   // "off" is a legacy alias for "original"
+      return UIFontMode::Original;   // "off" is a synonym for "original"
     if (!_strnicmp(value, "upscale", 7))
       return UIFontMode::Upscaled;
     return UIFontMode::Replaced;     // the default (embedded National Park)

@@ -23,10 +23,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 SECTIONS = ("Rendering", "Battle", "Launcher", "Diagnostics")
 
-# Read through readResPair with the key names as parameters, so they never
-# appear beside a section literal. Deprecated in favour of DisplayWidth/Height
-# and deliberately absent from default.ini.
-UNDOCUMENTED = {("Rendering", "Width"), ("Rendering", "Height")}
+# Options the code reads that are deliberately kept out of default.ini. Empty:
+# everything the DLL reads is a documented, shipped option.
+UNDOCUMENTED = set()
 
 # Seeded per game by featureEnabled() from a per-game matrix rather than from a
 # single literal, so the value cannot be extracted from one call site.

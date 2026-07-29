@@ -9,12 +9,10 @@
 //   ArlandDXLauncher.exe -> start arland-fix-launcher.exe instead, if it is
 //                           installed, or the game itself when arland-fix.ini
 //                           asks for that with [Launcher] SkipLauncher
-//   ArlandDXEnv.exe      -> nothing; it is only forwarded to
-//
-// This proxy used to widen ArlandDXEnv.exe's resolution lists with 1440p and 4K
-// as well. That is gone: our own launcher owns resolution now ([Rendering]
-// DisplayWidth/DisplayHeight, applied by the 64-bit DLL), so there is no reason
-// to keep patching Koei Tecmo's settings editor to offer the same modes.
+//   ArlandDXEnv.exe      -> nothing; the settings editor is only forwarded to.
+//                           Resolution belongs to our own launcher ([Rendering]
+//                           DisplayWidth/DisplayHeight, applied by the 64-bit
+//                           DLL), so this process needs no patching.
 //
 // Everything else that loads it just gets the two forwarded GDI entry points.
 #define WIN32_LEAN_AND_MEAN

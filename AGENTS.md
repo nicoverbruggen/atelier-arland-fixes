@@ -73,7 +73,7 @@ The expected outputs are `builds/release-x64/d3d11.dll` and `builds/release-x86/
 
 `default.ini` ships in the release archive and repeats defaults that really live in `src/config.cpp` (and `src/game.cpp`'s feature table). When you add, rename, remove or re-default an option, update `default.ini` and `ADVANCED.md` in the same change.
 
-`scripts/check_default_ini.py` enforces this and runs in CI: it checks that every option the code reads is documented, that nothing documented is unread, and that the literal defaults agree. If an option is deliberately undocumented (the deprecated `Width`/`Height`) or its default cannot be read from a single call site (the per-game cut-in keys), add it to the allowlists at the top of that script rather than dropping the check.
+`scripts/check_default_ini.py` enforces this and runs in CI: it checks that every option the code reads is documented, that nothing documented is unread, and that the literal defaults agree. If an option is deliberately kept out of `default.ini`, or its default cannot be read from a single call site (the per-game cut-in keys), add it to the allowlists at the top of that script rather than dropping the check.
 
 ## Documentation style
 
