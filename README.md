@@ -31,20 +31,14 @@ These are on by default.
 | Text-corruption fix                          | ✓      | ✓      | ✓      |
 | Higher resolution rendering                  | ✓      | ✓      | ✓      |
 | High-resolution UI text                      | ✓      | ✓      | ✓      |
-| SMAA anti-aliasing                            | ✓      | ✓      | ✓      |
-| Correct behaviour at high refresh rates       | ✓      | ✓      | ✓      |
-| Correct world-map analog cursor speed         | —      | ✓      | ✓      |
-| Item/save corruption and combat-crash guard   | —      | ✓      | —      |
+| SMAA anti-aliasing                           | ✓      | ✓      | ✓      |
+| Correct behaviour at high refresh rates      | ✓      | ✓      | ✓      |
+| Correct world-map analog cursor speed        | —      | ✓      | ✓      |
+| Item/save corruption and combat-crash guard  | —      | ✓      | —      |
 | Restored battle shadows while fighting       | ✓      | —      | —      |
 | Conversation slowdown fix                    | —      | —      | ✓      |
 
 ✓ fixed, enabled by default · — not needed or not applicable
-
-**High refresh rates work properly.** The games were written around 60 fps and misbehave above it: on a 120 Hz or 144 Hz display the field-map character buzzes vertically whenever it stands still on a step or ledge, which is visible in the world and can make an interaction prompt flicker, and past a few hundred frames per second the character stops being able to walk at all. Totori and Meruru also move their freely controlled world-map cursor once per rendered frame, making the analog stick increasingly fast above 60 fps. The mod corrects these timing assumptions rather than working around them. Rorona's world map uses a separate discrete location selector; direct measurement found its selection cadence unchanged between 144 and 60 fps, so it needs no corresponding correction. There is no frame-rate limit and nothing about how the game presents frames is changed, so the game simply runs at your display's refresh rate. Under Proton a limit set by Steam or the compositor is respected as usual. Nothing to configure.
-
-**Totori protects and repairs malformed item data.** A saved container limit larger than the game's fixed array can make ordinary item operations overwrite equipment and other state; bad effect indices can then crash when battle starts or a bomb/Craft is used. The mod clamps the limit, sanitizes damaged inventory, equipment and saved skill records, and bounds the vulnerable combat lookups. Loading a damaged save repairs it in memory; save normally to persist the repair. Valid saves are left unchanged.
-
-SMAA anti-aliasing and the high-resolution UI text are on by default; both can be turned off in `arland-fix.ini`. The UI text is re-rendered from a bundled scalable font; this applies to the English executables only, and the Japanese and Chinese builds keep their original font untouched.
 
 The battle cut-in shadow and brightness restorations are off by default; enable them in `arland-fix.ini` if you prefer restored shadows and full-brightness close-ups over the vanilla darkened, shadowless ones.
 
@@ -112,7 +106,7 @@ When the multilingual build runs in Japanese on a non-UTF-8 system locale (commo
 
 ### Advanced options
 
-The release archive includes an `arland-fix.ini` listing every option with its default and a short explanation; if none is present the mod creates a minimal one on first launch. The costly options are disabled by default; the ones that are free (SMAA, anisotropic filtering, the high-resolution UI text) are on. MSAA, supersampling, higher-resolution shadow maps, battle shadows, restored cut-in shadows, cut-in brightness, the resolution settings, a suggested best-experience configuration, and troubleshooting are documented in [ADVANCED.md](ADVANCED.md). The drop-in installation never enables the optional features.
+The release archive includes an `arland-fix.ini` listing every option with its default and a short explanation; if none is present the mod creates a minimal one on first launch. You can customize settings by using the mod's launcher.
 
 ## Build
 

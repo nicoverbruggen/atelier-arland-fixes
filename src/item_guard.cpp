@@ -70,9 +70,13 @@
 // container items are repaired before any consumer can follow injected
 // indices. The shared combat modifier builder receives a sanitized local copy
 // as a second line of defence, so an item arriving through an unaudited route
-// cannot index past the effect table. ARLAND_ITEM_SANITIZE=0 disables
-// persistent recovery for comparison. ARLAND_ITEM_SAVE_TRACE=1 is a separate
-// provenance diagnostic:
+// cannot index past the effect table. It also rejects a base id absent from
+// Totori's fixed action-item table: vanilla uses the lookup's -1 result as a
+// table index, while every caller already treats an empty modifier vector as
+// valid. This check stays builder-local because equipment and materials
+// legitimately use ids outside the action-item table.
+// ARLAND_ITEM_SANITIZE=0 disables persistent recovery for comparison.
+// ARLAND_ITEM_SAVE_TRACE=1 is a separate provenance diagnostic:
 // it shadows only the 30 saved item records, mirrors the engine's central
 // equip/swap operation, and compares live memory with that model immediately
 // before each save. An unexpected difference proves that some other in-memory
@@ -155,6 +159,22 @@ constexpr size_t kContainerCount = 999;
 // both builds. The effect table's count is derived at install time instead,
 // from where the trait table begins.
 constexpr int32_t kTraitRecordLimit = 204;
+
+// Both executable action-item tables contain exactly 161 ids: the contiguous
+// range 0..159 followed by 163. The lookup at English 0x25f160 / multilingual
+// 0x47bb50 returns -1 for every other id, but the modifier builder uses that
+// result without checking it. Do not apply this predicate to saved items
+// globally: weapons, armour and materials have valid ids outside this table.
+constexpr bool actionItemIdUsable(int32_t id) {
+  return (id >= 0 && id <= 159) || id == 163;
+}
+
+static_assert(actionItemIdUsable(0));
+static_assert(actionItemIdUsable(159));
+static_assert(actionItemIdUsable(163));
+static_assert(!actionItemIdUsable(-1));
+static_assert(!actionItemIdUsable(160));
+static_assert(!actionItemIdUsable(164));
 
 using ScanProc = int (STDMETHODCALLTYPE*)(uintptr_t item, int32_t type);
 using SaveProc = int (STDMETHODCALLTYPE*)(uintptr_t self, uintptr_t stream);
@@ -709,6 +729,16 @@ void STDMETHODCALLTYPE itemEffectBuildDetour(
     if (seen == 0 || probeEnabled())
       log("ITEMGUARD modifier builder skipped unreadable item @0x",
           std::hex, item, std::dec);
+    return;
+  }
+
+  const int32_t actionId = itemWord(item, 1);
+  if (!actionItemIdUsable(actionId)) {
+    const uint32_t seen =
+      g_builderRepairs.fetch_add(1, std::memory_order_relaxed);
+    if (seen == 0 || probeEnabled())
+      log("ITEMGUARD modifier builder rejected action id=", actionId,
+          " item @0x", std::hex, item, std::dec);
     return;
   }
 
