@@ -743,8 +743,7 @@ void smaaApply(IDXGISwapChain* swapChain) {
 }
 
 bool smaaApplySceneColor(ID3D11DeviceContext* ctx, ID3D11Texture2D* color,
-                         ID3D11RenderTargetView* msaaTwinRTV,
-                         bool preserveState) {
+                         ID3D11RenderTargetView* msaaTwinRTV) {
   if (!smaaEnabled() || !smaaPreUI() || !ctx || !color || g_broken)
     return false;
   ID3D11Device* dev = nullptr;
@@ -754,9 +753,7 @@ bool smaaApplySceneColor(ID3D11DeviceContext* ctx, ID3D11Texture2D* color,
     dev->CreateRenderTargetView(color, nullptr, &rtv);
   bool ran = false;
   if (dev && rtv)
-    ran = preserveState
-      ? smaaRunAtDraw(dev, ctx, color, rtv, msaaTwinRTV)
-      : smaaRunPasses(dev, ctx, color, rtv, msaaTwinRTV, true);
+    ran = smaaRunAtDraw(dev, ctx, color, rtv, msaaTwinRTV);
   release(rtv);
   if (dev) dev->Release();
   return ran;

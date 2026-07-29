@@ -316,7 +316,6 @@ void captureCbUnmap(ID3D11DeviceContext*, ID3D11Resource* resource,
   }
   if (!pending.first)
     return;
-  cutinCbTraceScan("map", pending.first, pending.second);
   // Patch the CPU-visible contents in place BEFORE the real Unmap invalidates
   // them: dim-hold on the 16-byte $Params, gate-hold on the 880 receiver.
   if (arlandInCinematicBattle()) {
@@ -1196,7 +1195,7 @@ void fireSceneRtSmaa(ID3D11DeviceContext* context, const char* reason) {
   g_sceneRtDraws.store(0, std::memory_order_relaxed);
   SmaaReentryGuard guard;
   tex->AddRef();
-  const bool ran = atfix::smaaApplySceneColor(context, tex, nullptr, false);
+  const bool ran = atfix::smaaApplySceneColor(context, tex, nullptr);
   static std::atomic<bool> logged{false};
   if (verboseLogging() && !logged.exchange(true, std::memory_order_relaxed))
     log("SMAA: pre-UI injection on the scene target, reason=", reason,
@@ -1296,7 +1295,7 @@ void smaaDrawBoundary(ID3D11DeviceContext* context) {
 
   if (scene) {
     g_smaaDoneThisFrame.store(true, std::memory_order_relaxed);
-    const bool ran = atfix::smaaApplySceneColor(context, scene, twinRtv, true);
+    const bool ran = atfix::smaaApplySceneColor(context, scene, twinRtv);
     static std::atomic<bool> depthBoundaryLogged{false};
     if (verboseLogging() &&
         !depthBoundaryLogged.exchange(true, std::memory_order_relaxed))
@@ -1498,10 +1497,8 @@ void smaaSceneBoundary(ID3D11DeviceContext* context, UINT rtvCount,
     g_smaaDoneThisFrame.store(true, std::memory_order_relaxed);
     // No twin to feed: the substitution only happens on depth-bound binds, and
     // resolveBoundMSAA already landed the scene in this host on the way in.
-    // No state preservation: this is the original Rorona/Meruru path, and the
-    // game's own setup follows this bind.
     g_smaaSceneSeen.store(false, std::memory_order_relaxed);
-    atfix::smaaApplySceneColor(context, scene, nullptr, false);
+    atfix::smaaApplySceneColor(context, scene, nullptr);
     scene->Release();
   }
 }
@@ -2195,9 +2192,6 @@ HRESULT STDMETHODCALLTYPE ID3D11Device_CreateBuffer(
   // UpdateSubresource hooks — patch the initial payload too. The 880 receiver
   // gate needed this on Rorona; Totori's D3D11 material pattern makes it
   // plausible for its dim-carrying layouts as well.
-  if (pDesc && pData && pData->pSysMem &&
-      (pDesc->BindFlags & D3D11_BIND_CONSTANT_BUFFER))
-    cutinCbTraceScan("create", pData->pSysMem, pDesc->ByteWidth);
   D3D11_SUBRESOURCE_DATA gateInit;
   uint8_t gateInitCopy[880];
   if (cutinGateHoldEnabled() && arlandInCinematicBattle() &&
@@ -3564,7 +3558,6 @@ void STDMETHODCALLTYPE ID3D11DeviceContext_UpdateSubresource(
   if (cbCaptureEnabled() && pData && !pBox && Subresource == 0) {
     D3D11_BUFFER_DESC desc = {};
     if (isConstantBuffer(pResource, &desc)) {
-      cutinCbTraceScan("update", pData, desc.ByteWidth);
       if (arlandInCinematicBattle()) {
         // Dim-hold: keep the faded light $Params at 1.0 during the cut-in.
         // pData is const (DEFAULT buffer), so patch a copy and pass that on.

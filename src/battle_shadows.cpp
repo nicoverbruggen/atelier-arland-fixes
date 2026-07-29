@@ -144,45 +144,6 @@ bool dimHoldPatch(void* data, uint32_t size) {
   return patched;
 }
 
-// ARLAND_CUTIN_CB_TRACE: during cinematic battle states, scan constant-buffer
-// payloads on every write path for the dim value pattern ((s,s,s,~1),
-// s in (0.5,0.98)) at any 16-aligned offset, and log each unique
-// (path, size, offset) once. Discovery diagnostic for games whose dim-carrying
-// layouts are not yet in the dim-hold table (used to pin Totori's real
-// layouts when the statically derived table missed).
-bool cutinCbTraceEnabled() {
-  static const bool enabled = [] {
-    const char* value = std::getenv("ARLAND_CUTIN_CB_TRACE");
-    return value && value[0] != '0';
-  }();
-  return enabled;
-}
-
-void cutinCbTraceScan(const char* path, const void* data, uint32_t size) {
-  if (!cutinCbTraceEnabled() || !data || size < 16 ||
-      !arlandInCinematicBattle())
-    return;
-  static mutex traceMutex;
-  static std::set<uint64_t> seen;
-  const uint8_t* bytes = static_cast<const uint8_t*>(data);
-  const uint32_t limit = size < 16384u ? size : 16384u;
-  for (uint32_t off = 0; off + 16 <= limit; off += 16) {
-    float v[4];
-    std::memcpy(v, bytes + off, sizeof(v));
-    const float s = v[0];
-    auto ad = [](float a, float b) { float d = a - b; return d < 0 ? -d : d; };
-    if (ad(v[3], 1.0f) < 0.02f && ad(v[0], v[1]) < 0.01f &&
-        ad(v[0], v[2]) < 0.01f && s > 0.5f && s < 0.98f) {
-      const uint64_t key = (uint64_t(uintptr_t(path) & 0xffffu) << 48) |
-        (uint64_t(size) << 20) | off;
-      std::lock_guard lock(traceMutex);
-      if (seen.size() < 64 && seen.insert(key).second)
-        log("CUTIN_CB path=", path, " size=", size, " offset=", off,
-          " v=(", v[0], ",", v[1], ",", v[2], ",", v[3], ")");
-    }
-  }
-}
-
 // Transition-aware settle detector for the reception gate (stray-shadow fix,
 // static RE 2026-07-23). The vanilla cut-in fades the scene light through the
 // receiver's 0.75 reception threshold during exactly the windows in which the

@@ -26,16 +26,11 @@ void smaaApply(IDXGISwapChain* swapChain);
 // render target. `msaaTwinRTV` is the multisample twin if one is still bound at
 // the boundary — the antialiased result is written back into it so the game's
 // own final resolve preserves it — or null when there is no twin to feed.
-// No-op unless enabled and pre-UI is selected.
-// Returns true only if the three passes actually executed.
-// `preserveState` snapshots and restores every pipeline binding the passes
-// touch. Totori needs it: its boundary is a pending UI draw that must inherit
-// exactly the state the game prepared. Rorona and Meruru must NOT use it --
-// their boundary is a render-target bind on a deferred context, where the
-// state-readback it depends on does not behave as it does on the immediate
-// context, and the original working implementation did not save state at all.
+// No-op unless enabled and pre-UI is selected. Snapshots and restores every
+// pipeline binding the passes touch so the pending game operation inherits
+// exactly the state the game prepared. Returns true only if the three passes
+// actually executed.
 bool smaaApplySceneColor(ID3D11DeviceContext* ctx, ID3D11Texture2D* color,
-                         ID3D11RenderTargetView* msaaTwinRTV,
-                         bool preserveState);
+                         ID3D11RenderTargetView* msaaTwinRTV);
 
 }  // namespace atfix

@@ -27,6 +27,5 @@ bool dimHoldPatch(void* data, uint32_t size);
 bool gateHoldPatch(void* data, uint32_t size);
 bool tapScalePatch(void* data, uint32_t size);
 void gateHoldAtDraw(ID3D11DeviceContext* context);
-void cutinCbTraceScan(const char* path, const void* data, uint32_t size);
 
 }  // namespace atfix
