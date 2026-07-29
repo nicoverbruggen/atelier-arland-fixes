@@ -21,7 +21,15 @@ The current code supports the exact tested Arland DX executables (the English bu
 
 ## D3D11 synchronization stalls
 
-> **TL;DR**: The games often send font textures to the graphics card and then immediately ask for the same data back, forcing the game to stop and wait. The mod keeps a CPU-readable copy synchronized with the real texture, avoiding that round trip while ensuring both the game and graphics card always see the latest text.
+#### TL;DR
+
+The games often send font textures to the graphics card and then immediately ask for the same data back, forcing the game to stop and wait. The mod keeps a CPU-readable copy synchronized with the real texture, avoiding that round trip while ensuring both the game and graphics card always see the latest text.
+
+#### Safety
+
+Nothing here changes what the game draws, only how it gets back data it asked for. The shortcut is taken only for copies the mod fully recognizes: an unfamiliar texture format or layout, a busy destination, or a copy made from a background context falls through to the graphics driver's own path untouched. Because the game also writes to these textures directly, every one of those writes is tracked, and the finished result is handed to the graphics card before anything is drawn with it, which is what keeps text from turning to garbage. One awkward case, a font texture the game fills through a queued command list before the mod has a copy of it, is deliberately left entirely on the original path rather than guessed at.
+
+#### Details
 
 The Arland ports frequently copy GPU resources into CPU-readable staging resources and then map them. A normal D3D11 `CopyResource` followed by `Map` forces the CPU to wait for the GPU. Font-atlas activity makes this especially visible while constructing text-heavy menus.
 
@@ -48,7 +56,15 @@ Native Windows exposed one additional ordering hazard. The games can populate a 
 
 ## Repeated PSSG validation
 
-> **TL;DR**: When opening a menu, the games repeatedly ask Windows to verify the same few resource files, sometimes thousands of times. The mod remembers successful checks and reuses the answer, removing much of the menu-opening delay without skipping any actual file loading or hiding missing files.
+#### TL;DR
+
+When opening a menu, the games repeatedly ask Windows to verify the same few resource files, sometimes thousands of times. The mod remembers successful checks and reuses the answer, removing much of the menu-opening delay without skipping any actual file loading or hiding missing files.
+
+#### Safety
+
+Only successful checks are remembered, and only for the paths of the game's own resource archives, which cannot change while the game is running. Failures are never remembered, so a file that appears later is still found. The game's own check still runs the first time, and nothing about opening, reading or unpacking the archives changes. What is stored is the path text itself, not the file, its contents, or anything built from it, and it is forgotten when the game closes.
+
+#### Details
 
 The English Arland executables repeatedly validate identical immutable `.PSSG` archive paths while recursively building UI records. Rorona and Meruru perform a metadata lookup followed by a filename-case directory enumeration; Totori repeatedly performs its corresponding metadata validation.
 
@@ -67,7 +83,15 @@ These desktop measurements were captured on an AMD Ryzen 7 5800X3D, Radeon RX 79
 
 ## Repeated font-atlas reads
 
-> **TL;DR**: While building a menu, the games read the same three font textures over and over even when nothing has changed. The mod takes one temporary copy and reuses it for the rest of that safe menu or frame window, discarding it as soon as the texture may have changed.
+#### TL;DR
+
+While building a menu, the games read the same three font textures over and over even when nothing has changed. The mod takes one temporary copy and reuses it for the rest of that safe menu or frame window, discarding it as soon as the texture may have changed.
+
+#### Safety
+
+The reused copy is deliberately short-lived: it lasts one burst of menu building, or in Rorona at most one frame, and is thrown away at the frame boundary. If the game genuinely touches one of these textures, the copy for that texture is discarded on the spot. The mod never skips a write the game asked for, which is the shortcut a previous community tool tried and which produced missing text and a crash. The reuse applies only to the exact 512x512 font textures, and only while the game's verified text renderer is the thing asking.
+
+#### Details
 
 After the PSSG fix, the games still read the same three 512×512 font atlases once per text operation. A representative Rorona Status build made about 3,642 candidate reads even though the atlases did not change during that synchronous build. Totori and Meruru use the same middleware behavior.
 
@@ -102,7 +126,15 @@ Retaining those three atlas snapshots across frames could avoid this remaining f
 
 ## Frame-rate independence
 
-> **TL;DR**: Some movement rules were written as fixed amounts per frame, so high refresh rates made characters jitter or eventually stop moving, and made Totori and Meruru's world-map cursor too fast. The mod scales those rules with actual frame time, preserving the original 60 fps feel at higher refresh rates without imposing a frame-rate cap.
+#### TL;DR
+
+Some movement rules were written as fixed amounts per frame, so high refresh rates made characters jitter or eventually stop moving, and made Totori and Meruru's world-map cursor too fast. The mod scales those rules with actual frame time, preserving the original 60 fps feel at higher refresh rates without imposing a frame-rate cap.
+
+#### Safety
+
+The correction is a scaling of one constant, clamped so it can never exceed the value the games ship with. At 60 fps and below, everything therefore behaves exactly as it always did. Nothing touches how frames are presented, so there is no frame-rate cap and no tearing introduced. Each half can be switched off on its own for comparison, and the second half refuses to run without the first, since it depends on the ground contact the first one holds. The world-map correction installs only on exact, verified builds of Totori and Meruru; Rorona was measured, needs nothing, and gets nothing.
+
+#### Details
 
 The engine is variable-timestep by design: a frame's elapsed time is measured, clamped to a maximum, and threaded through the update tree, which is why the games do not simply run fast at a high refresh rate. What is not frame-rate independent is a set of constants that describe a *distance per frame* rather than a speed, and those are only correct at the 60 fps the games were built around.
 
@@ -130,25 +162,19 @@ Other frame-rate couplings exist outside the field map, in effect playback and, 
 
 ## High-resolution rendering
 
-> **TL;DR**: The games nominally support 1440p and 4K, but their launcher can hide those modes and parts of the renderer remain fixed at 1080p, producing an enlarged target with only a smaller image inside it. The mod exposes the useful resolutions and scales the affected render targets, screen bounds, and dialogue blur so the games genuinely render at the selected resolution. This rendering layer also provides optional MSAA and sharper texture filtering.
+#### TL;DR
 
-The games accept high render dimensions, but the settings launcher filters its lists through Windows display-mode reporting. DPI virtualization and the current desktop mode can therefore hide a resolution that the game and display can use. The launcher stores independent fullscreen and windowed arrays, so both have to be corrected.
+The games nominally support 1440p and 4K, but parts of their renderer remain fixed at 1080p, producing an enlarged target with only a smaller image inside it. The mod's own launcher offers the useful resolutions, and the mod scales the affected render targets, screen bounds, and dialogue blur so the games genuinely render at the selected resolution. This rendering layer also provides optional MSAA and sharper texture filtering.
 
-The 32-bit `msimg32.dll` proxy handles this. Loaded by the shared settings launcher, it verifies the exact process image, allocator, and code signatures, then expands both mode arrays with the launcher's own allocator and appends the missing canonical modes. It guarantees that 1920×1080, 2560×1440, and 3840×2160 stay available in both states. Forcing 1920×1080 is specifically useful on Steam Deck and other lower-resolution, high-DPI handhelds that would otherwise hide it, and for docked use.
+#### Safety
 
-The proxy forwards the launcher's two imported image functions, `AlphaBlend` and `TransparentBlt`, to the system MSIMG32 library. MSIMG32 is used instead of WinMM because native DirectX initialization can dynamically depend on WinMM exports beyond the two functions the launcher imports directly.
+Blank, incomplete or out-of-range resolution values are ignored and leave the game's own selection untouched. Only render targets that are exactly 1920x1080 and created empty are enlarged, so a texture that happens to be that size for another reason is not caught by accident, and ordinary 1080p play never activates any of it. MSAA stays off unless it is asked for, and an unsupported request falls back through lower sample counts rather than failing. The sharper texture filtering deliberately skips the sampler types the shadow rendering depends on. And the mod no longer patches Koei Tecmo's own settings program at all: resolution comes from the mod's launcher instead, so that program is left exactly as it shipped.
 
-The relevant launcher binaries are structurally identical across the trilogy. Every `ArlandDXEnv.exe` has image size `0x317000`, `.text` SHA-256 `32c441b19f242a249145215eb9b4be315095563b839f23762c18519f8fedc4cc`, and `.data` SHA-256 `eb3bc4cdce506b628e36b6d5dac94951142ca40e90af8f38ab508d72759c0fe2`. Their complete files differ only in sections containing game-specific material outside the patched paths:
+#### Details
 
-| Game | `ArlandDXEnv.exe` SHA-256 |
-|---|---|
-| Rorona DX | `167e1c141d0faa03e7baca0034a672f6d8023b446473a6daad6c10b71d5b9667` |
-| Totori DX | `c251c7e747e027f75d6e37e4e317cfb599b0db378db9e27ba09043619e02c226` |
-| Meruru DX | `fa64db36c92c34429c6c2709ab2126c1ce48f839d9eddd2de1a992564182c732` |
+Resolution is chosen in the mod's own launcher, which writes `DisplayWidth` and `DisplayHeight` under `[Rendering]` in `arland-fix.ini`, and the 64-bit game DLL applies them. Blank display keys are created there by default, alongside blank `RenderWidth`/`RenderHeight`; the older `Width`/`Height` pair is still read as a fallback but is no longer written. When both display keys hold valid dimensions, the DLL replaces the swap-chain request, clears the inherited refresh-rate constraint, and resizes the matching first main depth target before applying the ordinary auxiliary-target and raster corrections. Missing, blank, incomplete, or out-of-range values leave whatever the game's own settings selected unchanged.
 
-The three outer `ArlandDXLauncher.exe` files likewise have identical `.text` SHA-256 `58ba7aee62d924d35ca160829766bc8775125475894473bcbadf92d962fcc522` and import the same `AlphaBlend` and `TransparentBlt` entry points. The proxy remains forwarding-only in that process and installs resolution hooks only in `ArlandDXEnv.exe`.
-
-The 64-bit game DLL provides a second, launcher-independent path. Blank `DisplayWidth` and `DisplayHeight` keys are created in `arland-fix.ini` by default, alongside blank `RenderWidth`/`RenderHeight`; the older `Width`/`Height` pair is still read as a fallback but is no longer written. When both display keys are changed to valid dimensions, the DLL replaces the swap-chain request, clears the inherited refresh-rate constraint, and resizes the matching first main depth target before applying the ordinary auxiliary-target and raster corrections. Missing, blank, incomplete, or out-of-range values leave the launcher's selection unchanged.
+Being independent of Koei Tecmo's settings editor matters, because that editor filters its resolution lists through Windows display-mode reporting: DPI virtualization and the current desktop mode can hide a resolution the game and display can use, most visibly on Steam Deck and other high-DPI handhelds, and in docked use. Earlier releases worked around that by patching the editor's two mode arrays in memory through the 32-bit `msimg32.dll` proxy. That patch has been removed. The mod's launcher does not consult Windows' mode list at all, so the resolutions are simply there, and the stock editor is now left exactly as shipped.
 
 Selecting a larger backbuffer is not sufficient by itself. The old render path creates the main depth target at the requested dimensions but later creates auxiliary render/depth targets and submits viewport/scissor state hard-coded to 1920×1080. It also records rendering through a deferred D3D11 context. Correcting only the immediate context therefore produces genuinely large targets with a 1920×1080 image confined to their upper-left corner.
 
@@ -168,11 +194,21 @@ Optional anisotropic filtering is a separate, cheaper texture-quality knob. The 
 
 ## Alternative launcher
 
-> **TL;DR**: The mod includes a replacement launcher that puts the game's settings and every mod option in one window. Steam opens it automatically in place of the stock launcher while preserving the overlay, Steam Input, and access to the original tools; if the replacement is missing or cannot start, the stock launcher still works.
+#### TL;DR
+
+The mod includes a replacement launcher that puts the game's settings and every mod option in one window. Steam opens it automatically in place of the stock launcher while preserving the overlay, Steam Input, and access to the original tools; if the replacement is missing or cannot start, the stock launcher still works.
+
+#### Safety
+
+If the mod's launcher is not installed beside the stock one, nothing is armed and the original launcher comes up exactly as before, so a partial install cannot leave the game unstartable. If our launcher fails to start, the original bytes are put back and the stock launcher runs as though nothing had happened. The substitution verifies the process and the exact instructions it replaces before changing anything, and only ever in memory. The process Steam started stays open behind ours rather than being killed, which is what keeps the overlay, playtime tracking and Steam Input attached. The buttons that open Koei Tecmo's original tools switch the redirect off first, so they always open the real thing.
+
+#### Details
 
 `arland-fix-launcher.exe` is a 64-bit settings window that puts every option in `arland-fix.ini`, plus the game's own resolution, window mode and language, in one place and starts the game from it. Both of Koei Tecmo's original front-ends stay reachable from it, and it writes the mod's settings when the game is started rather than on a separate save step, prompting instead if the window is closed with unsaved changes.
 
-Steam runs `ArlandDXLauncher.exe`, not the game, so the launcher has to insert itself there. The same 32-bit `msimg32.dll` proxy described above does it: when `arland-fix-launcher.exe` is present beside the stock launcher, the proxy points the executable's entry point at its own routine, which starts our launcher instead. The stock launcher never puts a window on screen, so a plain drop-in install replaces it with no extra steps, and with no `arland-fix-launcher.exe` present the redirect is never armed and the original launcher comes up exactly as before.
+Steam runs `ArlandDXLauncher.exe`, not the game, so the launcher has to insert itself there. A 32-bit `msimg32.dll` proxy does it: when `arland-fix-launcher.exe` is present beside the stock launcher, the proxy points the executable's entry point at its own routine, which starts our launcher instead.
+
+The proxy is loaded because both of Koei Tecmo's 32-bit front-ends import `AlphaBlend` and `TransparentBlt` from MSIMG32, and it forwards both to the system MSIMG32 library. MSIMG32 is used rather than WinMM because native DirectX initialization can dynamically depend on WinMM exports beyond the two functions the front-ends import directly. The three games' outer `ArlandDXLauncher.exe` files are structurally identical, sharing `.text` SHA-256 `58ba7aee62d924d35ca160829766bc8775125475894473bcbadf92d962fcc522`. The redirect is the proxy's only behaviour: `ArlandDXEnv.exe`, the stock settings editor, loads the same DLL and is forwarded to and nothing else. The stock launcher never puts a window on screen, so a plain drop-in install replaces it with no extra steps, and with no `arland-fix-launcher.exe` present the redirect is never armed and the original launcher comes up exactly as before.
 
 Two properties of the redirect are load-bearing:
 
@@ -183,11 +219,19 @@ Two properties of the redirect are load-bearing:
 
 The redirect installs a five-byte patch over the verified entry-point prologue, keeping the original bytes so they can be put back: if our launcher fails to start, the original prologue is restored and the stock launcher runs as though nothing had happened. `ARLAND_NO_REDIRECT` stands the redirect down, which is how our own launcher opens the original launcher and settings editor from its own buttons without them bouncing straight back to it. Because the proxy is 32-bit and our launcher is 64-bit, the child is created across that boundary and inherits the environment either way, which is how the Steam variables reach the game.
 
-Every patch in the proxy is gated on the verified process image, the launcher's own allocator and the exact code signatures, and each one leaves the image untouched if anything does not match.
+The proxy's single patch is gated on the verified process image and the exact entry-point bytes it replaces, and leaves the image untouched if anything does not match.
 
 ## Battle shadow restoration
 
-> **TL;DR**: Rorona's battle renderer can draw proper ground shadows, but the port never tells it that the characters and enemies should cast them. The mod registers the battlers with the game's existing shadow system and carefully restores the field-map state after combat, producing native shadows rather than drawing replacements of its own.
+#### TL;DR
+
+Rorona's battle renderer can draw proper ground shadows, but the port never tells it that the characters and enemies should cast them. The mod registers the battlers with the game's existing shadow system and carefully restores the field-map state after combat, producing native shadows rather than drawing replacements of its own.
+
+#### Safety
+
+The mod does not draw any shadows of its own. It tells the engine's existing shadow system about characters the port never registered, through the same routine the field map already uses, so everything visible is rendered by the game. The objects it registers are identified by their exact class fingerprints first, so anything that does not match is skipped rather than used. Because the engine raises no event when a battle ends, a per-frame watchdog restores the field map's original shadow state once the battle objects are gone; it only arms after it has actually seen a live battle, so a slow battle intro cannot trip it early, and it exists precisely so the mod stops touching freed battle objects.
+
+#### Details
 
 Atelier Rorona DX renders ordinary battles without any character or enemy ground shadows. The engine's shadow pipeline is present and functional (the field map uses it), but the port's battle scene setup never registers the battle actors as shadow casters. Atelier Meruru DX, by contrast, registers its battle casters natively, which is why its ordinary battle shadows work out of the box.
 
@@ -201,7 +245,15 @@ Arming the watchdog only after the game-mode has been seen alive prevents a slow
 
 ## Battle cut-in shadows
 
-> **TL;DR**: During battle close-ups, the games darken the arena and stop the ground from receiving shadows. The mod can keep the scene bright and its real shadows visible, while following the game's hide-and-show choreography so invisible or repositioned characters do not leave stray shadows behind.
+#### TL;DR
+
+During battle close-ups, the games darken the arena and stop the ground from receiving shadows. The mod can keep the scene bright and its real shadows visible, while following the game's hide-and-show choreography so invisible or repositioned characters do not leave stray shadows behind.
+
+#### Safety
+
+Both halves are off unless you turn them on. What they change is one small, specific value the engine sends to the graphics card each frame: a bounded sixteen-byte update in a known position, leaving everything else in that data, including the transform matrices sharing the buffer, untouched. The hooks are checked against each build's exact instruction bytes, and the structure offsets they need are verified byte by byte from that build's own code, so a wrong offset leaves the feature uninstalled instead of writing to the wrong field. If those hooks cannot install, the mod falls back to a mode that waits for the scene to settle before holding anything, which preserves the game's original cover at exactly the moments where stray shadows could otherwise appear.
+
+#### Details
 
 Atelier Rorona DX renders attack "cut-ins" (the brief close-up when a character or enemy acts) without ground shadows and with a visibly darker scene. This is original behavior on every platform, not a port regression, and both symptoms trace to a single animated constant.
 
@@ -223,15 +275,15 @@ This replaced an earlier approach that cleared the caster registry's visibility 
 
 With the stale casters cleared from the first frame, the brightness and reception hold can engage immediately and the cut-in never visibly dims. The `hideAll` prologue is byte-identical across all five battle-capable executables; `showAll` differs per engine generation and is verified per build. If these hooks fail to install on some build, the hold falls back to a transition-aware mode: it engages only once the observed dim value has been bit-identical for at least 60 ms (after the entry fade has bottomed out, by which time the engine has cleared the juggled casters), eases up over a further 120 ms, and never engages during the exit fade. That preserves the vanilla cover at the cost of a brief visible dim.
 
-The restoration addresses the two halves separately during cinematic battle states, and both are configured through the `[Battle]` section of `arland-fix.ini`. Both default to on across all three games.
+The restoration addresses the two halves separately during cinematic battle states, and both are configured through the `[Battle]` section of `arland-fix.ini`. Both ship opt-in on all three games: the capability matrix in `src/game.cpp` marks them `OptIn`, so neither restoration runs until it is asked for, and both keys are seeded lazily from those per-game defaults rather than written eagerly on first launch.
 
-`BattleCutInDimming` governs brightness. It defaults to `true`, which allows the vanilla cut-in darkening; setting it `false` holds the sixteen-byte scene-light parameter at `1.0` and keeps the floor lit. `BattleCutInShadows` governs reception. It defaults to `false`; setting it `true` forces the receiver material's `diffuse` back to `1.0` immediately before each shadow-receiving ground draw through a bounded sixteen-byte update over the `[832, 848)` field, which reopens the reception gate. The two are independent, so the vanilla darker cut-in can be kept while shadows are restored, or either half enabled on its own. Both restorations are off by default. The `ARLAND_CUTIN_SHADOWS` and `ARLAND_CUTIN_DIMMING` environment variables override the respective keys for a session, and the per-game defaults live in the capability matrix in `src/game.cpp`.
+`BattleCutInDimming` governs brightness. It defaults to `true`, which allows the vanilla cut-in darkening; setting it `false` holds the sixteen-byte scene-light parameter at `1.0` and keeps the floor lit. `BattleCutInShadows` governs reception. It defaults to `false`; setting it `true` forces the receiver material's `diffuse` back to `1.0` immediately before each shadow-receiving ground draw through a bounded sixteen-byte update over the `[832, 848)` field, which reopens the reception gate. The two are independent, so the vanilla darker cut-in can be kept while shadows are restored, or either half enabled on its own. The `ARLAND_CUTIN_SHADOWS` and `ARLAND_CUTIN_DIMMING` environment variables override the respective keys for a session. (Note that the dimming key is worded as the inverse of the action it controls: it asks whether the cut-in *may* dim, so `false` is what engages the hold.)
 
-Two environment switches exist for this subsystem, neither with an `arland-fix.ini` counterpart. `ARLAND_CUTIN_ACTOR_CLEAR=0` disables the per-actor front-run in all three games, which is the A/B for the fade-start behaviour: with it set, a battler hidden mid-cut-in fades over its full quarter second and its shadow leaves only at the end. `ARLAND_CUTIN_CB_TRACE=1` dumps the cut-in constant-buffer writes.
+Four further environment switches exist for this subsystem, none with an `arland-fix.ini` counterpart. `ARLAND_CUTIN_ACTOR_CLEAR=0` disables the per-actor front-run in all three games, which is the A/B for the fade-start behaviour: with it set, a battler hidden mid-cut-in fades over its full quarter second and its shadow leaves only at the end. `ARLAND_CUTIN_CB_TRACE=1` dumps the cut-in constant-buffer writes, and `ARLAND_CUTIN_FLAG_TRACE=1` logs the live callers of Rorona's two shadow-node flag routines, which static analysis could only find reached through function-pointer dispatch (English build only, the only one whose RVAs are mapped for it). `ARLAND_CUTIN_SNODE_FLAG=1` is not a diagnostic: it re-enables the earlier experimental path that restores the battle shadow-node flags from the shadow-map clear and the scene pass. It is off because that approach was superseded by the tactical hide/show front-run described above.
 
 Two log lines report this subsystem, and the distinction between them matters. `Deferred-hide arm hook installed=1` says only that the detour attached; a subsystem can install and then do nothing, which is how an inert caster clear once survived a full day of debugging while its install line read as success. `Deferred-hide arm force-expired a caster fade (first hit)` is emitted the first time the front-run actually acts, and is the line that confirms the feature works.
 
-On-by-default was only safe once the stray-shadow glitch described above was fixed. Before that, the restored reception showed a ground shadow for a character the engine had hidden or repositioned during the close-up; the settle-gated hold and the force-expiry per-actor hide resolved it, validated in all three games.
+Both halves stay opt-in pending wider playtest, but they were only offerable at all once the stray-shadow glitch described above was fixed. Before that, the restored reception showed a ground shadow for a character the engine had hidden or repositioned during the close-up; the settle-gated hold and the force-expiry per-actor hide resolved it, validated in all three games.
 
 The patch itself is narrow. It touches only the diffuse field, never the transform matrices that share the buffer, and the pixel shader does not read that field, so the shared vertex and pixel constant buffer is patched safely; the draw-time path also works on the game's deferred rendering context. The engine's own casters then project real shadows onto the cut-in floor with no injected geometry, and the feature composes with the always-on battle-shadow restoration that supplies those casters. Basic and assist cut-ins keep the real arena floor on screen and gain shadows; solo specials that replace the entire background with a dedicated close-up scene have no real floor and are left unchanged.
 
@@ -249,7 +301,15 @@ The dim-hold consults this per-game field table with one value predicate everywh
 
 ## High-resolution shadow maps
 
-> **TL;DR**: The games draw every shadow into a relatively small 1024×1024 texture, which makes shadow edges look blocky. The mod creates larger companion textures and quietly redirects the existing shadow pipeline through them, improving definition without changing the engine-owned textures or replacing its shadow renderer.
+#### TL;DR
+
+The games draw every shadow into a relatively small 1024×1024 texture, which makes shadow edges look blocky. The mod creates larger companion textures and quietly redirects the existing shadow pipeline through them, improving definition without changing the engine-owned textures or replacing its shadow renderer.
+
+#### Safety
+
+The engine's own shadow textures are never resized or replaced, so every size the engine derives from them stays true. The mod creates a larger companion texture alongside each one and ties it to the original's lifetime, so it is released when the game releases its own. Anything ambiguous at creation time, such as initial data, staging use, mip levels or multisampling, declines the companion and keeps that shadow map entirely on the original path. Each of the four redirection points does nothing at all when no companion exists, and at the default setting none of this machinery runs.
+
+#### Details
 
 The games render all shadows into two 1024×1024 `R24G8_TYPELESS` depth maps, a caster map (A) and a receiver map (B) with a per-frame A→B transfer between them, so shadow edges are visibly blocky, most noticeably in Meruru. The `ShadowMultiplier` option renders shadows at 2048, 4096, or 8192 instead.
 
@@ -266,7 +326,15 @@ Two size assumptions still need correcting, because the engine sizes everything 
 
 ## Meruru conversation text-render cache
 
-> **TL;DR**: Meruru was rebuilding unchanged conversation text every frame while an animated portrait was on screen, causing a large slowdown for the whole conversation. The mod keeps the finished text bitmap for exactly as long as the conversation balloon exists, turning those repeated renders into inexpensive memory copies.
+#### TL;DR
+
+Meruru was rebuilding unchanged conversation text every frame while an animated portrait was on screen, causing a large slowdown for the whole conversation. The mod keeps the finished text bitmap for exactly as long as the conversation balloon exists, turning those repeated renders into inexpensive memory copies.
+
+#### Safety
+
+The cache is alive for exactly as long as a conversation balloon is on screen, and the last balloon closing clears it, so nothing can go stale between conversations. Its size is bounded, and it clears and rebuilds itself rather than growing without limit when a long typewriter reveal fills it. If a cached result would not fit the buffer the game supplied, the mod renders normally instead of reallocating memory the game owns. The hooks verify each build's exact function bytes before installing, including the balloon class identity, so they cannot attach to a similar-looking routine.
+
+#### Details
 
 Atelier Meruru DX's field-map conversations with animated bust-up portraits collapsed the framerate on the English executable for the duration of the conversation. The cost was not the portraits: the conversation balloon's per-frame callback pump re-entered the executable's text-render path (the same CPU-side glyph and atlas work that makes menu construction slow) every frame, for text that had not changed. Menus pay that cost once per rebuild; the balloon paid it continuously.
 
@@ -278,7 +346,15 @@ Two edges are handled. The typewriter reveal inserts one entry per partial strin
 
 ## High-resolution UI text
 
-> **TL;DR**: The games use a small pre-rendered bitmap font, so their text looks soft and pixelated at modern resolutions. The mod replaces English text with crisp scalable fonts, or sharpens the original glyphs when needed, while preserving the game's layout, sizing, and controller icons.
+#### TL;DR
+
+The games use a small pre-rendered bitmap font, so their text looks soft and pixelated at modern resolutions. The mod replaces English text with crisp scalable fonts, or sharpens the original glyphs when needed, while preserving the game's layout, sizing, and controller icons.
+
+#### Safety
+
+The replacement bitmap is allocated with the game's own text allocator, so the game frees it normally, and the temporarily doubled dimensions are restored once the picture has been handed to the graphics card, which is what keeps text at its original size on screen. If the replacement font cannot draw a character, most often one of the controller-button icons, the whole string falls back to a sharpened version of the game's own glyphs, so nothing is ever dropped or shown as an empty box. The substitution is wired only to the English builds; on the Japanese and Chinese builds the hooks stay unresolved and every mode is a safe no-op.
+
+#### Details
 
 All UI text in these games comes from a pre-baked bitmap font. Koei Tecmo's G1N atlases store every glyph as a fixed 32×48 image that the engine blits 1:1, with no scalable rasterizer, so text is soft and pixelated at 1440p or 4K. This feature re-renders that text at full resolution while preserving the engine's exact layout. `[Rendering] Font` chooses the mode: `replaced` (the default), `upscaled`, or `original` (or `off`; the untouched bitmap).
 
@@ -302,7 +378,15 @@ A small related mechanism rides the same render path to correct known English di
 
 ## SMAA anti-aliasing
 
-> **TL;DR**: The games ship without anti-aliasing, leaving visible jagged edges throughout the scene. The mod runs a lightweight smoothing pass after the 3D scene is finished but before the interface is drawn, improving edges while keeping menus and text crisp.
+#### TL;DR
+
+The games ship without anti-aliasing, leaving visible jagged edges throughout the scene. The mod runs a lightweight smoothing pass after the 3D scene is finished but before the interface is drawn, improving edges while keeping menus and text crisp.
+
+#### Safety
+
+If the runtime shader compiler is unavailable or any resource fails to be created, SMAA switches itself off for the session and the rest of the mod is unaffected. The pass runs before the interface is composited, so menus and text are not softened by it. On Totori, where it is injected between draws rather than at a target change, every piece of graphics state the three passes touch is saved and restored, leaving the pending draw exactly as the game prepared it. There is deliberately no silent second pass layered on top when the normal path is selected, because that would paper over a fault instead of exposing it.
+
+#### Details
 
 The games' only built-in anti-aliasing is none; the mod adds optional MSAA, but MSAA only multisamples geometry silhouettes and cannot touch aliasing that lives inside a surface, such as texture and alpha-test edges. The mod therefore also offers SMAA (Enhanced Subpixel Morphological Anti-Aliasing, Jimenez et al.), a post-process that works on the finished image and smooths any visible edge regardless of how it was produced. It is enabled by default and is a cheaper, broader alternative to MSAA: a single constant-cost pass rather than per-pixel supersampled shading.
 
@@ -326,7 +410,15 @@ SMAA cannot reconstruct detail that was already lost below the finished image's 
 
 ## Supersampling
 
-> **TL;DR**: Supersampling renders the entire game at a higher resolution and then shrinks it cleanly to the display, recovering very fine detail that ordinary anti-aliasing cannot. The mod redirects the game's rendering into a larger internal image, downscales it once at the end, and adds black bars when necessary rather than stretching the picture.
+#### TL;DR
+
+Supersampling renders the entire game at a higher resolution and then shrinks it cleanly to the display, recovering very fine detail that ordinary anti-aliasing cannot. The mod redirects the game's rendering into a larger internal image, downscales it once at the end, and adds black bars when necessary rather than stretching the picture.
+
+#### Safety
+
+Only the game's own backbuffer views are redirected, and a view whose format the substitute cannot present is declined, so that frame renders normally rather than failing. Differing aspect ratios are handled with black bars rather than by stretching the picture, and those bars are cleared every frame so nothing stale can show through. The render size is capped, with the aspect preserved, at a point well past where these 2010-era assets have any detail left to give. If a build ever failed to bind the backbuffer the way this depends on, the mod leaves the image alone and says so in the log, rather than quietly doing nothing.
+
+#### Details
 
 `[Rendering] RenderWidth`/`RenderHeight` larger than the display resolution renders the whole frame, scene and UI alike, at that larger size and downscales it once into the backbuffer just before Present. Unlike MSAA it resamples shading rather than geometry coverage, which is why it can preserve detail smaller than a display pixel.
 
@@ -342,7 +434,15 @@ Because the whole mechanism rests on the game binding the backbuffer as a render
 
 ## Borderless windowed mode
 
-> **TL;DR**: Exclusive fullscreen makes these games slow to alt-tab and can interact poorly with modern desktops, while ordinary windowed mode leaves a visible frame. The mod creates a true borderless window that fills the current monitor without taking control of the display mode, giving a fullscreen appearance with quick, reliable task switching.
+#### TL;DR
+
+Exclusive fullscreen makes these games slow to alt-tab and can interact poorly with modern desktops, while ordinary windowed mode leaves a visible frame. The mod creates a true borderless window that fills the current monitor without taking control of the display mode, giving a fullscreen appearance with quick, reliable task switching.
+
+#### Safety
+
+Off by default, in which case the game's own fullscreen setting is used exactly as it stands. The mod asks for a plain window before the swap chain is created rather than wrestling an exclusive-fullscreen mode after the fact, and it never takes ownership of the display mode. Because both the engine and the window manager restyle the window on their own, the style is re-checked each frame, but it is only re-applied when it actually differs, and repeated attempts are capped so a window that refuses the style cannot spin. When the reposition would have to reach across threads it is posted asynchronously, so it can never block on another thread's message loop.
+
+#### Details
 
 The games offer only windowed, with a title bar and border, or exclusive fullscreen. Exclusive fullscreen takes ownership of the display mode, which makes alt-tabbing slow and, under Wine or Proton, interacts badly with compositors and multi-monitor setups. `[Rendering] Borderless` runs the game as a plain window with its decorations removed, sized to cover the monitor it is on: it looks like fullscreen, alt-tabs instantly, and leaves the display mode alone. Off by default, in which case the game's own fullscreen setting is used as-is.
 
@@ -352,17 +452,27 @@ The style is re-checked each frame rather than applied once. The engine restyles
 
 ## Totori item and save corruption guard
 
-> **TL;DR**: Totori accepts a saved container limit larger than its fixed 999-item array. Ordinary item operations then walk and write beyond that array, corrupting later game state including equipment; the resulting bad effect indices can crash battle entry or bomb use. The mod clamps the saved limit, repairs structurally damaged item and skill records, and bounds the remaining consumers. Valid saves are left unchanged.
+#### TL;DR
 
-Totori's chunk 7 contains 100 carried-item records, 999 container records and four trailer dwords. The 999 limit is fixed in both executables: CRT initialization constructs exactly `0x3e7` records of stride `0x34`; the list initializer writes `0x3e7` to both its logical scan limit at `owner+4` and physical capacity at `owner+8`; and the save reader and writer copy exactly `0xcaec = 999 * 0x34` container bytes. A reported damaged save instead stored a logical container limit of 5000. The loader restored 5000 to `owner+4` without comparing it with the still-valid physical capacity.
+Totori accepts a saved container limit larger than its fixed 999-item array. Ordinary item operations then walk and write beyond that array, corrupting later game state including equipment; the resulting bad effect indices can crash battle entry or bomb use. The mod repairs affected saves while they load, writes the repaired data back on the next save, and bounds the remaining consumers so a bad value cannot crash the game in the meantime. Saves that are already valid are left byte-for-byte alone.
 
-Generic item count and insert routines use `owner+4`. With 5000 loaded they continue through globals beyond the physical array, and insert copies a complete `0x34` item into the first memory that resembles a vacant record. This is directly visible in the damaged save: coherent item records with ids 2840..2852 overlap equipment at offsets `+0x28` and `+0x24`. Those apparently irregular equipment offsets lie exactly on the container's continued `0x34` grid—container records 1171 and 1209—not on a variable-length serialization layout. The equipment writer then persists the already-corrupted globals. The game's missing validation is therefore a real save-corruption mechanism once an invalid limit is present; the round value 5000 in the original Cheat Engine-touched report was most likely seeded externally, but vanilla turns that one bad dword into continuing runtime and save damage.
+#### Safety
 
-The load and save hooks validate the live list objects against their expected kind, physical capacity, backing pointer and mapped range, clamp the logical limits to 100/999, and structurally scan all 1,099 fixed inventory records. A damaged record with trustworthy ids, finite quality and valid traits keeps that prefix while its unsafe effect suffix is cleared; a record whose prefix cannot be trusted is reset to the engine's canonical empty value. The same validation covers all 30 equipped records. Damaged saved character-skill entries are rebuilt from the executable's per-character source tables, bounded set metadata is restored, and the engine's own equipment-stat recalculation runs after an equipment repair. `ARLAND_ITEM_SANITIZE=0` disables this persistent recovery for comparison.
+Data is validated before anything is repaired, so a save whose records all check out is left exactly as it is and an unaffected file is never rewritten. The repairs are conservative: a damaged record keeps whatever part of it is trustworthy and only the unsafe remainder is cleared, and rebuilt skill entries come from tables inside the game's own executable rather than from values the mod invented. The limits are clamped back to the ones the game itself fixes at startup, not to numbers of the mod's choosing. Every hook is verified against exact function fingerprints first, which is why Rorona and Meruru, whose item system is different, install none of it. Each part can be switched off for comparison. What this cannot do is bring back items that vanilla already overwrote before the mod was installed; it repairs the structure so the damage stops there.
 
-Two read-side guards remain necessary. Battle entry scans item effects and traits at `0x25b3d0`/`0x25b450` (multilingual `0x477d00`/`0x477d80`) and originally checked only that each table index was nonnegative. The mod skips indices beyond the measured 223-effect and 204-trait tables. Bomb and Craft use reach a separate modifier builder at `0x25a010` (`0x476940`) with the same unbounded effect lookup and quality arithmetic. It normally runs untouched; if quality or an effect index is invalid, the detour calls it synchronously with a sanitized local copy of the item. The builder has a second unchecked lookup: its 161-record action-item table contains ids 0..159 and 163, but vanilla uses the lookup's `-1` failure as an index one record before that table. The detour rejects an id outside that exact set and leaves the caller's modifier vector empty. All seven direct callers in each Totori build initialize that vector before the call and either test its count or iterate from begin to end, so empty is an already-supported failure result. This predicate deliberately stays inside the action builder because valid weapons, armour and materials use ids outside the action-item table. Thus an item arriving through a route outside the audited save arrays cannot perform either bad lookup.
+#### Details
 
-Every target and source table is prologue- or geometry-verified before a hook installs. Runtime startup validation confirms that the English and multilingual Totori builds both install the effect/trait/modifier guards and all three save hooks with the same measured 223/204 table sizes. Rorona and Meruru have no byte-match for these Totori routines; both report `item_scan_guard=not_applicable` and return before resolving or installing any save hook. Runtime recovery validation loaded the original damaged save, visibly removed its placeholder skill rows, clamped 5000 to 999 and saved it again; the resulting file passed a complete structural scan of all 1,129 item records. A known-good save passed the same scan before and after a normal save. The first rejected read is always logged; `ARLAND_ITEM_PROBE=1` logs all of them, `ARLAND_ITEM_GUARD=0` restores the vanilla read routines, and `ARLAND_ITEM_SANITIZE=0` disables load/save repair.
+The work behind this section started from a save file shared by a member of the community whose game had become unplayable. That file is what made the mechanism visible and what the repair was built and validated against; how its container limit came to be wrong in the first place is not established, and does not matter to the fix, because the damage that follows is done entirely by the game's own code once the bad value is present.
+
+Totori's chunk 7 contains 100 carried-item records, 999 container records and four trailer dwords. The 999 limit is fixed in both executables: CRT initialization constructs exactly `0x3e7` records of stride `0x34`; the list initializer writes `0x3e7` to both its logical scan limit at `owner+4` and physical capacity at `owner+8`; and the save reader and writer copy exactly `0xcaec = 999 * 0x34` container bytes. The damaged save instead stored a logical container limit of 5000, and the loader restored 5000 to `owner+4` without ever comparing it against the still-valid physical capacity.
+
+Generic item count and insert routines use `owner+4`. With 5000 loaded they continue through globals beyond the physical array, and insert copies a complete `0x34` item into the first memory that resembles a vacant record. This is directly visible in the damaged save: coherent item records with ids 2840..2852 overlap equipment at offsets `+0x28` and `+0x24`. Those apparently irregular equipment offsets lie exactly on the container's continued `0x34` grid — container records 1171 and 1209 — not on a variable-length serialization layout. The equipment writer then persists the already-corrupted globals. One bad dword therefore does not stay one bad dword: vanilla turns it into continuing runtime damage that is written back to disk on every save.
+
+The repair runs where that data enters and leaves the game. The load and save hooks validate the live list objects against their expected kind, physical capacity, backing pointer and mapped range, clamp the logical limits back to 100 and 999, and structurally scan all 1,099 fixed inventory records. A damaged record with trustworthy ids, finite quality and valid traits keeps that prefix while its unsafe effect suffix is cleared; a record whose prefix cannot be trusted is reset to the engine's canonical empty value. The same validation covers all 30 equipped records. Damaged saved character-skill entries are rebuilt from the executable's own per-character source tables, bounded set metadata is restored, and the engine's own equipment-stat recalculation runs after an equipment repair. Nothing is rewritten speculatively: a record that passes validation is not touched, so an unaffected save loads and saves exactly as it would without the mod. `ARLAND_ITEM_SANITIZE=0` disables this persistent recovery for comparison.
+
+Two read-side guards remain necessary, because an item can also reach these routines from outside the arrays the save hooks audit. Battle entry scans item effects and traits at `0x25b3d0`/`0x25b450` (multilingual `0x477d00`/`0x477d80`) and originally checked only that each table index was nonnegative. The mod skips indices beyond the measured 223-effect and 204-trait tables. Bomb and Craft use reach a separate modifier builder at `0x25a010` (`0x476940`) with the same unbounded effect lookup and quality arithmetic. It normally runs untouched; if quality or an effect index is invalid, the detour calls it synchronously with a sanitized local copy of the item. The builder has a second unchecked lookup: its 161-record action-item table contains ids 0..159 and 163, but vanilla uses the lookup's `-1` failure as an index one record before that table. The detour rejects an id outside that exact set and leaves the caller's modifier vector empty. All seven direct callers in each Totori build initialize that vector before the call and either test its count or iterate from begin to end, so empty is an already-supported failure result. This predicate deliberately stays inside the action builder, because valid weapons, armour and materials use ids outside the action-item table.
+
+Every target and source table is prologue- or geometry-verified before a hook installs. Runtime startup validation confirms that the English and multilingual Totori builds both install the effect/trait/modifier guards and all three save hooks with the same measured 223/204 table sizes. Rorona and Meruru have no byte-match for these Totori routines; both report `item_scan_guard=not_applicable` and return before resolving or installing any save hook. Runtime recovery validation loaded the damaged save, visibly removed its placeholder skill rows, clamped 5000 back to 999 and saved it again; the resulting file passed a complete structural scan of all 1,129 item records. A known-good save passed the same scan before and after a normal save. The first rejected read is always logged; `ARLAND_ITEM_PROBE=1` logs all of them, `ARLAND_ITEM_GUARD=0` restores the vanilla read routines, and `ARLAND_ITEM_SANITIZE=0` disables load/save repair.
 
 ## Diagnostics
 
@@ -376,11 +486,19 @@ With `[Diagnostics] VerboseLogging` enabled (off by default; `ARLAND_VERBOSE_LOG
 
 ## Runtime memory manipulation
 
-> **TL;DR**: The mod does not edit or replace the games' executable files. Its proxy DLLs are loaded alongside the game or launcher, make narrowly verified changes inside that running process, and forward everything else to the original Windows libraries. Those temporary changes disappear when the process exits.
+#### TL;DR
+
+The mod does not edit or replace the games' executable files. Its proxy DLLs are loaded alongside the game or launcher, make narrowly verified changes inside that running process, and forward everything else to the original Windows libraries. Those temporary changes disappear when the process exits.
+
+#### Safety
+
+No game file is ever modified. Every change lives in the running process's memory and disappears when the process exits, and removing the mod's DLL leaves an entirely unmodified game behind. Each change is checked against the exact bytes it expects before it is made, and a mismatch disables that one feature and leaves the game's original code running rather than proceeding on a guess. An executable the mod does not recognize gets ordinary API forwarding and nothing else.
+
+#### Details
 
 The 64-bit `d3d11.dll` is a proxy for the system D3D11 library. It exports the device-creation functions the game expects, then forwards them to `d3d11_proxy.dll` when one is deliberately installed for chain-loading, or to the real `d3d11.dll` from the Windows system directory otherwise. This lets the mod observe device creation and install its rendering hooks without replacing the graphics implementation. The 32-bit `msimg32.dll` uses the same pattern for the stock launchers: it forwards `AlphaBlend` and `TransparentBlt` to the system MSIMG32 library while applying only the launcher-specific behavior described above.
 
-Most executable changes are detours. After verifying the target function, the mod temporarily makes its code page writable, places a jump to a mod function at the entry point, restores the page protection, and flushes the processor's instruction cache. A trampoline preserves the displaced instructions and jumps back to the original function, so the mod can do work before or after normal engine behavior rather than replacing the entire routine. MinHook provides this mechanism for most game and D3D11 functions; a small in-project equivalent handles the few targets that need a fixed-size absolute jump. The launcher proxy similarly patches verified tables, constants, and its entry point in memory, never in the executable on disk.
+Most executable changes are detours. After verifying the target function, the mod temporarily makes its code page writable, places a jump to a mod function at the entry point, restores the page protection, and flushes the processor's instruction cache. A trampoline preserves the displaced instructions and jumps back to the original function, so the mod can do work before or after normal engine behavior rather than replacing the entire routine. MinHook provides this mechanism for most game and D3D11 functions; a small in-project equivalent handles the few targets that need a fixed-size absolute jump. The launcher proxy similarly patches the stock launcher's verified entry point in memory, never in the executable on disk.
 
 Other fixes change data rather than code. They read or update known fields in live engine objects, substitute D3D11 resources or views at API boundaries, and attach mod-owned companion resources to engine resources through D3D11 private data. Shared guarded-read helpers reject unavailable game memory before following reverse-engineered pointer chains, and mod-owned COM objects retain references for the lifetime in which the game or GPU can still observe them. These operations use per-build addresses and measured structure offsets; the mod does not search for approximate patterns and then write to whatever happens to match.
 
