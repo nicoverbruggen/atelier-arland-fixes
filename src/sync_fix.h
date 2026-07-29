@@ -40,6 +40,12 @@ unsigned int msaaTwinSamples(ID3D11Resource* host);
 void largestViewportSeen(unsigned int* width, unsigned int* height);
 void notePresentBackbuffer(IDXGISwapChain* swapChain);
 
+// Resolve a still-bound MSAA twin into its host before Present. Must run before
+// anything that reads the backbuffer or the scene target (SMAA's present-time
+// path, the supersampling downscale), since those would otherwise sample the
+// unresolved host.
+void resolveMsaaBeforePresent(IDXGISwapChain* swapChain);
+
 /* lives in main.cpp */
 extern Log log;
 

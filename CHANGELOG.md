@@ -12,6 +12,8 @@
 
 ### Fixed
 
+- **Fixed the screen flashing with MSAA enabled, seen in Atelier Totori DX.** Several times a second, a single frame showed an image from seconds earlier. Totori's pre-UI SMAA pass could lose the deferred context's association between the multisample target and its visible host, causing the final command list to omit its resolve. The association is now restored after SMAA, and Present has a resource-directed safety resolve over the actual finished-frame surface. Rorona and Meruru were unaffected, as was any setup with supersampling enabled.
+
 - **Prevented malformed Atelier Totori DX inventory data from corrupting saves and crashing combat, in both the English and multilingual executables.** Totori trusted a saved container limit even when it exceeded the game's fixed 999-item array, allowing ordinary item operations to write through unrelated game state and equipment. The mod now clamps that limit, repairs damaged item and character-skill records while loading, bounds the remaining effect lookups used at battle entry and by bombs/Crafts, and rejects a malformed combat item whose id is absent from Totori's fixed action-item table instead of letting vanilla index before that table. Runtime validation repaired an affected save—including its visibly broken skill lists—and the normally saved result passed a complete structural scan; an unaffected save remained clean. Rorona and Meruru use a different item system and explicitly leave this fix inactive.
 
 ## v0.9.1

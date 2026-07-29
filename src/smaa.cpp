@@ -1,11 +1,10 @@
 // SPDX-License-Identifier: MIT
 //
 // SMAA (Enhanced Subpixel Morphological Anti-Aliasing, Jimenez et al.) as a
-// post-process. It normally runs over the finished 3D scene before the games
-// draw their UI; Totori with MSAA falls back to the swap-chain backbuffer just
-// before Present. Unlike MSAA, SMAA works on the finished image, so it smooths
-// edges MSAA cannot — including texture-interior and alpha-test edges — as well
-// as ordinary silhouettes. It runs the standard three
+// post-process over the finished 3D scene before the games draw their UI.
+// Unlike MSAA, SMAA works on the finished image, so it smooths edges MSAA
+// cannot — including texture-interior and alpha-test edges — as well as
+// ordinary silhouettes. It runs the standard three
 // passes (edge detection -> blending-weight calculation -> neighborhood
 // blending) with the reference shader and its two precomputed lookup textures.
 //

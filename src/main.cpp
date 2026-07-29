@@ -149,10 +149,11 @@ bool perfLogEnabled() {
   return enabled;
 }
 
-// Present must be hooked whenever the transition trace, SMAA, the supersampling
-// downscale, borderless mode or the frame-time log needs it.
+// Present must be hooked whenever the transition trace, MSAA safety resolve,
+// SMAA, supersampling downscale, borderless mode or frame-time log needs it.
 bool presentHookNeeded() {
-  return menuTransitionTraceEnabled() || atfix::smaaEnabled() ||
+  return menuTransitionTraceEnabled() || atfix::msaaSamples() > 1 ||
+    atfix::smaaEnabled() ||
     atfix::presentTraceEnabled() || atfix::ssaaRequested() ||
     atfix::borderlessWindow() || perfLogEnabled();
 }
@@ -249,6 +250,7 @@ HRESULT STDMETHODCALLTYPE tracedPresent(
   atfix::maintainBorderlessWindow();   // re-applies only if the game restyled
   atfix::noteSceneAnchor(swapChain);         // re-anchor: survives ResizeBuffers
   atfix::notePresentBackbuffer(swapChain);   // ARLAND_PRESENT_TRACE diagnostic
+  atfix::resolveMsaaBeforePresent(swapChain);  // twin -> host, before any read
   atfix::smaaApply(swapChain);        // Present-time path (only if pre-UI off)
   atfix::ssaaDownscale(swapChain);    // supersampling: render res -> backbuffer
   const HRESULT result = originalPresent(

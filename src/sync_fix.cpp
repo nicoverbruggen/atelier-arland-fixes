@@ -1304,15 +1304,15 @@ void smaaDrawBoundary(ID3D11DeviceContext* context) {
           host ? "yes" : "no", " passes_ran=", ran ? 1 : 0);
     if (host) {
       // The write-back and the UI draws that follow both land in the twin, so
-      // the host must resolve again before it is read.
+      // the host must resolve again before it is read. The SMAA passes bound
+      // other render targets through our hook, which cleared the context-local
+      // host marker; restoring the already-substituted twin views cannot
+      // recreate that one-way host->twin association. Reattach it explicitly
+      // so FinishCommandList records the final twin->host resolve after the UI.
       const MSAAState state = MSAAState::Dirty;
       host->SetPrivateData(IID_MSAAState, sizeof(state), &state);
+      context->SetPrivateDataInterface(IID_MSAABoundHost, host);
     }
-    static std::atomic<bool> logged{false};
-    if (verboseLogging() &&
-        !logged.exchange(true, std::memory_order_relaxed))
-      log("SMAA: pre-UI depth-state boundary active msaa_twin=",
-        host ? "yes" : "no");
     scene->Release();
   }
   if (host) host->Release();
@@ -1347,6 +1347,48 @@ void largestViewportSeen(unsigned int* width, unsigned int* height) {
 }
 
 std::atomic<void*> g_traceBackbuffer{nullptr};
+
+// Land the finished frame's MSAA twin in its host before the frame is shown.
+//
+// resolveIfMSAA only runs when something reads the host: a render-target
+// rebind, a copy that sources it, an SRV bind, or FinishCommandList. Rorona
+// and Meruru end the frame by blitting their offscreen scene target into the
+// backbuffer, which is one of those. Totori does not: it leaves colour and
+// depth attached and only turns depth testing off for the UI, so it can reach
+// Present with the twin still bound and nothing having read the host. DXGI
+// then shows the host, which still holds whatever was last resolved into it --
+// a frame from seconds ago.
+//
+// The bound-host marker is context-local. Frames are recorded on a deferred
+// context, so consulting the immediate context here cannot discover what was
+// bound during recording. Resolve the known finished-frame resource directly:
+// the render-resolution stand-in under supersampling/borderless, or swap-chain
+// buffer 0 otherwise. A no-op when MSAA is off, the resource has no twin, or
+// the frame already resolved.
+void resolveMsaaBeforePresent(IDXGISwapChain* swapChain) {
+  if (msaaSamples() <= 1 || !swapChain)
+    return;
+  ID3D11Texture2D* host = atfix::ssaaAcquireColor();
+  if (!host &&
+      FAILED(swapChain->GetBuffer(0, IID_PPV_ARGS(&host))))
+    return;
+  if (!host)
+    return;
+  ID3D11Device* device = nullptr;
+  host->GetDevice(&device);
+  if (!device) {
+    host->Release();
+    return;
+  }
+  ID3D11DeviceContext* context = nullptr;
+  device->GetImmediateContext(&context);
+  if (context) {
+    resolveIfMSAA(context, host);
+    context->Release();
+  }
+  device->Release();
+  host->Release();
+}
 
 void notePresentBackbuffer(IDXGISwapChain* swapChain) {
   if (!presentTraceEnabled() || !swapChain)
