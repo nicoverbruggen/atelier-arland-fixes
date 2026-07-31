@@ -1994,6 +1994,26 @@ bool isMutableFontAtlas(ID3D11Resource* resource) {
     info.Width == 512 && info.Height == 512;
 }
 
+// ARLAND_ATLAS_RECONCILE: counts font-atlas writes as D3D11 sees them, so the
+// menu layer can check them against the middleware unlocks its snapshot
+// invalidation actually observes. A D3D11 write with no corresponding unlock is
+// a mutation the atlas cache cannot know about, which is the one hazard a
+// longer snapshot lifetime would extend. Off by default: the predicate inspects
+// every mapped resource.
+std::atomic<uint64_t> g_atlasWriteMaps = { 0 };
+
+bool atlasReconcileEnabled() {
+  static const bool enabled = [] {
+    const char* value = std::getenv("ARLAND_ATLAS_RECONCILE");
+    return value && value[0] != '0';
+  }();
+  return enabled;
+}
+
+uint64_t atlasWriteMapCount() {
+  return g_atlasWriteMaps.load(std::memory_order_relaxed);
+}
+
 ID3D11Resource* getOrCreateShadowResource(
         ID3D11DeviceContext*      pContext,
         ID3D11Resource*           pBaseResource) {
@@ -3732,6 +3752,12 @@ HRESULT STDMETHODCALLTYPE ID3D11DeviceContext_Map(
   TransitionMapKindTimer mapKindTimer(MapType);
   const uintptr_t caller = transitionTraceEnabled()
     ? reinterpret_cast<uintptr_t>(arlandReturnAddress()) : 0;
+  if (atlasReconcileEnabled() &&
+      (MapType == D3D11_MAP_WRITE_DISCARD ||
+       MapType == D3D11_MAP_WRITE_NO_OVERWRITE ||
+       MapType == D3D11_MAP_WRITE) &&
+      isMutableFontAtlas(pResource))
+    g_atlasWriteMaps.fetch_add(1, std::memory_order_relaxed);
   auto procs = getContextProcs(pContext);
   if (!pResource || !isImmediatecontext(pContext)) {
     mapKindTimer.setBranch(0);

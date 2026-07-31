@@ -68,7 +68,12 @@ constexpr Support X = Support::OnByDefault;
 
 // The capability matrix. Rows are Rorona / Totori / Meruru, columns follow the
 // Feature enum. KEEP IN SYNC with the "Feature support by game" table in
-// README.md. Notes: FrameAtlasCache is Rorona-only; BattleShadows (mod-side
+// README.md, for the cells it lists: being user-facing, it has no row for the
+// internal cache lifetimes (AtlasCache, FrameAtlasCache).
+// Notes: FrameAtlasCache is OnByDefault on Rorona and Totori, OptIn on Meruru,
+// where it measurably buys nothing: its queue drain already serves all but three
+// of the reads, so a longer snapshot lifetime would be exposure without a win.
+// BattleShadows (mod-side
 // caster restoration) is OnByDefault only on Rorona; Meruru and Totori cast
 // them natively (Totori confirmed healthy by the 2026-07-23 probe). CutInShadows
 // and CutInDimHold ship OptIn (default off) on all three games; enable them via
@@ -83,8 +88,8 @@ constexpr Support X = Support::OnByDefault;
 constexpr Support kMatrix[3][static_cast<int>(Feature::Count)] = {
   //           Sync Menu Atls Frme Res  MSAA ShMl Bat  CutS CutD
   /* Rorona */ { X,   X,   X,   X,   X,   O,   O,   X,   O,   O },
-  /* Totori */ { X,   X,   X,   U,   X,   O,   O,   U,   O,   O },
-  /* Meruru */ { X,   X,   X,   U,   X,   O,   O,   U,   O,   O },
+  /* Totori */ { X,   X,   X,   X,   X,   O,   O,   U,   O,   O },
+  /* Meruru */ { X,   X,   X,   O,   X,   O,   O,   U,   O,   O },
 };
 
 int titleRow(Title t) {

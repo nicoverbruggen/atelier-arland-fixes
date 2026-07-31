@@ -69,4 +69,9 @@ uint32_t arlandSceneGeneration();
    D3D-side 1024x1024 shadow-map clear (per-battle-frame render-thread hook). */
 void arlandCutinShadowMapCleared();
 
+/* ARLAND_ATLAS_RECONCILE: font-atlas writes as the D3D11 layer sees them,
+   checked by the menu layer against the unlocks its invalidation observes. */
+bool atlasReconcileEnabled();
+uint64_t atlasWriteMapCount();
+
 }

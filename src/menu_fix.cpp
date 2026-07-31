@@ -32,6 +32,8 @@ namespace atfix {
 extern Log log;
 bool arlandInCinematicBattle();   // defined later in this TU
 bool arlandConfigBool(const char* section, const char* key, bool def);  // sync_fix.cpp
+bool atlasReconcileEnabled();   // sync_fix.cpp
+uint64_t atlasWriteMapCount();  // sync_fix.cpp
 // Shared with battle_shadow_restore.cpp (declared in menu_internal.h).
 BYTE* gameBase = nullptr;
 bool supportedGame = false;
@@ -114,19 +116,24 @@ using atfix::writeAbsoluteJump;
 using atfix::installDetour;
 using atfix::installMinHookDetour;
 
+// The atlas-unlock RVA is the real unlock function, never the thunk that sits
+// 0x10 bytes in front of it in Totori and Meruru: hooking the thunk saw only the
+// callers that went through it, and vtable dispatch means a static caller list
+// cannot prove there are no others. The thunk zeroes rdx and moves the caller's
+// edx to r8; the hook reads only rcx, which it leaves untouched.
 constexpr Game games[] = {
   { "A11R_x64_Release_en.exe", 0x709a9c, 0x12cc70, 0x57,
     0x08d4b0, 0x5613b0, 0x3eea10, 0x3eea60, AtlasRorona, BuildEnglish },
   { "A11R_x64_Release.exe", 0x72141c, 0x135130, 0x57,
     0x094890, 0x577280, 0x4048e0, 0x404930, AtlasRorona, BuildMultilingual },
   { "A12V_x64_Release_en.exe", 0x67da5c, 0x18b140, 0x56,
-    0x038a00, 0x430bf0, 0x4c2080, 0x4c20c0, AtlasTotori, BuildEnglish },
+    0x038a00, 0x430bf0, 0x4c2080, 0x4c20d0, AtlasTotori, BuildEnglish },
   { "A12V_x64_Release.exe", 0x90e1ec, 0x3a7b20, 0x56,
-    0x255020, 0x6ae1f0, 0x73f680, 0x73f6c0, AtlasTotori, BuildMultilingual },
+    0x255020, 0x6ae1f0, 0x73f680, 0x73f6d0, AtlasTotori, BuildMultilingual },
   { "A13V_x64_Release_EN.exe", 0x61ecec, 0x1533c0, 0x57,
-    0x0d6210, 0x5115d0, 0x3ea7d0, 0x3ea7f0, AtlasLaterArland, BuildEnglish },
+    0x0d6210, 0x5115d0, 0x3ea7d0, 0x3ea800, AtlasLaterArland, BuildEnglish },
   { "A13V_x64_Release.exe", 0x61ae4c, 0x140d20, 0x57,
-    0x0c2e20, 0x510c30, 0x3e9cf0, 0x3e9d10, AtlasLaterArland, BuildMultilingual },
+    0x0c2e20, 0x510c30, 0x3e9cf0, 0x3e9d20, AtlasLaterArland, BuildMultilingual },
 };
 
 PathCheckProc originalPathCheck = nullptr;
@@ -252,6 +259,10 @@ uint64_t renderOutputRepeatConflicts = 0;
 uint64_t renderOutputInvalidSamples = 0;
 std::atomic<uint32_t> atlasDrainDepth = { 0 };
 std::atomic<bool> atlasCacheActive = { false };
+// ARLAND_ATLAS_RECONCILE counters, checked against sync_fix's D3D11-side count.
+std::atomic<uint64_t> atlasHookUnlocks = { 0 };
+std::atomic<uint64_t> atlasEraseAttempts = { 0 };
+std::atomic<uint64_t> atlasInvalidations = { 0 };
 std::atomic<bool> frameAtlasCacheDefault = { false };
 // Count of live BalloonBucMode instances (Meruru's animated-portrait field
 // conversations). While non-zero, the text-bitmap replay cache switches to a
@@ -785,10 +796,16 @@ bool atlasCacheEnabled() {
 }
 
 bool frameAtlasCacheEnabled() {
+  // Unsupported is a hard off the environment cannot lift, per game.h.
+  if (atfix::featureSupport(atfix::Feature::FrameAtlasCache) ==
+      atfix::Support::Unsupported)
+    return false;
   static const int overrideValue = [] {
     const char* value = std::getenv("ARLAND_FRAME_ATLAS_CACHE");
     return value ? (value[0] != '0' ? 1 : 0) : -1;
   }();
+  // An explicit switch wins over the resolved default, so a gated build stays
+  // testable without a custom binary.
   return overrideValue >= 0
     ? overrideValue != 0
     : frameAtlasCacheDefault.load(std::memory_order_relaxed);
@@ -1574,6 +1591,8 @@ uintptr_t cachedAtlasUnlock(uintptr_t texture, uintptr_t a,
     syntheticAtlasLocks.pop_back();
     return 0;
   }
+  if (texture && atfix::atlasReconcileEnabled())
+    atlasHookUnlocks.fetch_add(1, std::memory_order_relaxed);
   if (!realCandidateAtlasLocks.empty() &&
       realCandidateAtlasLocks.back() == texture) {
     realCandidateAtlasLocks.pop_back();
@@ -1581,13 +1600,19 @@ uintptr_t cachedAtlasUnlock(uintptr_t texture, uintptr_t a,
     // Any lock that is not one of our cached/candidate reads may be a WRITE: the
     // glyph atlas is a single mutable, demand-paged 512x512 texture, so the game
     // rasterizes fresh glyph pages into it mid-frame. Drop the read snapshot on
-    // every such unlock, NOT only when the whole-frame cache is on. Otherwise, in
-    // the queue-scoped mode (Totori), a glyph paged in after the snapshot -- an
-    // uncommon kanji such as the one in a shop's buy menu -- is served from the
-    // stale copy and blits blank. (This is the Totori/Rorona missing-kanji bug;
-    // sync_fix already excludes this same atlas from its CPU shadow copies.)
+    // every such unlock, NOT only when the whole-frame cache is on: while this
+    // was gated on that cache, the queue-scoped games never invalidated at all
+    // and a glyph paged in after the snapshot blitted blank. Both lifetimes rest
+    // on this invalidation, so it must not be gated on either. Distinct from the
+    // striped-glyph bug above (a snapshot taken from a write mapping); the two
+    // have been conflated before. sync_fix also excludes this atlas from its CPU
+    // shadow copies.
     std::lock_guard lock(atlasMutex);
-    atlasReads.erase(texture);
+    const bool reconciling = atfix::atlasReconcileEnabled();
+    if (reconciling)
+      atlasEraseAttempts.fetch_add(1, std::memory_order_relaxed);
+    if (atlasReads.erase(texture) && reconciling)
+      atlasInvalidations.fetch_add(1, std::memory_order_relaxed);
   }
   return originalAtlasUnlock(texture, a, b, c);
 }
@@ -1623,21 +1648,19 @@ bool installAtlasCache(BYTE* base, const Game& game) {
     0x48, 0x83, 0xec, 0x38, 0x44, 0x89, 0x4c, 0x24,
     0x20, 0x45, 0x8b, 0xc8, 0x45, 0x33, 0xc0,
   };
-  const std::array<BYTE, 15> roronaUnlockExpected = {
+  // One array for every build: the real unlock prologue is byte-identical in all
+  // six executables.
+  const std::array<BYTE, 15> unlockExpected = {
     0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x6c,
     0x24, 0x10, 0x48, 0x89, 0x74, 0x24, 0x18,
   };
-  const std::array<BYTE, 14> laterUnlockExpected = {
-    0x44, 0x8b, 0xc2, 0x33, 0xd2, 0xe9, 0x06, 0x00,
-    0x00, 0x00, 0xcc, 0xcc, 0xcc, 0xcc,
-  };
-  const bool signaturesMatch = game.atlasVariant == AtlasRorona
-    ? matches(queue, roronaQueueExpected) &&
-      matches(unlock, roronaUnlockExpected)
-    : (game.atlasVariant == AtlasTotori
-      ? matches(queue, totoriQueueExpected)
-      : matches(queue, laterQueueExpected)) &&
-      matches(unlock, laterUnlockExpected);
+  const bool signaturesMatch =
+    (game.atlasVariant == AtlasRorona
+      ? matches(queue, roronaQueueExpected)
+      : game.atlasVariant == AtlasTotori
+        ? matches(queue, totoriQueueExpected)
+        : matches(queue, laterQueueExpected)) &&
+    matches(unlock, unlockExpected);
   if (!signaturesMatch || !matches(render, renderExpected) ||
       !matches(lock, lockExpected))
     return false;
@@ -2059,7 +2082,9 @@ void detectAndInstallGameHooks() {
       continue;
     supportedGame = true;
     frameAtlasCacheDefault.store(
-      game.atlasVariant == AtlasRorona, std::memory_order_relaxed);
+      atfix::featureSupport(atfix::Feature::FrameAtlasCache) ==
+        atfix::Support::OnByDefault,
+      std::memory_order_relaxed);
     atfix::log("GAME title=", atfix::titleName(atfix::currentTitle()),
       " executable=", game.executable,
       " build=", game.exeBuild == BuildMultilingual
@@ -2101,8 +2126,12 @@ void detectAndInstallGameHooks() {
       : !hiresRequested ? "off"
       : textBitmapAllocatorInstalled && hiResTextConsumerInstalled
         ? "active" : "failed";
-    const char* frameCacheStatus = game.atlasVariant != AtlasRorona
-      ? "not_applicable"
+    // The resolved state, not a per-game guess: this read "not_applicable" for
+    // every non-Rorona game even while the frame scope was running.
+    const char* frameCacheStatus =
+      atfix::featureSupport(atfix::Feature::FrameAtlasCache) ==
+          atfix::Support::Unsupported
+        ? "not_applicable"
       : !frameAtlasCacheEnabled() ? "off"
       : atlasInstalled ? "active" : "failed";
     const char* bucSetting = std::getenv("ARLAND_BUC_TEXT_CACHE");
@@ -2185,6 +2214,28 @@ void traceMenuPresent(uint64_t durationMicros, uint64_t intervalMicros) {
         lastNanos = nanos;
         lastHits = hits;
         lastMisses = misses;
+      }
+    }
+  }
+  // Atlas writes as D3D11 sees them against the unlocks invalidation observes.
+  // unmatched_writes must stay 0: above it, some path mutates an atlas without
+  // reaching the unlock hook, and no snapshot lifetime can be trusted.
+  if (atfix::atlasReconcileEnabled()) {
+    static uint32_t reconcileFrames = 0;
+    static uint64_t lastWrites = 0;
+    if (++reconcileFrames >= 120) {
+      reconcileFrames = 0;
+      const uint64_t writes = atfix::atlasWriteMapCount();
+      const uint64_t unlocks = atlasHookUnlocks.load(std::memory_order_relaxed);
+      if (writes != lastWrites) {
+        atfix::log("ATLAS reconcile d3d_writes=", writes,
+          " hook_unlocks=", unlocks,
+          " erase_attempts=",
+          atlasEraseAttempts.load(std::memory_order_relaxed),
+          " invalidations=",
+          atlasInvalidations.load(std::memory_order_relaxed),
+          " unmatched_writes=", writes > unlocks ? writes - unlocks : 0);
+        lastWrites = writes;
       }
     }
   }

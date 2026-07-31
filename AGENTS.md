@@ -62,7 +62,7 @@ The expected outputs are `builds/release-x64/d3d11.dll` and `builds/release-x86/
 - Preserve exact executable-name, `.text`-size, and prologue gating for game-code hooks.
 - Unknown executables must remain unmodified apart from normal system-D3D11 forwarding.
 - Cache only successful `.PSSG` validation results. Do not cache failures, parsed UI graphs, or mutable resource objects.
-- Keep atlas snapshots inside the verified synchronous queue-drain lifetime in Totori and Meruru. Rorona may retain verified text-renderer snapshots until the next `Present`; invalidate a texture on any unmatched real lock and never retain snapshots across frames.
+- Keep atlas snapshots inside the verified synchronous queue-drain lifetime in Meruru. Rorona and Totori may retain verified text-renderer snapshots until the next `Present`; invalidate a texture on any unmatched real lock and never retain snapshots across frames. That invalidation underpins both lifetimes and must never be gated on either of them.
 - Internal D3D11 operations on game resources must call original entry points (`getContextProcs(ctx)->Fn(ctx, ...)`) and must not recurse through hooks; `gateHoldAtDraw` in `battle_shadows.cpp` is the reference example. The mod's own present-time post-process passes (`ssaaDownscale`, `smaaRun`) are the exception and issue through the hooked context on purpose: binding an SRV is what resolves an MSAA twin into its host before the pass samples it. Converting those to original entry points breaks MSAA with supersampling.
 - Redirect staging shadows only on the immediate context. Flush before GPU consumers and before executing deferred command lists.
 - Preserve per-resource/per-subresource lifetime tracking and COM reference ownership.
