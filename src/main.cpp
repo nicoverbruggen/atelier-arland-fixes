@@ -120,6 +120,11 @@ using PFN_IDXGIFactory_CreateSwapChain = HRESULT (STDMETHODCALLTYPE *) (
 PFN_IDXGIFactory_CreateSwapChain originalCreateSwapChain = nullptr;
 mutex presentHookMutex;
 std::atomic<int64_t> previousPresentNanos = 0;
+// The address our Present detour was placed on: the swap chain's vtable slot as
+// it read when we hooked. Compared against the slot later to see whether
+// anything installed itself in front of us (reportPresentHookNeighbours).
+void* hookedPresentTarget = nullptr;
+void reportPresentHookNeighbours(IDXGISwapChain* swapChain);   // below
 
 bool menuTransitionTraceEnabled() {
   const char* trace = std::getenv("ARLAND_MENU_TRANSITION_TRACE");
@@ -247,6 +252,15 @@ HRESULT STDMETHODCALLTYPE tracedPresent(
     }
   }
 
+  // Once, a few hundred frames in: an overlay that hooks Present lazily has
+  // installed itself by then, and this is the line that says whether it sits
+  // in front of us. Verbose only.
+  {
+    static std::atomic<uint32_t> presents{0};
+    if (presents.fetch_add(1, std::memory_order_relaxed) == 300)
+      reportPresentHookNeighbours(swapChain);
+  }
+
   atfix::maintainBorderlessWindow();   // re-applies only if the game restyled
   atfix::noteSceneAnchor(swapChain);         // re-anchor: survives ResizeBuffers
   atfix::notePresentBackbuffer(swapChain);   // ARLAND_PRESENT_TRACE diagnostic
@@ -255,6 +269,12 @@ HRESULT STDMETHODCALLTYPE tracedPresent(
   atfix::ssaaDownscale(swapChain);    // supersampling: render res -> backbuffer
   const HRESULT result = originalPresent(
     swapChain, presentInterval(syncInterval), flags);
+  // Put the frame back in the buffer the present rotated in, so the backbuffer
+  // holds the current picture for the rest of the frame instead of the last one
+  // presented. Only matters to whoever reads the backbuffer outside this hook —
+  // Steam's screenshot capture among them. See ssaaRefreshBackbuffer.
+  if (SUCCEEDED(result))
+    atfix::ssaaRefreshBackbuffer();
   // Record a lost device once — the post-mortem a present-time hang/TDR leaves.
   // Kept as a passive diagnostic: it names the fault when a transition-teardown
   // race removes the device (see the crash analysis in TECHNICAL.md).
@@ -284,6 +304,54 @@ HRESULT STDMETHODCALLTYPE tracedPresent(
   return result;
 }
 
+// Which module owns a code address, by base name ("gameoverlayrenderer.dll",
+// "dxgi.dll", ...), or "?" when it cannot be resolved. Writes into the caller's
+// buffer rather than a static one: both addresses are named in a single log
+// statement, and a shared buffer would print the same name twice.
+const char* moduleOwning(void* address, char (&name)[MAX_PATH]) {
+  name[0] = '\0';
+  HMODULE module = nullptr;
+  if (!GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+        GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+        static_cast<LPCSTR>(address), &module) || !module)
+    return "?";
+  char path[MAX_PATH] = { };
+  if (!GetModuleFileNameA(module, path, sizeof(path)))
+    return "?";
+  const char* base = path;
+  for (const char* p = path; *p; ++p)
+    if (*p == '\\' || *p == '/') base = p + 1;
+  lstrcpynA(name, base, MAX_PATH);
+  return name;
+}
+
+// Who else is on this swap chain's Present, and are they inside or outside us.
+//
+// The Steam overlay hooks Present too, and what a Steam screenshot contains
+// depends on which of the two hooks runs first: whoever captures the backbuffer
+// before our composite writes it gets the PREVIOUS frame, overlay included.
+// ssaaRefreshBackbuffer makes that harmless, but the log line is what says
+// whether the ordering is the one being reasoned about, on a machine nobody
+// here can reproduce on. Verbose only; called once, a couple of seconds in, so
+// a lazily-installed overlay hook has had time to appear.
+void reportPresentHookNeighbours(IDXGISwapChain* swapChain) {
+  if (!atfix::verboseLogging() || !swapChain || !hookedPresentTarget)
+    return;
+  void** vtable = *reinterpret_cast<void***>(swapChain);
+  void* slot = vtable[8];
+  // We detour the function the slot pointed at when we hooked, so we run first
+  // -- unless someone REPLACED the slot afterwards, which puts their function
+  // in front of ours. Which is which decides what a Steam screenshot contains.
+  const bool first = slot == hookedPresentTarget;
+  char hookedName[MAX_PATH];
+  char slotName[MAX_PATH];
+  log("Present chain: hooked ", hookedPresentTarget, " in ",
+      moduleOwning(hookedPresentTarget, hookedName), ", slot now ", slot,
+      " in ", moduleOwning(slot, slotName), first
+        ? " -- ours runs first"
+        : " -- that module's Present runs before ours");
+}
+
 void hookSwapChain(IDXGISwapChain* swapChain) {
   if (!swapChain || !presentHookNeeded())
     return;
@@ -311,6 +379,7 @@ void hookSwapChain(IDXGISwapChain* swapChain) {
         MH_StatusToString(status));
     return;
   }
+  hookedPresentTarget = vtable[8];
   if (atfix::verboseLogging())
     log("Created transition Present hook @ ", vtable[8]);
 }

@@ -762,14 +762,14 @@ void loadFromIni() {
     SendMessageW(g_hLang, CB_SETCURSEL, sel, 0);
   }
 
-  // [Battle]: defaults match src/game.cpp (shadows on, cut-in shadows off,
-  // cut-in dimming held on).
+  // [Battle]: defaults match src/game.cpp (shadows on, cut-in shadows on,
+  // cut-in dimming off).
   SendMessageW(g_hBShadow, BM_SETCHECK,
     iniBool("Battle", "BattleShadows", true) ? BST_CHECKED : BST_UNCHECKED, 0);
   SendMessageW(g_hBCutInShadow, BM_SETCHECK,
-    iniBool("Battle", "BattleCutInShadows", false) ? BST_CHECKED : BST_UNCHECKED, 0);
+    iniBool("Battle", "BattleCutInShadows", true) ? BST_CHECKED : BST_UNCHECKED, 0);
   SendMessageW(g_hBCutInDim, BM_SETCHECK,
-    iniBool("Battle", "BattleCutInDimming", true) ? BST_CHECKED : BST_UNCHECKED, 0);
+    iniBool("Battle", "BattleCutInDimming", false) ? BST_CHECKED : BST_UNCHECKED, 0);
 
   // [Launcher]: read by the 32-bit msimg32 proxy, not by the DLL.
   SendMessageW(g_hSkipLauncher, BM_SETCHECK,

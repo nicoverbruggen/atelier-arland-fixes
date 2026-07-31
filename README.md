@@ -41,7 +41,7 @@ These are on by default.
 
 ✓ fixed, enabled by default · — not needed or not applicable
 
-The battle cut-in shadow and brightness restorations are off by default; enable them in `arland-fix.ini` if you prefer restored shadows and full-brightness close-ups over the vanilla darkened, shadowless ones.
+The battle cut-in shadow and brightness restorations are on by default: close-up attack cameras keep their ground shadows and stay at full brightness. Set `BattleCutInShadows=false` / `BattleCutInDimming=true` in `arland-fix.ini` if you prefer the vanilla darkened, shadowless ones.
 
 ### Advanced graphics tweaks
 

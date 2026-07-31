@@ -37,8 +37,8 @@ The file sits beside the DLLs and is created on first launch. Close the game bef
 | `[Battle]` | Values | Default |
 | --- | --- | --- |
 | `BattleShadows` | Restores Rorona's missing ordinary-battle shadows. Meruru and Totori cast them natively and are unaffected. | `true` |
-| `BattleCutInShadows` | `true` restores ground shadows during the close-up attack cameras. | `false` |
-| `BattleCutInDimming` | `true` keeps the original close-up dimming; `false` holds it at full brightness. | `true` |
+| `BattleCutInShadows` | `true` restores ground shadows during the close-up attack cameras. | `true` |
+| `BattleCutInDimming` | `true` keeps the original close-up dimming; `false` holds it at full brightness. | `false` |
 
 `[Launcher] SkipLauncher` is above; `[Diagnostics] VerboseLogging` is under [Logs](#logs-and-crash-reports); `[Debug] View` is under [Debug views](#debug-views).
 
@@ -72,6 +72,7 @@ These are environment variables, not INI keys: they are for narrowing down a pro
 | `ARLAND_ITEM_PROBE=1` | Logs every malformed item index Atelier Totori DX's guards reject, with the whole record and the caller, not just the first. |
 | `ARLAND_PRESENT_INTERVAL=0` | Forces vsync off (`1`, `2`, `3` present every Nth refresh). Useful with an external frame limiter. Unset, the game's own vsync is left alone; `0` will tear in exclusive fullscreen. |
 | `ARLAND_NO_REDIRECT=1` | Opens Koei Tecmo's own launcher instead of the mod's. |
+| `ARLAND_BACKBUFFER_REFRESH=0` | *(A/B)* Stops repeating the final composite after each present. That repeat is what keeps the finished frame in the backbuffer for the rest of the frame, so screenshot and capture tools that read it outside the mod's present — Steam's screenshot key among them — get the current picture instead of the previously presented one. Set this to `0` to compare, at the cost of one fullscreen pass per frame. Only has an effect while the frame is being composited by the mod, which is any borderless or supersampled session. |
 | `ARLAND_CRASH_LOG=0` | Stands the crash post-mortem down. It is otherwise always written. |
 | `ARLAND_FIELD_ENGINE_FIX=0` | *(A/B)* Restores the game's own minimum-movement distance, reinstating the high-refresh field-map problems. |
 | `ARLAND_FIELD_STABILIZER=0` | *(A/B)* Stops holding the character still at rest, leaving a small residual movement at high frame rates. Ignored unless the option above is also on. |

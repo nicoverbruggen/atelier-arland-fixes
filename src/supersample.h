@@ -59,4 +59,15 @@ bool ssaaIsBackbuffer(ID3D11Resource* resource);
 // real Present. No-op unless active.
 void ssaaDownscale(IDXGISwapChain* swapChain);
 
+// Repeat that composite immediately after the real Present, into the buffer the
+// present rotated in. Nothing on screen depends on it -- the next frame writes
+// that buffer again before it is shown. It exists so that the backbuffer holds
+// the CURRENT frame for the rest of the frame rather than the previous one:
+// under the redirect the game never writes the backbuffer itself, so anything
+// reading it outside our Present hook (screenshot and capture tools, the Steam
+// overlay's own capture) would otherwise read the last presented image, overlay
+// and all. Costs one fullscreen pass; ARLAND_BACKBUFFER_REFRESH=0 disables it.
+// No-op unless the redirect is actually carrying the frame.
+void ssaaRefreshBackbuffer();
+
 }  // namespace atfix

@@ -226,6 +226,83 @@ float downscaleSamples() {
   return samples;
 }
 
+// The pass itself: g_color -> the backbuffer, fitted and letterboxed. Called
+// once per frame from ssaaDownscale, and again from ssaaRefreshBackbuffer after
+// the present. Idempotent: it reads g_color and writes the backbuffer, so
+// running it twice over the same frame produces the same picture twice.
+void compositeToBackbuffer() {
+  // Deliberately the hooked context: this pass relies on re-entering the proxy
+  // (see the PSSetShaderResources note below, and AGENTS.md).
+  ID3D11Device* device = nullptr;
+  ID3D11DeviceContext* context = nullptr;
+  g_color->GetDevice(&device);
+  if (device) device->GetImmediateContext(&context);
+  if (!context) { if (device) device->Release(); return; }
+
+  DownscaleParams params;
+  params.texel[0] = 1.0f / float(g_renderWidth);
+  params.texel[1] = 1.0f / float(g_renderHeight);
+  params.ratio[0] = float(g_renderWidth) / float(g_displayWidth);
+  params.ratio[1] = float(g_renderHeight) / float(g_displayHeight);
+  params.samples = downscaleSamples();
+  D3D11_MAPPED_SUBRESOURCE mapped = {};
+  if (SUCCEEDED(context->Map(g_cb, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped))) {
+    std::memcpy(mapped.pData, &params, sizeof(params));
+    context->Unmap(g_cb, 0);
+  }
+
+  // Bind the backbuffer first: that unbinds the render target the game left
+  // bound, which is the very texture we are about to sample.
+  context->OMSetRenderTargets(1, &g_backRTV, nullptr);
+
+  // Fit the rendered frame inside the backbuffer without changing its shape:
+  // the larger of the two scale factors would crop, so the smaller one is used
+  // and the remainder becomes bars. When the shapes match this is the whole
+  // backbuffer and the clear costs one fill of pixels nothing else writes.
+  const float scale = std::min(
+    float(g_displayWidth) / float(g_renderWidth),
+    float(g_displayHeight) / float(g_renderHeight));
+  const float fittedWidth = float(g_renderWidth) * scale;
+  const float fittedHeight = float(g_renderHeight) * scale;
+  const D3D11_VIEWPORT viewport = {
+    (float(g_displayWidth) - fittedWidth) * 0.5f,
+    (float(g_displayHeight) - fittedHeight) * 0.5f,
+    fittedWidth, fittedHeight, 0.0f, 1.0f };
+  // The bars have to be painted every frame: nothing else in the pipeline
+  // writes those pixels, so whatever the last frame left there would stay.
+  const float black[4] = { 0.0f, 0.0f, 0.0f, 1.0f };
+  context->ClearRenderTargetView(g_backRTV, black);
+  context->RSSetViewports(1, &viewport);
+  context->RSSetState(g_raster);
+  context->OMSetBlendState(g_blendState, nullptr, 0xffffffff);
+  context->OMSetDepthStencilState(g_depthState, 0);
+  context->IASetInputLayout(nullptr);
+  context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+  context->VSSetShader(g_vs, nullptr, 0);
+  context->PSSetShader(g_ps, nullptr, 0);
+  context->PSSetConstantBuffers(0, 1, &g_cb);
+  context->PSSetSamplers(0, 1, &g_sampler);
+  // The hook behind this bind runs resolveIfMSAA on g_color, which is how the
+  // MSAA twin reaches the host we sample. Not a getContextProcs call.
+  context->PSSetShaderResources(0, 1, &g_colorSRV);
+  context->Draw(3, 0);
+
+  ID3D11ShaderResourceView* none = nullptr;
+  context->PSSetShaderResources(0, 1, &none);
+  context->Release();
+  if (device) device->Release();
+}
+
+// ARLAND_BACKBUFFER_REFRESH=0 turns the post-present repeat off; see
+// ssaaRefreshBackbuffer.
+bool backbufferRefreshEnabled() {
+  static const bool enabled = [] {
+    const char* value = std::getenv("ARLAND_BACKBUFFER_REFRESH");
+    return !value || value[0] != '0';
+  }();
+  return enabled;
+}
+
 }  // namespace
 
 bool ssaaRequested() {
@@ -402,14 +479,6 @@ void ssaaDownscale(IDXGISwapChain* swapChain) {
   if (!g_redirects.load(std::memory_order_relaxed))
     return;   // nothing of the frame is in our target; leave the backbuffer be
 
-  // Deliberately the hooked context: this pass relies on re-entering the proxy
-  // (see the PSSetShaderResources note below, and AGENTS.md).
-  ID3D11Device* device = nullptr;
-  ID3D11DeviceContext* context = nullptr;
-  g_color->GetDevice(&device);
-  if (device) device->GetImmediateContext(&context);
-  if (!context) { if (device) device->Release(); return; }
-
   // The rest of the picture, on the first downscaled frame, and unconditional:
   // "supersampling is on but the edges are still jagged" cannot be answered
   // from the lines above, because they only say the redirect happened. What
@@ -448,58 +517,42 @@ void ssaaDownscale(IDXGISwapChain* swapChain) {
           " that part rather than supersampling it.");
   }
 
-  DownscaleParams params;
-  params.texel[0] = 1.0f / float(g_renderWidth);
-  params.texel[1] = 1.0f / float(g_renderHeight);
-  params.ratio[0] = float(g_renderWidth) / float(g_displayWidth);
-  params.ratio[1] = float(g_renderHeight) / float(g_displayHeight);
-  params.samples = downscaleSamples();
-  D3D11_MAPPED_SUBRESOURCE mapped = {};
-  if (SUCCEEDED(context->Map(g_cb, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped))) {
-    std::memcpy(mapped.pData, &params, sizeof(params));
-    context->Unmap(g_cb, 0);
-  }
+  compositeToBackbuffer();
+}
 
-  // Bind the backbuffer first: that unbinds the render target the game left
-  // bound, which is the very texture we are about to sample.
-  context->OMSetRenderTargets(1, &g_backRTV, nullptr);
-
-  // Fit the rendered frame inside the backbuffer without changing its shape:
-  // the larger of the two scale factors would crop, so the smaller one is used
-  // and the remainder becomes bars. When the shapes match this is the whole
-  // backbuffer and the clear costs one fill of pixels nothing else writes.
-  const float scale = std::min(
-    float(g_displayWidth) / float(g_renderWidth),
-    float(g_displayHeight) / float(g_renderHeight));
-  const float fittedWidth = float(g_renderWidth) * scale;
-  const float fittedHeight = float(g_renderHeight) * scale;
-  const D3D11_VIEWPORT viewport = {
-    (float(g_displayWidth) - fittedWidth) * 0.5f,
-    (float(g_displayHeight) - fittedHeight) * 0.5f,
-    fittedWidth, fittedHeight, 0.0f, 1.0f };
-  // The bars have to be painted every frame: nothing else in the pipeline
-  // writes those pixels, so whatever the last frame left there would stay.
-  const float black[4] = { 0.0f, 0.0f, 0.0f, 1.0f };
-  context->ClearRenderTargetView(g_backRTV, black);
-  context->RSSetViewports(1, &viewport);
-  context->RSSetState(g_raster);
-  context->OMSetBlendState(g_blendState, nullptr, 0xffffffff);
-  context->OMSetDepthStencilState(g_depthState, 0);
-  context->IASetInputLayout(nullptr);
-  context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-  context->VSSetShader(g_vs, nullptr, 0);
-  context->PSSetShader(g_ps, nullptr, 0);
-  context->PSSetConstantBuffers(0, 1, &g_cb);
-  context->PSSetSamplers(0, 1, &g_sampler);
-  // The hook behind this bind runs resolveIfMSAA on g_color, which is how the
-  // MSAA twin reaches the host we sample. Not a getContextProcs call.
-  context->PSSetShaderResources(0, 1, &g_colorSRV);
-  context->Draw(3, 0);
-
-  ID3D11ShaderResourceView* none = nullptr;
-  context->PSSetShaderResources(0, 1, &none);
-  context->Release();
-  if (device) device->Release();
+// Repeat the composite into the buffer that came out of the present.
+//
+// Why this exists at all: without the mod these games render their frame
+// straight into the backbuffer, so from the moment the frame is drawn until the
+// next one begins, the backbuffer holds the finished picture. Under the
+// redirect it does not. The frame goes to g_color and the backbuffer is written
+// exactly once, by ssaaDownscale, INSIDE the Present hook -- so for the whole
+// rest of the frame it still holds the previously presented image.
+//
+// Anything that reads the backbuffer outside our hook therefore reads a stale
+// frame. That includes the Steam overlay's screenshot capture, which grabs the
+// backbuffer from its own Present hook: when Steam's hook sits outside ours it
+// runs before the downscale and captures the last presented image -- which
+// already has Steam's own overlay (the FPS counter, notification toasts) drawn
+// into it, because Steam drew it there a frame ago. That is the reported bug:
+// mod screenshots contain the overlay, unmodded ones do not.
+//
+// Repeating the pass after the present puts the current frame back in the
+// backbuffer for the rest of the frame, so a reader that arrives at any other
+// moment sees a finished, overlay-free picture. The write is discarded by the
+// next frame's downscale, which is the point: it exists for readers, not for
+// the display. One fullscreen pass at display resolution; ARLAND_BACKBUFFER_
+// REFRESH=0 turns it off for an A/B.
+void ssaaRefreshBackbuffer() {
+  if (!ssaaActive() || g_broken || !backbufferRefreshEnabled())
+    return;
+  if (!g_redirects.load(std::memory_order_relaxed))
+    return;   // the frame is going to the backbuffer already; nothing to redo
+  static std::atomic<bool> reported{false};
+  if (verboseLogging() && !reported.exchange(true, std::memory_order_relaxed))
+    log("SSAA: repeating the composite after each present so the backbuffer"
+        " holds the current frame for external readers (screenshot capture)");
+  compositeToBackbuffer();
 }
 
 }  // namespace atfix
