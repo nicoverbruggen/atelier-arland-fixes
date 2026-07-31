@@ -10,10 +10,6 @@
 
 - **New defaults: your screen's resolution, in a borderless window.** These apply only where nothing has been chosen. A resolution or window mode already set in your `arland-fix.ini` is read exactly as before and left alone, so nothing changes for an existing setup. What they fix is the starting point: a fresh installation ran at the games' own 1280x720 until you opened the launcher and picked something, so anyone who simply dropped the DLL in got a 720p image on a 1440p screen. Blank `DisplayWidth`/`DisplayHeight` now means your desktop's current resolution, not the highest your monitor could manage, and `Borderless` now defaults to on, so the window fills the monitor with nothing scaled. Both remain settings: `DisplayWidth=game` follows the game's own resolution as before, and `Borderless=false` restores exclusive fullscreen.
 
-- **The font-texture cache notices changes to that texture equally in every version.** When a game draws a character it has not loaded yet, it writes it into a shared texture and the mod has to discard its copy. Rorona watched the routine doing the writing, while Totori and Meruru watched a forwarding stub in front of it and could only see writes arriving through that stub. All six versions now watch the routine itself, which is what the earlier text-corruption fixes depend on.
-
-- **The log reports the font-texture cache correctly.** It described the cache as not applicable in every game except Rorona, even while it was running.
-
 ## v0.10
 
 ### Added
