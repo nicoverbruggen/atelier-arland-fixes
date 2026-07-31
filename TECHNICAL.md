@@ -170,7 +170,7 @@ Other frame-rate couplings exist outside the field map, in effect playback and, 
 
 ### TL;DR
 
-The games nominally support 1440p and 4K, but parts of their renderer remain fixed at 1080p, producing an enlarged target with only a smaller image inside it. The mod's own launcher offers the useful resolutions, and the mod scales the affected render targets, screen bounds, and dialogue blur so the games genuinely render at the selected resolution. This rendering layer also provides optional MSAA and sharper texture filtering.
+The games nominally support 1440p and 4K, but parts of their renderer remain fixed at 1080p, producing an enlarged target with only a smaller image inside it. Left alone the games open at their own default of 720p, so the mod presents at the desktop resolution unless told otherwise. Its launcher offers the useful resolutions, and the mod scales the affected render targets, screen bounds, and dialogue blur so the games genuinely render at the selected resolution. This rendering layer also provides optional MSAA and sharper texture filtering.
 
 ### Safety
 
@@ -446,7 +446,7 @@ Exclusive fullscreen makes these games slow to alt-tab and can interact poorly w
 
 ### Safety
 
-Off by default, in which case the game's own fullscreen setting is used exactly as it stands. The mod asks for a plain window before the swap chain is created, so there is no exclusive-fullscreen mode to wrestle with afterwards, and it never takes ownership of the display mode. Because both the engine and the window manager restyle the window on their own, the style is re-checked about once a second, and only re-applied when it actually differs; repeated attempts are capped, so a window that refuses the style cannot spin. When the reposition would have to reach across threads it is posted asynchronously, so it can never block on another thread's message loop.
+On by default, and turning it off hands the game's own fullscreen setting back exactly as it stands. The mod asks for a plain window before the swap chain is created, so there is no exclusive-fullscreen mode to wrestle with afterwards, and it never takes ownership of the display mode. Because both the engine and the window manager restyle the window on their own, the style is re-checked about once a second, and only re-applied when it actually differs; repeated attempts are capped, so a window that refuses the style cannot spin. When the reposition would have to reach across threads it is posted asynchronously, so it can never block on another thread's message loop.
 
 ### Details
 

@@ -25,9 +25,9 @@ The file sits beside the DLLs and is created on first launch. Close the game bef
 
 | `[Rendering]` | Values | Default | Override |
 | --- | --- | --- | --- |
-| `DisplayWidth` / `DisplayHeight` | Window and present size. Blank keeps whatever the game's own settings selected. | blank | |
+| `DisplayWidth` / `DisplayHeight` | Window and present size. Blank uses your desktop resolution. `DisplayWidth=game` keeps whatever the game's own settings selected. | blank | |
 | `RenderWidth` / `RenderHeight` | Internal render size. Larger than the display size is supersampling. Blank matches the display size. | blank | |
-| `Borderless` | `true` / `false` | `false` | `ARLAND_BORDERLESS` |
+| `Borderless` | `true` / `false` | `true` | `ARLAND_BORDERLESS` |
 | `SMAA` | `true` / `false` | `true` | `ARLAND_SMAA` |
 | `MSAA` | `1` (off), `2`, `4`, `8` | `1` | `ARLAND_MSAA` |
 | `Font` | `replaced`, `upscaled`, `original` | `replaced` | `ARLAND_UIFONT` |
@@ -50,7 +50,7 @@ Each resolution pair is all-or-nothing: if either half is blank or out of range,
 
 **`ShadowMultiplier=8` is not recommended.** Its cost in video memory is substantial and its stability over long sessions is still being validated. Prefer `2` or `4`.
 
-**Borderless wants a matching display resolution.** The window is sized to the monitor either way, so a smaller backbuffer is simply scaled up to fill it.
+**Borderless wants a matching display resolution.** The window is sized to the monitor either way, so a smaller backbuffer is simply scaled up to fill it. The defaults already line up: borderless is on and a blank display resolution is your desktop resolution, so the backbuffer matches the window and nothing is scaled. Setting a display resolution below your monitor's is what reintroduces the upscale.
 
 **`Font=replaced` is English-only.** The Japanese and Chinese builds are unaffected in every mode. A different font is bundled per game (National Park SemiBold for Rorona, Nunito Regular for Totori, Cosmetica Medium for Meruru), each embedded in the DLL; their licenses are in `licenses/`. Dropping a `arland-hires-font.ttf` beside the DLL overrides whichever one would be used. `ARLAND_HIRES_SCALE` and `ARLAND_HIRES_VOFF` nudge the replacement font's size and vertical position for quick tuning.
 

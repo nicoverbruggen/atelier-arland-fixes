@@ -12,7 +12,7 @@ The mod ships with a 64-bit `d3d11.dll` for the games, a 64-bit `arland-fix-laun
 
 ## How it works
 
-Everything above works out of the box with default settings by simply dropping `d3d11.dll` into your game folders. Anisotropic filtering is on by default too, since it costs nothing per frame. Optional, off-by-default enhancements (supersampling, MSAA, higher-resolution shadows, borderless windowed mode) are documented in [ADVANCED.md](ADVANCED.md).
+Everything above works out of the box with default settings by simply dropping `d3d11.dll` into your game folders. Anisotropic filtering is on by default too, since it costs nothing per frame, as is borderless windowed mode at your desktop resolution. Optional, off-by-default enhancements (supersampling, MSAA, higher-resolution shadows) are documented in [ADVANCED.md](ADVANCED.md).
 
 The mod is intended for the Steam versions of the games. See [TECHNICAL.md](TECHNICAL.md) for implementation details and tested executable fingerprints.
 
@@ -33,6 +33,7 @@ These are on by default.
 | High-resolution UI text                      | ✓      | ✓      | ✓      |
 | SMAA anti-aliasing                           | ✓      | ✓      | ✓      |
 | Correct behaviour at high refresh rates      | ✓      | ✓      | ✓      |
+| Borderless windowed at your desktop size     | ✓      | ✓      | ✓      |
 | Correct world-map analog cursor speed        | —      | ✓      | ✓      |
 | Item/save corruption and combat-crash guard  | —      | ✓      | —      |
 | Restored battle shadows while fighting       | ✓      | —      | —      |
@@ -52,7 +53,6 @@ These are optional improvements that are off by default and documented in [ADVAN
 | MSAA                                         | ✓      | ✓      | ✓      |
 | Anisotropic filtering                        | ✓      | ✓      | ✓      |
 | Shadow multiplier                            | ✓      | ✓      | ✓      |
-| Borderless windowed mode                     | ✓      | ✓      | ✓      |
 | Restored battle cut-in shadows               | ✓      | ✓      | ✓      |
 | Cut-in scene kept at full brightness         | ✓      | ✓      | ✓      |
 

@@ -256,14 +256,14 @@ const ComboItem kAnisoItems[] = {
 };
 
 // Base (display / backbuffer) resolutions. w == 0 means "Auto" (blank in the
-// ini, keeping the launcher's resolution). 16:9 is fine for these games.
+// ini, which presents at the desktop resolution). 16:9 is fine for these games.
 struct ResItem { const wchar_t* label; unsigned w, h; };
 const ResItem kBaseItems[] = {
-  { L"Auto (launcher resolution)", 0,    0    },
-  { L"1280 x 720",                 1280, 720  },
-  { L"1920 x 1080",                1920, 1080 },
-  { L"2560 x 1440",                2560, 1440 },
-  { L"3840 x 2160",                3840, 2160 },
+  { L"Auto",                      0,    0    },
+  { L"1280 x 720",                1280, 720  },
+  { L"1920 x 1080",               1920, 1080 },
+  { L"2560 x 1440",               2560, 1440 },
+  { L"3840 x 2160",               3840, 2160 },
 };
 const int kBaseCount = 5;
 
@@ -282,6 +282,26 @@ void displayMaximum(unsigned* w, unsigned* h) {
       *w = mode.dmPelsWidth;
       *h = mode.dmPelsHeight;
     }
+  }
+  if (!*w || !*h) {
+    const int cx = GetSystemMetrics(SM_CXSCREEN);
+    const int cy = GetSystemMetrics(SM_CYSCREEN);
+    if (cx > 0 && cy > 0) { *w = (unsigned)cx; *h = (unsigned)cy; }
+  }
+}
+
+// What the desktop is running at now, which is what Auto resolves to. Not
+// displayMaximum(): a panel that supports 4K but runs its desktop at 1440p
+// presents at 1440p, and offering the 4K it could theoretically do would be
+// promising a picture the screen is not showing.
+void displayCurrent(unsigned* w, unsigned* h) {
+  *w = 0;
+  *h = 0;
+  DEVMODEW mode = { };
+  mode.dmSize = sizeof(mode);
+  if (EnumDisplaySettingsW(nullptr, ENUM_CURRENT_SETTINGS, &mode)) {
+    *w = mode.dmPelsWidth;
+    *h = mode.dmPelsHeight;
   }
   if (!*w || !*h) {
     const int cx = GetSystemMetrics(SM_CXSCREEN);
@@ -445,8 +465,10 @@ int fontIndexFromRaw(const char* raw) {
 
 // ---- base resolution / supersampling ---------------------------------------
 
-// The currently selected base resolution. Returns false for "Auto" (no
-// concrete size), in which case supersampling cannot be computed.
+// The currently selected base resolution. Returns false for "Auto", which has
+// no concrete size of its own. This is what decides what gets written to
+// DisplayWidth/Height, so Auto must stay false here: resolving it would write
+// today's desktop size and turn the setting into a fixed one.
 bool selectedBase(unsigned* w, unsigned* h) {
   int sel = (int)SendMessageW(g_hBase, CB_GETCURSEL, 0, 0);
   if (sel < 0) return false;
@@ -456,6 +478,23 @@ bool selectedBase(unsigned* w, unsigned* h) {
   if (!bw || !bh) return false;   // Auto
   *w = bw; *h = bh;
   return true;
+}
+
+// The base supersampling is computed over. Same thing, except Auto resolves to
+// the desktop resolution, since that is what it will present at and multipliers
+// need something concrete. Only the render size is derived from this; the
+// display keys still go through selectedBase and stay blank for Auto.
+//
+// One consequence worth knowing: the render size is pinned when saved while the
+// display half stays dynamic, so changing the desktop resolution afterwards
+// leaves the ratio the user picked no longer holding until the launcher is
+// reopened. A RenderScale key computed at load time would avoid that; it is not
+// worth a new option until someone is actually bitten by it.
+bool supersamplingBase(unsigned* w, unsigned* h) {
+  if (selectedBase(w, h))
+    return true;
+  displayCurrent(w, h);
+  return *w && *h;
 }
 
 // The render resolution a multiplier produces over a base, and whether it is
@@ -518,7 +557,7 @@ bool g_ssReduced = false;
 void refillSupersampling() {
   const int wanted = ssIndex();
   unsigned bw = 0, bh = 0;
-  const bool haveBase = selectedBase(&bw, &bh);
+  const bool haveBase = supersamplingBase(&bw, &bh);
   SendMessageW(g_hSS, CB_RESETCONTENT, 0, 0);
   for (int i = 0; i < kSSCount; ++i) {
     if (i && haveBase && !withinRenderLimit(bw, bh, kSSItems[i].mult))
@@ -553,11 +592,11 @@ void refillSupersampling() {
 }
 
 // Compute the render resolution (base x multiplier) into out. Returns false
-// when there is nothing to render at (Auto base or Off).
+// when there is nothing to render at (Off, or no display size to resolve).
 bool computeRender(unsigned* rw, unsigned* rh) {
   unsigned bw, bh;
   double m = selectedMult();
-  if (m <= 1.0 || !selectedBase(&bw, &bh))
+  if (m <= 1.0 || !supersamplingBase(&bw, &bh))
     return false;
   renderFor(bw, bh, m, rw, rh);
   return true;
@@ -603,7 +642,7 @@ LRESULT CALLBACK TabProc(HWND, UINT, WPARAM, LPARAM, UINT_PTR, DWORD_PTR);
 
 void updateRenderResolution() {
   unsigned bw, bh;
-  bool haveBase = selectedBase(&bw, &bh);
+  bool haveBase = supersamplingBase(&bw, &bh);
   refillSupersampling();
   EnableWindow(g_hSS, haveBase);
   if (!haveBase)
@@ -616,7 +655,7 @@ void updateRenderResolution() {
   if (g_ssReduced)
     lstrcpyA(text, "Reduced to fit the 8K limit.");
   else if (!haveBase)
-    lstrcpyA(text, "Supersampling needs a fixed resolution above.");
+    lstrcpyA(text, "Supersampling needs a resolution to work from.");
   SetWindowTextA(g_hRendLbl, text);
   // The only label whose text changes while the window is up, so the only one
   // that has to clear what it said before.
@@ -658,13 +697,22 @@ void loadFromIni() {
   SendMessageW(g_hBase, CB_SETCURSEL, baseSel, 0);
 
   // Supersampling: infer the multiplier as RenderWidth / DisplayWidth and snap
-  // to the nearest listed factor. Blank render, or no concrete base, => Off.
+  // to the nearest listed factor. Blank render => Off. An Auto base divides by
+  // the desktop resolution, the same base it was saved against; without that a
+  // saved Auto + multiplier would read back as Off and the next save would
+  // clear the render keys, silently discarding the setting.
   char rw[16] = {};
   iniString("Rendering", "RenderWidth", rw, sizeof(rw));
   unsigned rendW = (unsigned)std::strtoul(rw, nullptr, 10);
+  unsigned ssBaseW = dispW;
+  if (!ssBaseW) {
+    unsigned curW = 0, curH = 0;
+    displayCurrent(&curW, &curH);
+    ssBaseW = curW;
+  }
   int ssSel = 0;   // Off
-  if (dispW && rendW > dispW) {
-    double ratio = (double)rendW / (double)dispW;
+  if (ssBaseW && rendW > ssBaseW) {
+    double ratio = (double)rendW / (double)ssBaseW;
     double best = 1e9;
     for (int i = 1; i < kSSCount; ++i) {
       double d = ratio - kSSItems[i].mult;
@@ -697,7 +745,7 @@ void loadFromIni() {
     iniBool("Rendering", "SMAA", true) ? BST_CHECKED : BST_UNCHECKED, 0);
 
   // Borderless wins when set; otherwise the game's own FullScreen decides.
-  const bool borderless = iniBool("Rendering", "Borderless", false);
+  const bool borderless = iniBool("Rendering", "Borderless", true);
   const bool fullscreen =
     GetPrivateProfileIntA("Window", "FullScreen", 0, g_settingsPath) != 0;
   SendMessageW(g_hWinMode, CB_SETCURSEL,
@@ -1759,13 +1807,24 @@ void createControls(HWND w) {
     g_hBase = mkCombo(w, 0, 0, 10, IDC_BASE);
     unsigned maxW = 0, maxH = 0;
     displayMaximum(&maxW, &maxH);
+    unsigned curW = 0, curH = 0;
+    displayCurrent(&curW, &curH);
     for (int i = 0; i < kBaseCount; ++i) {
       // Skip anything the display cannot show. Auto (0x0) always stays.
       if (maxW && maxH && kBaseItems[i].w &&
           (kBaseItems[i].w > maxW || kBaseItems[i].h > maxH))
         continue;
-      int idx = (int)SendMessageW(g_hBase, CB_ADDSTRING, 0,
-        (LPARAM)kBaseItems[i].label);
+      // Auto carries what it resolves to, for the same reason the supersampling
+      // list carries its render size: the answer belongs in the list being
+      // chosen from.
+      wchar_t label[96];
+      if (kBaseItems[i].w)
+        lstrcpynW(label, kBaseItems[i].label, 96);
+      else if (curW && curH)
+        wsprintfW(label, L"%s  (%u x %u)", kBaseItems[i].label, curW, curH);
+      else
+        wsprintfW(label, L"%s  (desktop resolution)", kBaseItems[i].label);
+      int idx = (int)SendMessageW(g_hBase, CB_ADDSTRING, 0, (LPARAM)label);
       SendMessageW(g_hBase, CB_SETITEMDATA, idx,
         packRes(kBaseItems[i].w, kBaseItems[i].h));
     }

@@ -172,11 +172,53 @@ static bool displayMaximum(UINT* width, UINT* height) {
   return true;
 }
 
-bool displayResolution(UINT* width, UINT* height) {
-  // Blank means the caller leaves the swap chain at the size the game itself
-  // requested, whatever its own settings selected.
-  if (!readResPair("DisplayWidth", "DisplayHeight", width, height))
+// The resolution the desktop is running at now. Deliberately not
+// displayMaximum(): a panel that supports 4K but runs its desktop at 1440p would
+// otherwise be handed 4K and have it scaled straight back down. Resolved once,
+// so the answer stays stable for the process.
+static bool displayCurrent(UINT* width, UINT* height) {
+  struct Current { UINT width; UINT height; };
+  static const Current current = [] {
+    DEVMODEA mode = { };
+    mode.dmSize = sizeof(mode);
+    if (EnumDisplaySettingsA(nullptr, ENUM_CURRENT_SETTINGS, &mode) &&
+        mode.dmPelsWidth && mode.dmPelsHeight)
+      return Current { mode.dmPelsWidth, mode.dmPelsHeight };
+    const int screenWidth = GetSystemMetrics(SM_CXSCREEN);
+    const int screenHeight = GetSystemMetrics(SM_CYSCREEN);
+    if (screenWidth > 0 && screenHeight > 0)
+      return Current { UINT(screenWidth), UINT(screenHeight) };
+    return Current { 0, 0 };
+  }();
+  if (!current.width || !current.height)
     return false;
+  *width = current.width;
+  *height = current.height;
+  return true;
+}
+
+// DisplayWidth=game asks for the pre-0.12 behaviour: leave the swap chain at
+// whatever the game's own settings selected. Only the width key is consulted,
+// since the pair is all-or-nothing anyway.
+static bool followGameResolution() {
+  const char* path = configPath();
+  if (!path)
+    return false;
+  char value[16] = { };
+  GetPrivateProfileStringA("Rendering", "DisplayWidth", "", value,
+    sizeof(value), path);
+  return !_stricmp(value, "game");
+}
+
+bool displayResolution(UINT* width, UINT* height) {
+  if (!readResPair("DisplayWidth", "DisplayHeight", width, height)) {
+    // Blank presents at the desktop resolution. The game's own default is 720p,
+    // so following it made a fresh install look far worse than the screen it is
+    // running on for anyone who never opened the launcher.
+    if (followGameResolution())
+      return false;
+    return displayCurrent(width, height);
+  }
 
   UINT maxWidth = 0;
   UINT maxHeight = 0;
@@ -421,7 +463,7 @@ bool borderlessWindow() {
     const char* env = std::getenv("ARLAND_BORDERLESS");
     if (env)
       return env[0] != '0';
-    return arlandConfigBool("Rendering", "Borderless", false);
+    return arlandConfigBool("Rendering", "Borderless", true);
   }();
   return enabled;
 }
