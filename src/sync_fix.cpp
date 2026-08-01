@@ -3395,9 +3395,6 @@ void STDMETHODCALLTYPE ID3D11DeviceContext_CopySubresourceRegion(
 
   if (dstShadow) {
     if (needsShadowCopy) {
-      ATFIX_RESOURCE_INFO srcInfo = { };
-      getResourceInfo(pSrcResource, &srcInfo);
-
       procs->CopySubresourceRegion(pContext,
         dstShadow,    DstSubresource, DstX, DstY, DstZ,
         pSrcResource, SrcSubresource, pSrcBox);
