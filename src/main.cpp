@@ -325,31 +325,123 @@ const char* moduleOwning(void* address, char (&name)[MAX_PATH]) {
   return name;
 }
 
+// The module a code address belongs to, for identity rather than for printing.
+// nullptr when the address is in memory no module owns, which is what a hooking
+// library's own allocated relays and trampolines look like.
+HMODULE moduleHandleOf(void* address) {
+  HMODULE module = nullptr;
+  if (!GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+        GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+        static_cast<LPCSTR>(address), &module))
+    return nullptr;
+  return module;
+}
+
+// Whether a range can be read without faulting. The addresses below are decoded
+// out of whatever bytes another process-wide hook happened to leave behind, so
+// nothing here may assume they point anywhere in particular.
+bool readable(const void* address, size_t bytes) {
+  MEMORY_BASIC_INFORMATION info = { };
+  if (!VirtualQuery(address, &info, sizeof(info)) || info.State != MEM_COMMIT)
+    return false;
+  if (info.Protect & (PAGE_NOACCESS | PAGE_GUARD))
+    return false;
+  const auto start = static_cast<const uint8_t*>(address);
+  const auto regionEnd = static_cast<const uint8_t*>(info.BaseAddress) +
+    info.RegionSize;
+  return start + bytes <= regionEnd;
+}
+
+// Follow a chain of unconditional jumps to the code that actually runs.
+//
+// Both hooks in play here work by overwriting the first bytes of the target
+// function with a jump, so "who runs first" is not a pointer comparison but a
+// question of where that jump lands. Several hops are followed because the
+// first one rarely lands on the detour itself: MinHook places a relay next to
+// the target when the detour is further than a rel32 can reach, and other
+// hooking libraries do the same, so a single hop lands in an anonymous
+// allocation that says nothing about who owns the hook.
+//
+// Only the forms these patches actually emit are decoded. Anything else ends
+// the walk and the address so far is returned -- this names a module in a log
+// line, so stopping early is a worse answer, never a wrong action.
+void* followJumps(void* address, int maxHops = 4) {
+  for (int hop = 0; hop < maxHops && address; ++hop) {
+    const auto code = static_cast<const uint8_t*>(address);
+    if (!readable(code, 16))
+      return address;
+    if (code[0] == 0xE9) {           // jmp rel32
+      int32_t displacement = 0;
+      std::memcpy(&displacement, code + 1, sizeof(displacement));
+      address = const_cast<uint8_t*>(code) + 5 + displacement;
+    } else if (code[0] == 0xEB) {    // jmp rel8
+      address = const_cast<uint8_t*>(code) + 2 + int8_t(code[1]);
+    } else if ((code[0] == 0xFF && code[1] == 0x25) ||
+               (code[0] == 0x48 && code[1] == 0xFF && code[2] == 0x25)) {
+      // jmp qword [rip+disp32], with or without the redundant REX.W. The slot
+      // it reads through is data, so it is bounds-checked separately.
+      const int prefix = code[0] == 0x48 ? 1 : 0;
+      int32_t displacement = 0;
+      std::memcpy(&displacement, code + prefix + 2, sizeof(displacement));
+      const void** slot = reinterpret_cast<const void**>(
+        const_cast<uint8_t*>(code) + prefix + 6 + displacement);
+      if (!readable(slot, sizeof(*slot)))
+        return address;
+      address = const_cast<void*>(*slot);
+    } else if (code[0] == 0x48 && code[1] == 0xB8 &&
+               code[10] == 0xFF && code[11] == 0xE0) {
+      // mov rax, imm64 ; jmp rax -- the absolute form, used where a relay
+      // cannot be placed within rel32 range of the target.
+      void* destination = nullptr;
+      std::memcpy(&destination, code + 2, sizeof(destination));
+      address = destination;
+    } else {
+      return address;              // not a jump: this is the code that runs
+    }
+  }
+  return address;
+}
+
 // Who else is on this swap chain's Present, and are they inside or outside us.
 //
-// The Steam overlay hooks Present too, and what a Steam screenshot contains
-// depends on which of the two hooks runs first: whoever captures the backbuffer
-// before our composite writes it gets the PREVIOUS frame, overlay included.
-// ssaaRefreshBackbuffer makes that harmless, but the log line is what says
-// whether the ordering is the one being reasoned about, on a machine nobody
-// here can reproduce on. Verbose only; called once, a couple of seconds in, so
-// a lazily-installed overlay hook has had time to appear.
+// The Steam overlay hooks Present too, and the ordering decides both what a
+// Steam screenshot contains and whether its overlay is visible at all: our
+// composite clears the backbuffer and paints the frame over it, so an overlay
+// drawn before we run is erased, while one drawn after survives.
+//
+// Neither hook is visible in the vtable. MinHook and the overlay both patch the
+// first bytes of the function the slot points at, and whoever patches LAST runs
+// first -- the overlay installs itself lazily, on an early Present, which is
+// after we hook the swap chain the game just created. So the question is
+// answered by decoding the prologue and seeing whose code that jump reaches:
+// ours means nothing has been installed over us, a foreign module means that
+// module's Present runs before ours and its drawing is what we erase. The slot
+// is still compared as well, for a hook that does replace it.
+//
+// Verbose only; called once, a couple of seconds in, so a lazily-installed
+// overlay hook has had time to appear.
 void reportPresentHookNeighbours(IDXGISwapChain* swapChain) {
   if (!atfix::verboseLogging() || !swapChain || !hookedPresentTarget)
     return;
   void** vtable = *reinterpret_cast<void***>(swapChain);
   void* slot = vtable[8];
-  // We detour the function the slot pointed at when we hooked, so we run first
-  // -- unless someone REPLACED the slot afterwards, which puts their function
-  // in front of ours. Which is which decides what a Steam screenshot contains.
-  const bool first = slot == hookedPresentTarget;
-  char hookedName[MAX_PATH];
+  void* entered = followJumps(slot);
+  const HMODULE ours = moduleHandleOf(reinterpret_cast<void*>(&tracedPresent));
+  const HMODULE entryOwner = moduleHandleOf(entered);
+  // Landing anywhere but our own module means somebody is in front of us: an
+  // unowned allocation is a hooking library's relay, and it is not ours or the
+  // walk would have reached this DLL.
+  const bool first = entryOwner && entryOwner == ours;
   char slotName[MAX_PATH];
-  log("Present chain: hooked ", hookedPresentTarget, " in ",
-      moduleOwning(hookedPresentTarget, hookedName), ", slot now ", slot,
-      " in ", moduleOwning(slot, slotName), first
-        ? " -- ours runs first"
-        : " -- that module's Present runs before ours");
+  char enteredName[MAX_PATH];
+  log("Present chain: slot ", slot, " in ",
+      moduleOwning(slot, slotName),
+      slot == hookedPresentTarget ? "" : " (REPLACED since we hooked)",
+      ", entered code at ", entered, " in ",
+      moduleOwning(entered, enteredName), first
+        ? " -- ours runs first, so an overlay drawing after us survives"
+        : " -- that code runs before ours, so our composite erases whatever"
+          " it drew into the backbuffer");
 }
 
 void hookSwapChain(IDXGISwapChain* swapChain) {
