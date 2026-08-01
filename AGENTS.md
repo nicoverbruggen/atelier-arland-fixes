@@ -32,30 +32,17 @@ The current tree contains:
 - `BUILDING.md` contains the build instructions.
 - `TECHNICAL.md` documents implementation details, evidence, and provenance.
 
-Keep the root minimal. Build output belongs below ignored `builds/` and must not be committed.
+Keep the root minimal. Packaged build output belongs below ignored `out/` and must not be committed. The day-to-day Linux build script uses `build64/` and `build32/` as intermediate Meson trees before packaging the distributable archive into `out/`.
 
 ## Build
 
-Windows:
-
-```powershell
-meson setup builds/release-x64 --buildtype release
-meson compile -C builds/release-x64
-# Run from an x86 Native Tools shell:
-meson setup builds/release-x86 --buildtype release
-meson compile -C builds/release-x86
-```
-
-Linux cross-build:
+Use the repository's day-to-day Linux cross-build script from the repository root:
 
 ```sh
-meson setup builds/release-x64 --cross-file build-win64.txt --buildtype release
-ninja -C builds/release-x64
-meson setup builds/release-x86 --cross-file build-win32.txt --buildtype release
-ninja -C builds/release-x86
+./scripts/build_linux.sh
 ```
 
-The expected outputs are `builds/release-x64/d3d11.dll` and `builds/release-x86/msimg32.dll`. Verify that the game DLL exports `D3D11CreateDevice` at ordinal 22 and `D3D11CreateDeviceAndSwapChain` at ordinal 23, and that the launcher DLL exports `AlphaBlend` and `TransparentBlt`.
+It compiles the intermediate binaries as `build64/d3d11.dll`, `build64/arland-fix-launcher.exe`, and `build32/msimg32.dll`, then packages the distributable archive as `out/arland-fix-<VERSION>.zip`. For native Windows and manual Meson commands, follow `BUILDING.md`. Verify that the game DLL exports `D3D11CreateDevice` at ordinal 22 and `D3D11CreateDeviceAndSwapChain` at ordinal 23, and that the launcher DLL exports `AlphaBlend` and `TransparentBlt`.
 
 ## Implementation rules
 
