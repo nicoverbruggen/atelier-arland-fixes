@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.12
+
+### Fixed
+
+- **Fixed Atelier Totori DX crashing when leaving a shop.** The shop could process an input update before it had selected a valid row and write just outside its item list, corrupting memory. Depending on the heap layout, the game then crashed either during shop cleanup or a few seconds later in seemingly unrelated work. The invalid write is now prevented while normal buying, selling and shop behavior remain unchanged.
+
+- **Fixed a timing-dependent Atelier Totori DX crash when using bombs and other combat items.** The crash could happen while the battle camera was moving, sometimes before the item animation even began, and became more likely after several encounters. Totori queued temporary index and vertex stream state for its render worker without keeping that state alive until the worker used it, so effect or camera cleanup could leave the renderer with freed memory. Queued stream state is now retained until rendering has finished with it. This is separate from the malformed-item protection added previously: valid items and healthy saves could trigger this renderer-lifetime bug.
+
 ## v0.11
 
 ### Fixed

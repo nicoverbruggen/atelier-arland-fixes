@@ -70,6 +70,7 @@ else
     'src/field_physics.cpp',
     'src/worldmap_fix.cpp',
     'src/item_guard.cpp',
+    'src/stream_lifetime_fix.cpp',
     'src/shop_fix.cpp',
     'src/supersample.cpp',
     'src/font_hires.cpp',
