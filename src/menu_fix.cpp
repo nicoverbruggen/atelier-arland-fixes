@@ -31,7 +31,7 @@
 namespace atfix {
 extern Log log;
 bool arlandInCinematicBattle();   // defined later in this TU
-bool arlandConfigBool(const char* section, const char* key, bool def);  // sync_fix.cpp
+bool arlandConfigBool(const char* section, const char* key, bool def);  // config.cpp
 bool atlasReconcileEnabled();   // sync_fix.cpp
 uint64_t atlasWriteMapCount();  // sync_fix.cpp
 // Shared with battle_shadow_restore.cpp (declared in menu_internal.h).

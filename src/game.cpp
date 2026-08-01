@@ -9,7 +9,7 @@
 
 namespace atfix {
 
-// Defined in sync_fix.cpp: reads an ini bool and seeds the default key when it
+// Defined in config.cpp: reads an ini bool and seeds the default key when it
 // is absent (so the option is discoverable in arland-fix.ini).
 bool arlandConfigBool(const char* section, const char* key, bool def);
 

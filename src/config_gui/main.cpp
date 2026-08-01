@@ -437,8 +437,8 @@ void comboFill(HWND combo, const ComboItem* items, int count) {
     SendMessageW(combo, CB_ADDSTRING, 0, (LPARAM)items[i].label);
 }
 
-// Select the entry whose ini value matches raw (case-insensitive prefix so the
-// mod's aliases like "off" -> original and "upscale..." -> upscaled resolve).
+// Select the entry whose ini value exactly matches raw, ignoring case. Font
+// aliases are handled separately by fontIndexFromRaw.
 void comboSelectByValue(HWND combo, const ComboItem* items, int count,
                         const char* raw, int fallback) {
   int pick = fallback;
@@ -602,9 +602,6 @@ bool computeRender(unsigned* rw, unsigned* rh) {
   return true;
 }
 
-// Refresh the live render-resolution label and the enabled state of the
-// supersampling dropdown. Supersampling needs a concrete base to compute
-// against, so it is greyed out and forced to Off while the base is "Auto".
 // Push a preset's values into the quality controls.
 void applyPreset(int index) {
   if (index < 0 || index >= kPresetCustom)
@@ -861,8 +858,9 @@ void saveToIni() {
     WritePrivateProfileStringA("Rendering", "DisplayHeight", "", g_iniPath);
   }
 
-  // Supersampling -> RenderWidth/RenderHeight = base x multiplier (clamped to
-  // 16384). "Off", or an Auto base, writes them blank.
+  // Supersampling -> RenderWidth/RenderHeight = the selected display or desktop
+  // base x multiplier. The dropdown already omits results above 7680x4320;
+  // "Off" writes the render dimensions blank.
   unsigned rw, rh;
   if (computeRender(&rw, &rh)) {
     wsprintfA(num, "%u", rw);
