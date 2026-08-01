@@ -328,7 +328,7 @@ The shadow pipeline is then redirected onto the twins at four points, each inert
 - the engine's A→B shadow-map transfer is mirrored as an equal-sized copy between the twins;
 - the receiver's shadow-map SRV bind is substituted with the twin's SRV, with a pointer-keyed negative cache so the hot bind path stays cheap.
 
-Two size assumptions still need correcting, because the engine sizes everything from its own 1024 metadata. Exact 1024×1024 viewport and scissor state is rewritten to the twin's dimensions during the redirected caster pass. And the receiver material's PCF tap size, which encodes the shadow texel size in the same 880-byte constant buffer the cut-in fix patches, is rescaled so filtering matches the enlarged map. At `ShadowMultiplier=1` none of this machinery activates and the shadow pipeline is untouched.
+Two additional size assumptions require correction, because the engine sizes everything from its own 1024 metadata. Exact 1024×1024 viewport and scissor state is rewritten to the twin's dimensions during the redirected caster pass. And the receiver material's PCF tap size, which encodes the shadow texel size in the same 880-byte constant buffer the cut-in fix patches, is rescaled so filtering matches the enlarged map. At `ShadowMultiplier=1` none of this machinery activates and the shadow pipeline is untouched.
 
 ## Meruru conversation text-render cache
 
@@ -548,7 +548,7 @@ The Rorona battle-shadow restoration is likewise dual-fingerprinted: all ten hoo
 
 Totori's battle addresses are mapped for both builds. Its multilingual vtables (the 22 battle states, the BtlChara family, `Chara`/`CharaBase`, the two Event executors, and the battle game mode) were resolved from MSVC RTTI complete-object locators, and its tactical-scene `hideAll`/`showAll` were homologue-matched from the English build on prologue plus a displacement-masked body comparison. Both methods were validated by reproducing already-verified values before being applied: the RTTI locator reproduces Totori's English tables exactly, and the homologue matcher reproduces Rorona's multilingual `hideAll`/`showAll` exactly. Within each group the multilingual vtables sit at a constant offset from their English homologues, and the battle game mode's constructor and destructor carry byte-identical prologues. The battle gate and the state names were then confirmed at runtime on the multilingual build. Totori does not use the `ShadowHelperInit` publish/re-entry gate on that build: the game-mode constructor and destructor already bracket each battle, and with no scene-manager helper slot mapped there is no published helper to restore.
 
-English-only diagnostics (deep menu statistics and the shadow layer/constructor traces) remain gated to the English builds, whose RVAs are the only ones mapped for them.
+The optional deep-menu statistics remain gated to Rorona's English build, whose diagnostic-only layout and record RVAs are the only ones mapped.
 
 Per-game availability and defaults are centralized in a capability matrix (`src/game.cpp`): the running title is detected from the executable name independently of the menu hooks, and each feature resolves through the matrix (unsupported titles are hard-off regardless of configuration) before consulting its environment override and `arland-fix.ini` key. The matrix is the source of truth mirrored by the feature tables in the README.
 
