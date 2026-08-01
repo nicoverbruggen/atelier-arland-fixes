@@ -55,7 +55,6 @@ enum : int {
   IDC_TABS,
   IDC_WINMODE,
   IDC_LANG,
-  IDC_BSHADOW,
   IDC_BCUTINSHADOW,
   IDC_BCUTINDIM,
   IDC_SKIPLAUNCHER,  // start the game from Steam without stopping here
@@ -130,7 +129,7 @@ const wchar_t* const kRepositoryUrl =
   L"https://github.com/nicoverbruggen/atelier-arland-fixes";
 HWND g_hPreset, g_hWinMode, g_hLang,
      g_hFont, g_hBase, g_hSS, g_hRendLbl, g_hMsaa, g_hShadow,
-     g_hAniso, g_hSmaa, g_hBShadow, g_hBCutInShadow, g_hBCutInDim,
+     g_hAniso, g_hSmaa, g_hBCutInShadow, g_hBCutInDim,
      g_hSkipLauncher, g_hVerbose;
 
 HFONT g_uiFont = nullptr;
@@ -759,10 +758,7 @@ void loadFromIni() {
     SendMessageW(g_hLang, CB_SETCURSEL, sel, 0);
   }
 
-  // [Battle]: defaults match src/game.cpp (shadows on, cut-in shadows on,
-  // cut-in dimming off).
-  SendMessageW(g_hBShadow, BM_SETCHECK,
-    iniBool("Battle", "BattleShadows", true) ? BST_CHECKED : BST_UNCHECKED, 0);
+  // [Battle]: cut-in defaults match src/game.cpp (shadows on, dimming off).
   SendMessageW(g_hBCutInShadow, BM_SETCHECK,
     iniBool("Battle", "BattleCutInShadows", true) ? BST_CHECKED : BST_UNCHECKED, 0);
   SendMessageW(g_hBCutInDim, BM_SETCHECK,
@@ -817,9 +813,8 @@ void resetToDefaults() {
   SendMessageW(g_hAniso, CB_SETCURSEL, 3, 0);     // 8x, the shipped default
   SendMessageW(g_hShadow, CB_SETCURSEL, 0, 0);    // 1024 map
   SendMessageW(g_hSmaa, BM_SETCHECK, BST_CHECKED, 0);
-  SendMessageW(g_hBShadow, BM_SETCHECK, BST_CHECKED, 0);
-  SendMessageW(g_hBCutInShadow, BM_SETCHECK, BST_UNCHECKED, 0);
-  SendMessageW(g_hBCutInDim, BM_SETCHECK, BST_CHECKED, 0);
+  SendMessageW(g_hBCutInShadow, BM_SETCHECK, BST_CHECKED, 0);
+  SendMessageW(g_hBCutInDim, BM_SETCHECK, BST_UNCHECKED, 0);
   SendMessageW(g_hSkipLauncher, BM_SETCHECK, BST_UNCHECKED, 0);
   SendMessageW(g_hVerbose, BM_SETCHECK, BST_UNCHECKED, 0);
   SendMessageW(g_hDebugView, CB_SETCURSEL, 0, 0);
@@ -891,7 +886,6 @@ void saveToIni() {
   WritePrivateProfileStringA("Lang", "Language",
     comboValue(g_hLang, kLangItems, kLangCount), g_settingsPath);
 
-  iniWriteBool("Battle", "BattleShadows", isChecked(g_hBShadow));
   iniWriteBool("Battle", "BattleCutInShadows", isChecked(g_hBCutInShadow));
   iniWriteBool("Battle", "BattleCutInDimming", isChecked(g_hBCutInDim));
 
@@ -921,7 +915,7 @@ void saveToIni() {
 // changing a setting back to its old value correctly counts as unchanged.
 struct UiState {
   int font, base, ss, msaa, shadow, aniso, winMode, lang;
-  int smaa, battleShadows, cutInShadows, cutInDimming, skipLauncher, verbose;
+  int smaa, cutInShadows, cutInDimming, skipLauncher, verbose;
 };
 UiState g_savedState;
 
@@ -936,7 +930,6 @@ UiState currentState() {
   s.winMode = (int)SendMessageW(g_hWinMode, CB_GETCURSEL, 0, 0);
   s.lang = (int)SendMessageW(g_hLang, CB_GETCURSEL, 0, 0);
   s.smaa = isChecked(g_hSmaa);
-  s.battleShadows = isChecked(g_hBShadow);
   s.cutInShadows = isChecked(g_hBCutInShadow);
   s.cutInDimming = isChecked(g_hBCutInDim);
   s.skipLauncher = isChecked(g_hSkipLauncher);
@@ -1924,14 +1917,10 @@ void createControls(HWND w) {
       L"two executables starts.");
 
     page.heading(L"Battle");
-    g_hBShadow = mkCheck(w, L"Character shadows in battle", 0, 0, 10,
-      IDC_BSHADOW);
-    page.checkRow(g_hBShadow,
-      L"Restores the shadows Rorona is missing while fighting.");
     g_hBCutInShadow = mkCheck(w, L"Ground shadows during cut-ins", 0, 0, 10,
       IDC_BCUTINSHADOW);
     page.checkRow(g_hBCutInShadow,
-      L"Off by default; the vanilla cut-ins have no shadows.");
+      L"Restores ground shadows during close-up attack cameras.");
     g_hBCutInDim = mkCheck(w, L"Dim the scene during cut-ins", 0, 0, 10,
       IDC_BCUTINDIM);
     page.checkRow(g_hBCutInDim,

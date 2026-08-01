@@ -14,6 +14,8 @@
 
 - **The upgraded battle cut-ins are now on by default for new installations.** Both restorations shipped off while they were being playtested; they are now on by default, so the close-up attack cameras cast ground shadows and are no longer dimmed. Neither touches an existing choice: a `BattleCutInShadows` or `BattleCutInDimming` line already in your `arland-fix.ini` is read as before. To go back to the vanilla close-ups, set `BattleCutInShadows=false` and `BattleCutInDimming=true`, or untick the two boxes in the launcher.
 
+- **Rorona's restored ordinary-battle shadows are now treated as a standard bug fix.** Rorona alone is missing character and enemy shadows in the normal battle view; Totori and Meruru already render them. The separate launcher checkbox has therefore been removed and the restoration remains enabled by default. This is distinct from the cut-in upgrades above, which apply to all three games and remain configurable. A manually edited `BattleShadows` setting is still honored for troubleshooting.
+
 ## v0.11
 
 ### Fixed

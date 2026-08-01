@@ -18,7 +18,7 @@ The mod is intended for the Steam versions of the games. See [TECHNICAL.md](TECH
 
 ## What is included
 
-The tables below tracks which enhancements have been validated in each game; the details are in the sections that follow. A ✓ marks a feature confirmed working in that game.
+The tables below track which enhancements have been validated in each game; the details are in the sections that follow. A ✓ marks a feature confirmed working in that game.
 
 ### Bug fixes and basic enhancements
 
@@ -35,11 +35,11 @@ These are on by default.
 | Correct behaviour at high refresh rates      | ✓      | ✓      | ✓      |
 | Borderless windowed at your desktop size     | ✓      | ✓      | ✓      |
 | Correct world-map analog cursor speed        | —      | ✓      | ✓      |
-| Item/save corruption and combat-crash guard  | —      | ✓      | —      |
-| Restored battle shadows while fighting       | ✓      | —      | —      |
-| Conversation slowdown fix                    | —      | —      | ✓      |
+| Various game-specific bug fixes              | ✓      | ✓      | ✓      |
 
 ✓ fixed, enabled by default · — not needed or not applicable
+
+Each game also receives fixes specific to its port. Rorona restores the character and enemy shadows missing from ordinary battles. Totori prevents malformed item and save data from corrupting memory, fixes the crash when leaving shops, and fixes the timing-dependent renderer crash around bombs and other combat items. Meruru avoids repeatedly rendering unchanged text during animated bust-up conversations, preventing their severe slowdown.
 
 The battle cut-in shadow and brightness restorations are on by default: close-up attack cameras keep their ground shadows and stay at full brightness. Set `BattleCutInShadows=false` / `BattleCutInDimming=true` in `arland-fix.ini` if you prefer the vanilla darkened, shadowless ones.
 
