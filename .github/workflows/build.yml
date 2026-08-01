@@ -42,6 +42,8 @@ jobs:
       - name: Check the launcher manifest is well-formed XML
         run: python -c "import xml.dom.minidom; xml.dom.minidom.parse('src/config_gui/arland-fix-launcher.manifest')"
       - run: meson compile -C build64
+      - name: Check d3d11 proxy exports
+        run: python scripts/check_exports.py build64/d3d11.dll
       - uses: actions/upload-artifact@v7
         with:
           name: d3d11
@@ -62,6 +64,8 @@ jobs:
           arch: x86
       - run: meson setup build32 --buildtype release -Db_vscrt=static_from_buildtype
       - run: meson compile -C build32
+      - name: Check msimg32 proxy exports
+        run: python scripts/check_exports.py build32/msimg32.dll
       - uses: actions/upload-artifact@v7
         with:
           name: msimg32

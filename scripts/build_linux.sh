@@ -61,6 +61,9 @@ for artifact in build64/d3d11.dll build64/arland-fix-launcher.exe build32/msimg3
 done
 [[ $status -eq 0 ]] || exit "$status"
 
+python3 "$repo/scripts/check_exports.py" \
+  "$repo/build64/d3d11.dll" "$repo/build32/msimg32.dll"
+
 # Package the same archive the release workflow does, so what gets tested by
 # hand locally has the same shape as what users download: same file names, same
 # layout, documentation and licences in the same subfolder. Only the version in

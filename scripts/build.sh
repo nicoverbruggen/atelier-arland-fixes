@@ -35,5 +35,13 @@ for artifact in "${expected[@]}"; do
   fi
 done
 
+if [[ $status -eq 0 ]]; then
+  if [[ "$arch" == "x64" ]]; then
+    python scripts/check_exports.py "$builddir/d3d11.dll"
+  else
+    python scripts/check_exports.py "$builddir/msimg32.dll"
+  fi
+fi
+
 echo "Built ${arch} into ${builddir}/."
 exit "$status"
