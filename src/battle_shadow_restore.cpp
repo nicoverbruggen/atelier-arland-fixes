@@ -100,7 +100,8 @@ std::atomic<uintptr_t> g_lastSceneHelper{0};
 // gate: it also enables Meruru's cinematic battle-state detection
 // (installMeruruBattleStateHook depends on it), which the cut-in shadow fix needs.
 // Per-game ordinary-combat caster restoration is gated separately by
-// g_battleAddrs->casterRestore (Rorona only today; Totori is planned, see TODO).
+// g_battleAddrs->casterRestore (Rorona only; Totori and Meruru cast natively
+// and use this subsystem only for battle tracking and cut-in protection).
 bool battleShadowRestoreEnabled() {
   static const bool enabled = [] {
     if (const char* value = std::getenv("ARLAND_BATTLE_SHADOWS"))
@@ -379,8 +380,8 @@ const BattleStateEntry kBattleStatesMeruruMulti[] = {
 // Totori (A12V EN) battle states via the same RTTI locator method. 22 states:
 // no SelectDefence, and the result chain is renamed (Result/AddPay/DropItem/
 // LvUp instead of ResultStart/ResultCountExp/ResultDropItem/ResultLevelUp);
-// isCinematicState carries the Totori spellings. Multilingual RVAs not yet
-// matched.
+// isCinematicState carries the Totori spellings. The corresponding multilingual
+// table follows below.
 const BattleStateEntry kBattleStatesTotoriEn[] = {
   {0x6daeb0, "Enter"}, {0x6db310, "StartWait"}, {0x6daf50, "SelectCommand"},
   {0x6db040, "SelectTarget"}, {0x6dafa0, "SelectSkill"},
@@ -1081,12 +1082,11 @@ bool installRoronaBattleShadowRestore(BYTE* base, const Game& game) {
 // observer, whose battle/field call sites (battlePublishRet/fieldReentryRet)
 // flip g_battleActive and seed g_battleGameMode for the per-frame state scan.
 // The hooked prologue is byte-identical across Rorona EN, both Meruru builds,
-// and Totori EN; the RVAs are per-build (Meruru EN 0x17b540, Meruru
-// multilingual 0x168b20, Totori EN 0x1a8930), each confirmed as the target of
-// the two known call sites. Totori reuses the identical mechanism — its
+// and both Totori builds; the RVAs are per-build (Meruru EN 0x17b540, Meruru
+// multilingual 0x168b20, Totori EN 0x1a8930, Totori multilingual 0x3c4e40),
+// each confirmed as the target of the two known call sites. Totori reuses the identical mechanism — its
 // fighting shadows are natively healthy (2026-07-23 probe), so like Meruru it
-// only needs the state tracking for the cut-in patches. Totori's multilingual
-// helper-init RVA is not yet matched, so that build stays uninstalled.
+// only needs the state tracking for the cut-in patches.
 // Tactical-scene hooks (see the caster-clear block above). Installed only when
 // a cut-in hold is enabled — they exist to protect it from stray shadows.
 // hideAll's prologue is byte-identical across all five battle-capable builds;
@@ -1137,12 +1137,10 @@ bool installTacticalSceneHooks(BYTE* base, const Game& game) {
   g_tacticalHooksActive.store(true, std::memory_order_release);
   // Per-actor deferred-hide front-run: fixes the mid-cut-in stray shadow of a
   // battler hidden during the close-up (see tracedDeferredHideArm — force-
-  // expiry, engine-native, zero manual node writes). Validated in Rorona and
-  // Meruru. Totori was wired up on 2026-07-26 once its arm was found and is NOT
-  // yet validated in game: it is on so the next playtest exercises it, and
-  // ARLAND_CUTIN_ACTOR_CLEAR=0 is the kill switch for an A/B. On Totori the
-  // expected change is that a hidden battler's shadow goes at fade start rather
-  // than fade end, which is what removes the pop where the shadow held full
+  // expiry, engine-native, zero manual node writes). Validated in Rorona,
+  // Meruru, and both Totori builds; ARLAND_CUTIN_ACTOR_CLEAR=0 remains the kill
+  // switch for an A/B. On Totori a hidden battler's shadow now goes at fade
+  // start rather than fade end, removing the pop where the shadow held full
   // strength while the character faded.
   static const bool actorClearEnabled = [] {
     const char* value = std::getenv("ARLAND_CUTIN_ACTOR_CLEAR");
