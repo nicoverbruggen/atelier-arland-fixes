@@ -44,6 +44,10 @@ Use the repository's day-to-day Linux cross-build script from the repository roo
 
 It compiles the intermediate binaries as `build64/d3d11.dll`, `build64/arland-fix-launcher.exe`, and `build32/msimg32.dll`, verifies their required proxy exports through `scripts/check_exports.py`, then packages the distributable archive as `out/arland-fix-<VERSION>.zip`. For native Windows and manual Meson commands, follow `BUILDING.md`. The export check requires `D3D11CreateDevice` at ordinal 22 and `D3D11CreateDeviceAndSwapChain` at ordinal 23 in the game DLL, and `AlphaBlend` plus `TransparentBlt` in the launcher proxy.
 
+## Validation
+
+After making changes, run the relevant validation scripts, including `scripts/check_default_ini.py`, `scripts/check_launcher_contract.py`, and `scripts/check_core_contract.py`; `scripts/build_linux.sh` runs these checks after a successful build. When a contract check fails, determine whether the change intentionally altered the contract. If it did, update the contract check and its accompanying documentation as needed. If it did not, treat the failure as a possible regression and investigate it rather than weakening or bypassing the check.
+
 ## Implementation rules
 
 - Preserve exact executable-name, `.text`-size, and prologue gating for game-code hooks.
