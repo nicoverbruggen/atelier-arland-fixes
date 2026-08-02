@@ -735,7 +735,7 @@ void loadFromIni() {
   iniString("Rendering", "ShadowMultiplier", buf, sizeof(buf));
   comboSelectByValue(g_hShadow, kShadowItems, 4, buf[0] ? buf : "1", 0);
   iniString("Rendering", "AnisotropicFiltering", buf, sizeof(buf));
-  comboSelectByValue(g_hAniso, kAnisoItems, 5, buf[0] ? buf : "8", 0);
+  comboSelectByValue(g_hAniso, kAnisoItems, 5, buf[0] ? buf : "16", 0);
 
   // SMAA is on by default.
   SendMessageW(g_hSmaa, BM_SETCHECK,

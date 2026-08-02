@@ -2292,8 +2292,13 @@ HRESULT STDMETHODCALLTYPE ID3D11Device_CreatePixelShader(
     BytecodeLength, pClassLinkage, ppPixelShader);
 }
 
-// Anisotropic filtering. Opt-in: `[Rendering] AnisotropicFiltering` accepts a
-// maximum-anisotropy value (2/4/8/16); any other value or absent = off.
+// Anisotropic filtering. `[Rendering] AnisotropicFiltering` accepts a
+// maximum-anisotropy value (2/4/8/16); absent = 16, any other value = off.
+//
+// The default was 8x and is now 16x. On any GPU that runs these ports the two
+// are not measurably different, while either is visibly better than the
+// trilinear filtering the games ask for -- so there was no trade-off being
+// preserved by the lower number, only a smaller improvement.
 // ARLAND_ANISO overrides. Applied by upgrading the game's basic linear samplers
 // at creation, so all world/character/ground textures get sharper filtering at
 // oblique angles with no per-draw cost. Comparison/minimum/maximum filters
@@ -2306,7 +2311,7 @@ UINT anisotropyLevel() {
     if (len && len < sizeof(value))
       v = std::strtoul(value, nullptr, 10);
     else
-      v = GetPrivateProfileIntA("Rendering", "AnisotropicFiltering", 8,
+      v = GetPrivateProfileIntA("Rendering", "AnisotropicFiltering", 16,
         configPath() ? configPath() : "");
     if (v == 2 || v == 4 || v == 8 || v == 16)
       return UINT(v);
