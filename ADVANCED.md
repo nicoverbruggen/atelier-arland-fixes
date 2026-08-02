@@ -32,7 +32,7 @@ The file sits beside the DLLs and is created on first launch. Close the game bef
 | `MSAA` | `1` (off), `2`, `4`, `8` | `1` | `ARLAND_MSAA` |
 | `Font` | `replaced`, `upscaled`, `original` | `replaced` | `ARLAND_UIFONT` |
 | `ShadowMultiplier` | `1` (off), `2`, `4`, `8` | `1` | `ARLAND_SHADOW_MULTIPLIER` |
-| `AnisotropicFiltering` | `1` (off), `2`, `4`, `8`, `16` | `8` | `ARLAND_ANISO` |
+| `AnisotropicFiltering` | `1` (off), `2`, `4`, `8`, `16` | `16` | `ARLAND_ANISO` |
 
 | `[Battle]` | Values | Default |
 | --- | --- | --- |

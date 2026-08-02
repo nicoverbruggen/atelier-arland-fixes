@@ -10,6 +10,10 @@
 
 ### Changed
 
+- **Anisotropic filtering now defaults to 16x, and its launcher control has been removed.** It was 8x, and offered as a five-way dropdown. On any GPU able to run these ports the two are not measurably different, and the upgrade happens once at sampler creation rather than per frame, so the lower default preserved no trade-off, only a smaller improvement. With nothing left to trade, a control for it was only a question with one sensible answer, so the setting is applied and the row is gone. `AnisotropicFiltering` in `arland-fix.ini` still accepts `1` (off), `2`, `4`, `8` or `16` for troubleshooting; saving from the launcher normalises it to `16`, which is what migrates an existing file that still says `8`.
+
+- **The quality presets lost their Low rung.** Low and Balanced had differed in anisotropic filtering alone, so with that setting no longer part of the ladder the two described exactly the same thing. Balanced is now the floor and remains the default. The Dusk launcher carries the same ladder, rung for rung and label for label.
+
 - **The upgraded battle cut-ins are now on by default for new installations.** Both restorations shipped off while they were being playtested; they are now on by default, so the close-up attack cameras cast ground shadows and are no longer dimmed. Neither touches an existing choice: a `BattleCutInShadows` or `BattleCutInDimming` line already in your `arland-fix.ini` is read as before. To go back to the vanilla close-ups, set `BattleCutInShadows=false` and `BattleCutInDimming=true`, or untick the two boxes in the launcher.
 
 - **Rorona's restored ordinary-battle shadows are now treated as a standard bug fix.** Rorona alone is missing character and enemy shadows in the normal battle view; Totori and Meruru already render them. The separate launcher checkbox has therefore been removed and the restoration remains enabled by default. This is distinct from the cut-in upgrades above, which apply to all three games and remain configurable. A manually edited `BattleShadows` setting is still honored for troubleshooting.
