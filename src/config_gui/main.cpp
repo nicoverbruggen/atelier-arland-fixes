@@ -49,7 +49,6 @@ enum : int {
   IDC_RENDLBL,  // read-only computed render-resolution label
   IDC_MSAA,
   IDC_SHADOW,
-  IDC_ANISO,
   IDC_SMAA,
   IDC_PRESET,
   IDC_TABS,
@@ -64,7 +63,7 @@ enum : int {
   IDC_START,
   IDC_OPENENV,       // Koei Tecmo's own settings editor
   IDC_OPENLAUNCHER,  // Koei Tecmo's own launcher
-  IDC_PLAYVANILLA,   // the game with the mod stood down
+  IDC_PLAYVANILLA,   // the game with the mod turned off
   IDC_RESET,
   IDC_CLOSE,
   IDC_REPOLINK,
@@ -130,7 +129,7 @@ const wchar_t* const kRepositoryUrl =
   L"https://github.com/nicoverbruggen/atelier-arland-fixes";
 HWND g_hPreset, g_hWinMode, g_hLang,
      g_hFont, g_hBase, g_hSS, g_hRendLbl, g_hMsaa, g_hShadow,
-     g_hAniso, g_hSmaa, g_hOutline, g_hBCutInShadow, g_hBCutInDim,
+     g_hSmaa, g_hOutline, g_hBCutInShadow, g_hBCutInDim,
      g_hSkipLauncher, g_hVerbose;
 
 HFONT g_uiFont = nullptr;
@@ -249,11 +248,6 @@ const ComboItem kShadowItems[] = {
   { L"Normal (1024 map)",    "1" }, { L"2x (2048 map)", "2" },
   { L"4x (4096 map)",        "4" }, { L"8x (8192 map)", "8" },
 };
-const ComboItem kAnisoItems[] = {
-  { L"Off",                  "1" }, { L"2x anisotropic",  "2" },
-  { L"4x anisotropic",       "4" }, { L"8x anisotropic",  "8" },
-  { L"16x anisotropic",     "16" },
-};
 
 // Base (display / backbuffer) resolutions. w == 0 means "Auto" (blank in the
 // ini, which presents at the desktop resolution). 16:9 is fine for these games.
@@ -342,13 +336,17 @@ struct Preset {
   int supersampling;   // index into kSSItems
   int msaa;            // index into kMsaaItems
   bool smaa;
-  int aniso;           // index into kAnisoItems
   int shadow;          // index into kShadowItems
 };
 // The ladder spends in the order things are worth paying for: edge smoothing
-// first (SMAA is nearly free), then multisampling, then anisotropic filtering
-// and shadow maps, and only at the top supersampling, which costs the most by
-// a wide margin.
+// first (SMAA is nearly free), then multisampling, then shadow maps, and only
+// at the top supersampling, which costs the most by a wide margin.
+//
+// Anisotropic filtering used to be a rung dimension and a control, and is
+// neither now: it ships on at 16x, costs nothing measurable per frame, and a
+// setting with no trade in it is not a setting. Removing it collapsed Low and
+// Balanced, which had differed in nothing else, so Balanced takes the floor.
+// The Dusk launcher carries the same ladder for the same reasons.
 //
 // Balanced matches what the mod ships with (default.ini and the literals in
 // src/), so a fresh install opens on a named preset rather than on Custom, and
@@ -359,16 +357,15 @@ struct Preset {
 // bandwidth on every render target. So MSAA starts at Medium, for people who
 // want more than the shader gives, and the default spends nothing on it.
 const Preset kPresets[] = {
-  //                        SS  MSAA  SMAA  aniso  shadow
-  { L"Low",                  0,   0,  true,     0,      0 },
-  { L"Balanced (default)",   0,   0,  true,     3,      0 },
-  { L"Medium",               0,   2,  true,     3,      0 },
-  { L"High",                 2,   0,  true,     4,      1 },
-  { L"Maximum",              3,   0,  true,     4,      2 },
-  { L"Custom",              -1,  -1,  true,    -1,     -1 },
+  //                        SS  MSAA  SMAA  shadow
+  { L"Balanced (default)",   0,   0,  true,      0 },
+  { L"Medium",               0,   2,  true,      0 },
+  { L"High",                 2,   0,  true,      1 },
+  { L"Maximum",              3,   0,  true,      2 },
+  { L"Custom",              -1,  -1,  true,     -1 },
 };
-const int kPresetCount = 6;
-const int kPresetCustom = 5;
+const int kPresetCount = 5;
+const int kPresetCustom = 4;
 
 // Window mode spans two files: Borderless in arland-fix.ini, FullScreen in the
 // game's own ArlandDX_Settings.ini. Borderless is a window as far as the game
@@ -609,7 +606,6 @@ void applyPreset(int index) {
   const Preset& preset = kPresets[index];
   setSsIndex(preset.supersampling);
   SendMessageW(g_hMsaa, CB_SETCURSEL, preset.msaa, 0);
-  SendMessageW(g_hAniso, CB_SETCURSEL, preset.aniso, 0);
   SendMessageW(g_hShadow, CB_SETCURSEL, preset.shadow, 0);
   SendMessageW(g_hSmaa, BM_SETCHECK,
     preset.smaa ? BST_CHECKED : BST_UNCHECKED, 0);
@@ -621,7 +617,6 @@ int detectPreset() {
     const Preset& preset = kPresets[i];
     if (ssIndex() == preset.supersampling &&
         (int)SendMessageW(g_hMsaa, CB_GETCURSEL, 0, 0) == preset.msaa &&
-        (int)SendMessageW(g_hAniso, CB_GETCURSEL, 0, 0) == preset.aniso &&
         (int)SendMessageW(g_hShadow, CB_GETCURSEL, 0, 0) == preset.shadow &&
         (SendMessageW(g_hSmaa, BM_GETCHECK, 0, 0) == BST_CHECKED) == preset.smaa)
       return i;
@@ -726,16 +721,15 @@ void loadFromIni() {
   // Sync the computed render-resolution label and the Auto-greys-out rule.
   updateRenderResolution();
 
-  // MSAA / ShadowMultiplier default to 1 (off). Aniso defaults to 8: the mod
+  // MSAA / ShadowMultiplier default to 1 (off). The
   // treats 0 and 1 as off, but an absent key is 8x, not off, because
-  // anisotropic filtering ships on (it costs nothing per frame). Falling back
+  // anisotropic filtering the mod applies is not read here at all any more --
+  // it ships on at 16x and this window no longer offers it. Falling back
   // to "1" here would show Off for a default install and then persist it.
   iniString("Rendering", "MSAA", buf, sizeof(buf));
   comboSelectByValue(g_hMsaa, kMsaaItems, 4, buf[0] ? buf : "1", 0);
   iniString("Rendering", "ShadowMultiplier", buf, sizeof(buf));
   comboSelectByValue(g_hShadow, kShadowItems, 4, buf[0] ? buf : "1", 0);
-  iniString("Rendering", "AnisotropicFiltering", buf, sizeof(buf));
-  comboSelectByValue(g_hAniso, kAnisoItems, 5, buf[0] ? buf : "16", 0);
 
   // SMAA is on by default.
   SendMessageW(g_hSmaa, BM_SETCHECK,
@@ -817,7 +811,6 @@ void resetToDefaults() {
   SendMessageW(g_hFont, CB_SETCURSEL, 0, 0);      // replaced
   setSsIndex(0);                                  // supersampling off
   SendMessageW(g_hMsaa, CB_SETCURSEL, 0, 0);      // 1x
-  SendMessageW(g_hAniso, CB_SETCURSEL, 3, 0);     // 8x, the shipped default
   SendMessageW(g_hShadow, CB_SETCURSEL, 0, 0);    // 1024 map
   SendMessageW(g_hSmaa, BM_SETCHECK, BST_CHECKED, 0);
   SendMessageW(g_hOutline, BM_SETCHECK, BST_CHECKED, 0);   // on as it shipped
@@ -877,10 +870,15 @@ void saveToIni() {
 
   WritePrivateProfileStringA("Rendering", "MSAA",
     comboValue(g_hMsaa, kMsaaItems, 4), g_iniPath);
+  // Normalised, not offered. The control is gone and the value is meant to be
+  // 16 for everyone, but an ini written before that change still says 8 and
+  // nothing else would ever raise it. Saving once migrates it; hand-editing
+  // still wins until the next save, which is the same deal every other key
+  // here gets.
+  WritePrivateProfileStringA("Rendering", "AnisotropicFiltering", "16",
+    g_iniPath);
   WritePrivateProfileStringA("Rendering", "ShadowMultiplier",
     comboValue(g_hShadow, kShadowItems, 4), g_iniPath);
-  WritePrivateProfileStringA("Rendering", "AnisotropicFiltering",
-    comboValue(g_hAniso, kAnisoItems, 5), g_iniPath);
   iniWriteBool("Rendering", "SMAA", isChecked(g_hSmaa));
   {
     int sel = (int)SendMessageW(g_hWinMode, CB_GETCURSEL, 0, 0);
@@ -924,7 +922,7 @@ void saveToIni() {
 // what saveToIni reads and compares on close: no control can be missed, and
 // changing a setting back to its old value correctly counts as unchanged.
 struct UiState {
-  int font, base, ss, msaa, shadow, aniso, winMode, lang;
+  int font, base, ss, msaa, shadow, winMode, lang;
   int smaa, outline, cutInShadows, cutInDimming, skipLauncher, verbose;
 };
 UiState g_savedState;
@@ -936,7 +934,6 @@ UiState currentState() {
   s.ss = ssIndex();
   s.msaa = (int)SendMessageW(g_hMsaa, CB_GETCURSEL, 0, 0);
   s.shadow = (int)SendMessageW(g_hShadow, CB_GETCURSEL, 0, 0);
-  s.aniso = (int)SendMessageW(g_hAniso, CB_GETCURSEL, 0, 0);
   s.winMode = (int)SendMessageW(g_hWinMode, CB_GETCURSEL, 0, 0);
   s.lang = (int)SendMessageW(g_hLang, CB_GETCURSEL, 0, 0);
   s.smaa = isChecked(g_hSmaa);
@@ -1865,7 +1862,7 @@ void createControls(HWND w) {
       EnableWindow(playVanilla, FALSE);
     page.fullNote(
       L"Koei Tecmo's own settings editor and launcher, unmodified. The third "
-      L"saves and starts the game with the mod stood down, changing nothing.");
+      L"saves and starts the game with the mod turned off, changing nothing.");
   }
 
   // ---------------- page 1: Image Quality ----------------
@@ -1894,13 +1891,7 @@ void createControls(HWND w) {
     g_hMsaa = mkCombo(w, 0, 0, 10, IDC_MSAA);
     comboFill(g_hMsaa, kMsaaItems, 4);
     page.row(L"Anti-aliasing (MSAA):", g_hMsaa,
-      L"MSAA. Smooths geometry edges; supersampling usually beats it.");
-
-    g_hAniso = mkCombo(w, 0, 0, 10, IDC_ANISO);
-    comboFill(g_hAniso, kAnisoItems, 5);
-    page.row(L"Texture sharpness:", g_hAniso,
-      L"Anisotropic filtering. Keeps floors and walls sharp at a shallow "
-      L"angle, and costs nothing per frame.");
+      L"Smooths the edges of 3D models. Supersampling usually does more.");
 
     g_hShadow = mkCombo(w, 0, 0, 10, IDC_SHADOW);
     comboFill(g_hShadow, kShadowItems, 4);
@@ -1909,7 +1900,8 @@ void createControls(HWND w) {
 
     g_hSmaa = mkCheck(w, L"Edge smoothing", 0, 0, 10, IDC_SMAA);
     page.checkRow(g_hSmaa,
-      L"SMAA post-process. Cheap, and catches edges MSAA cannot.");
+      L"Cheap, and smooths edges multisampling cannot -- including "
+      L"edges inside textures.");
   }
 
   // ---------------- page 2: Game ----------------
@@ -2236,7 +2228,7 @@ LRESULT CALLBACK WndProc(HWND w, UINT msg, WPARAM wp, LPARAM lp) {
       // what is selected, so the box drops to Custom rather than lying.
       if ((HIWORD(wp) == CBN_SELCHANGE &&
            (LOWORD(wp) == IDC_SS || LOWORD(wp) == IDC_MSAA ||
-            LOWORD(wp) == IDC_ANISO || LOWORD(wp) == IDC_SHADOW)) ||
+            LOWORD(wp) == IDC_SHADOW)) ||
           (HIWORD(wp) == BN_CLICKED && LOWORD(wp) == IDC_SMAA)) {
         refreshPreset();
         updateRenderResolution();
@@ -2253,7 +2245,7 @@ LRESULT CALLBACK WndProc(HWND w, UINT msg, WPARAM wp, LPARAM lp) {
           // next to Close, and the cost of a mis-click is someone's whole
           // configuration.
           const int answer = MessageBoxW(w,
-            L"Reset the configuration of the mod back to the defaults? This "
+            L"Reset all of the mod's settings to their defaults? This "
             L"will also set your game resolution back to 1280x720 in windowed "
             L"mode.",
             L"Atelier Arland Fixes",
