@@ -210,7 +210,7 @@ If the mod's launcher is not installed beside the stock one, nothing is armed an
 
 ### Details
 
-`arland-fix-launcher.exe` is a 64-bit settings window that puts every option in `arland-fix.ini`, plus the game's own resolution, window mode and language, in one place and starts the game from it. Both of Koei Tecmo's original front-ends stay reachable from it. It writes the mod's settings when the game is started, so there is no separate save step; close the window with unsaved changes and it asks first.
+`arland-fix-launcher.exe` is a 64-bit settings window that puts every option in `arland-fix.ini`, plus the game's own resolution, window mode, language and character outlines, in one place and starts the game from it. The settings it takes from the game rather than from the mod are read from and written straight back to `ArlandDX_Settings.ini`, under the keys the game itself uses (`[Graphics] Outline` for the outlines); the mod never reads them, so unchecking outlines is the game's own switch rather than anything this project does at runtime. Both of Koei Tecmo's original front-ends stay reachable from it. It writes the mod's settings when the game is started, so there is no separate save step; close the window with unsaved changes and it asks first.
 
 Steam runs `ArlandDXLauncher.exe`, not the game, so the launcher has to insert itself there. A 32-bit `msimg32.dll` proxy does it: when `arland-fix-launcher.exe` is present beside the stock launcher, the proxy points the executable's entry point at its own routine, which starts our launcher instead.
 

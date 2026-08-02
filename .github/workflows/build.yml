@@ -94,6 +94,8 @@ jobs:
       # check it before packaging rather than spending a separate runner on it.
       - name: Check shipped configuration defaults
         run: python3 scripts/check_default_ini.py
+      - name: Check launcher contract
+        run: python3 scripts/check_launcher_contract.py
       - name: Assemble the archive
         run: |
           # Shipped under its final name so the archive extracts straight into

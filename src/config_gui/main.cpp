@@ -55,6 +55,7 @@ enum : int {
   IDC_TABS,
   IDC_WINMODE,
   IDC_LANG,
+  IDC_OUTLINE,  // the game's own outline rendering, in its settings file
   IDC_BCUTINSHADOW,
   IDC_BCUTINDIM,
   IDC_SKIPLAUNCHER,  // start the game from Steam without stopping here
@@ -129,7 +130,7 @@ const wchar_t* const kRepositoryUrl =
   L"https://github.com/nicoverbruggen/atelier-arland-fixes";
 HWND g_hPreset, g_hWinMode, g_hLang,
      g_hFont, g_hBase, g_hSS, g_hRendLbl, g_hMsaa, g_hShadow,
-     g_hAniso, g_hSmaa, g_hBCutInShadow, g_hBCutInDim,
+     g_hAniso, g_hSmaa, g_hOutline, g_hBCutInShadow, g_hBCutInDim,
      g_hSkipLauncher, g_hVerbose;
 
 HFONT g_uiFont = nullptr;
@@ -758,6 +759,12 @@ void loadFromIni() {
     SendMessageW(g_hLang, CB_SETCURSEL, sel, 0);
   }
 
+  // The game's own outline rendering, on as it shipped. Like the language, this
+  // lives entirely in ArlandDX_Settings.ini; the mod never reads it.
+  SendMessageW(g_hOutline, BM_SETCHECK,
+    GetPrivateProfileIntA("Graphics", "Outline", 1, g_settingsPath) != 0
+      ? BST_CHECKED : BST_UNCHECKED, 0);
+
   // [Battle]: cut-in defaults match src/game.cpp (shadows on, dimming off).
   SendMessageW(g_hBCutInShadow, BM_SETCHECK,
     iniBool("Battle", "BattleCutInShadows", true) ? BST_CHECKED : BST_UNCHECKED, 0);
@@ -813,6 +820,7 @@ void resetToDefaults() {
   SendMessageW(g_hAniso, CB_SETCURSEL, 3, 0);     // 8x, the shipped default
   SendMessageW(g_hShadow, CB_SETCURSEL, 0, 0);    // 1024 map
   SendMessageW(g_hSmaa, BM_SETCHECK, BST_CHECKED, 0);
+  SendMessageW(g_hOutline, BM_SETCHECK, BST_CHECKED, 0);   // on as it shipped
   SendMessageW(g_hBCutInShadow, BM_SETCHECK, BST_CHECKED, 0);
   SendMessageW(g_hBCutInDim, BM_SETCHECK, BST_UNCHECKED, 0);
   SendMessageW(g_hSkipLauncher, BM_SETCHECK, BST_UNCHECKED, 0);
@@ -885,6 +893,8 @@ void saveToIni() {
   }
   WritePrivateProfileStringA("Lang", "Language",
     comboValue(g_hLang, kLangItems, kLangCount), g_settingsPath);
+  WritePrivateProfileStringA("Graphics", "Outline",
+    isChecked(g_hOutline) ? "1" : "0", g_settingsPath);
 
   iniWriteBool("Battle", "BattleCutInShadows", isChecked(g_hBCutInShadow));
   iniWriteBool("Battle", "BattleCutInDimming", isChecked(g_hBCutInDim));
@@ -915,7 +925,7 @@ void saveToIni() {
 // changing a setting back to its old value correctly counts as unchanged.
 struct UiState {
   int font, base, ss, msaa, shadow, aniso, winMode, lang;
-  int smaa, cutInShadows, cutInDimming, skipLauncher, verbose;
+  int smaa, outline, cutInShadows, cutInDimming, skipLauncher, verbose;
 };
 UiState g_savedState;
 
@@ -930,6 +940,7 @@ UiState currentState() {
   s.winMode = (int)SendMessageW(g_hWinMode, CB_GETCURSEL, 0, 0);
   s.lang = (int)SendMessageW(g_hLang, CB_GETCURSEL, 0, 0);
   s.smaa = isChecked(g_hSmaa);
+  s.outline = isChecked(g_hOutline);
   s.cutInShadows = isChecked(g_hBCutInShadow);
   s.cutInDimming = isChecked(g_hBCutInDim);
   s.skipLauncher = isChecked(g_hSkipLauncher);
@@ -1915,6 +1926,10 @@ void createControls(HWND w) {
     page.row(L"Language:", g_hLang,
       L"Written to the game's own settings, and decides which of the game's "
       L"two executables starts.");
+
+    g_hOutline = mkCheck(w, L"Character outlines", 0, 0, 10, IDC_OUTLINE);
+    page.checkRow(g_hOutline,
+      L"The game's own outline rendering. On as it shipped.");
 
     page.heading(L"Battle");
     g_hBCutInShadow = mkCheck(w, L"Ground shadows during cut-ins", 0, 0, 10,
