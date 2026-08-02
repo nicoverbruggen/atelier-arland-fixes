@@ -123,6 +123,10 @@ The bundled SMAA anti-aliasing is by Jorge Jimenez, Jose I. Echevarria, Belen Ma
 
 See [TECHNICAL.md](TECHNICAL.md) for the full implementation details and provenance.
 
+## Before v1
+
+This repository is pre-release and still needs housekeeping before the first tagged version: a pass over the commit history, the working files, and anything that accumulated during development but does not belong in a published release. Treat the current tree as a development snapshot rather than a release candidate.
+
 ## License
 
 See `LICENSE` for the MIT and zlib license terms that apply to the respective source files.
