@@ -1,28 +1,21 @@
 # Atelier Arland Fixes
 
-This mod significantly improves performance in the Steam releases of **Atelier Rorona DX, Atelier Totori DX, and Atelier Meruru DX**, in every supported language. It removes severe menu hitches, reduces costly D3D11 synchronization stalls, prevents text corruption caused by the synchronization optimization, and adds game-side 2560×1440 and 3840×2160 rendering support.
-
-> [!IMPORTANT]
-> **Public testing release:** This mod has received substantial testing across all three games and is already suitable for most players who want a better Arland DX experience, but it has not yet reached 1.0. Broader testing, especially on Windows and a wider range of hardware, is still needed. Please [report any problems](https://github.com/nicoverbruggen/atelier-arland-fixes/discussions/new?category=bug-reports) and include `arland-fix.log` and your settings.
-
-The mod ships with a 64-bit `d3d11.dll` for the games, a 64-bit `arland-fix-launcher.exe`, and a 32-bit `msimg32.dll` for the two front-ends the games share. The game DLL combines the synchronization fix required by the Arland ports with the Arland-specific menu fixes discovered during this project. `arland-fix-launcher.exe` puts every setting in one window and starts the game from it. `msimg32.dll` is loaded by both of Koei Tecmo's front-ends, and its only job is to open the launcher above when the game is started; their own settings editor is left exactly as it shipped. Both of the original tools remain reachable from the launcher.
+This mod significantly improves performance and adds various improvements to the Steam releases of **Atelier Rorona DX, Atelier Totori DX, and Atelier Meruru DX**, in every supported language.
 
 > [!TIP]
-> No separate `atelier-sync-fix` or `dinput8.dll` is required. For newer Atelier games, use the upstream [atelier-sync-fix](https://github.com/doitsujin/atelier-sync-fix) or an appropriate maintained fork instead. This project deliberately contains only Arland-specific code.
+> No separate `atelier-sync-fix` or `dinput8.dll` is required. For newer Atelier games (Mysterious games and newer), use the upstream [atelier-sync-fix](https://github.com/doitsujin/atelier-sync-fix) or an appropriate maintained fork instead. This project deliberately contains only Arland-specific code.
 
 ## How it works
-
-Everything above works out of the box with default settings by simply dropping `d3d11.dll` into your game folders. Anisotropic filtering is on by default too, since it costs nothing per frame, as is borderless windowed mode at your desktop resolution. Optional, off-by-default enhancements (supersampling, MSAA, higher-resolution shadows) are documented in [ADVANCED.md](ADVANCED.md).
 
 The mod is intended for the Steam versions of the games. See [TECHNICAL.md](TECHNICAL.md) for implementation details and tested executable fingerprints.
 
 ## What is included
 
-The tables below track which enhancements have been validated in each game; the details are in the sections that follow. A ✓ marks a feature confirmed working in that game.
+### Launcher
 
-### Bug fixes and basic enhancements
+The **included launcher** replaces the standard window for the Arland games and gives you more control over your game experience. It also lets you tweak various **graphics settings** that are added by this mod.
 
-These are on by default.
+### List of fixes and improvements
 
 | Fix                                          | Rorona | Totori | Meruru |
 | -------------------------------------------- | :----: | :----: | :----: |
@@ -35,17 +28,13 @@ These are on by default.
 | Correct behaviour at high refresh rates      | ✓      | ✓      | ✓      |
 | Borderless windowed at your desktop size     | ✓      | ✓      | ✓      |
 | Correct world-map analog cursor speed        | —      | ✓      | ✓      |
+| Restored battle cut-in shadows               | ✓      | ✓      | ✓      |
 | Various game-specific bug fixes              | ✓      | ✓      | ✓      |
+| Local crash logging                          | ✓      | ✓      | ✓      |
 
-✓ fixed, enabled by default · — not needed or not applicable
+If the game crashes, the mod appends a report to `arland-fix.log` that helps pinpoint the cause. Include that file and your settings when reporting the problem, since these logs are never sent anywhere.
 
-Each game also receives fixes specific to its port. Rorona restores the character and enemy shadows missing from ordinary battles. Totori prevents malformed item and save data from corrupting memory, fixes the crash when leaving shops, and fixes the timing-dependent renderer crash around bombs and other combat items. Meruru avoids repeatedly rendering unchanged text during animated bust-up conversations, preventing their severe slowdown.
-
-The battle cut-in shadow and brightness restorations are on by default: close-up attack cameras keep their ground shadows and stay at full brightness. Set `BattleCutInShadows=false` / `BattleCutInDimming=true` in `arland-fix.ini` if you prefer the vanilla darkened, shadowless ones.
-
-### Advanced graphics tweaks
-
-These are optional improvements that are off by default and documented in [ADVANCED.md](ADVANCED.md).
+### List of graphics enhancements
 
 | Enhancement                                  | Rorona | Totori | Meruru |
 | -------------------------------------------- | :----: | :----: | :----: |
@@ -53,10 +42,6 @@ These are optional improvements that are off by default and documented in [ADVAN
 | MSAA                                         | ✓      | ✓      | ✓      |
 | Anisotropic filtering                        | ✓      | ✓      | ✓      |
 | Shadow multiplier                            | ✓      | ✓      | ✓      |
-| Restored battle cut-in shadows               | ✓      | ✓      | ✓      |
-| Cut-in scene kept at full brightness         | ✓      | ✓      | ✓      |
-
-If the game crashes, the mod appends a report to `arland-fix.log` that helps pinpoint the cause. Include that file and your settings when reporting the problem.
 
 ## Safety
 
@@ -90,7 +75,7 @@ The complete source code and the steps GitHub uses to build each release are pub
 2. Copy `d3d11.dll`, `arland-fix-launcher.exe`, `msimg32.dll` and `arland-fix.ini` into that directory, beside the game executables and `ArlandDXEnv.exe`. If you are updating an existing install, keep the `arland-fix.ini` you already have — the bundled one is only the defaults.
 3. Launch the game normally through Steam.
 
-All performance and text-correctness fixes are enabled automatically. No configuration is required.
+All performance and text-correctness fixes are enabled automatically. No additional configuration is required, but it's recommended that you adjust the graphics settings according to your hardware configuration. Presets are included.
 
 ### Wine and Proton
 
@@ -100,9 +85,9 @@ Copy the files in exactly as above, then add this to the game's Steam Launch Opt
 WINEDLLOVERRIDES="d3d11,msimg32=n,b" %command%
 ```
 
-Without it Wine loads its own `d3d11` and ignores the mod's, so the files sit in the folder doing nothing and the game looks entirely unmodified. If nothing seems to have changed after installing, check this first. `arland-fix.log` appearing in the game directory is the sign the mod loaded.
+Without it Wine loads its own `d3d11` and ignores the mod's, so the files sit in the folder doing nothing and the game looks entirely unmodified. 
 
-When the multilingual build runs in Japanese on a non-UTF-8 system locale (common under Wine and Proton), its title bar would otherwise show mojibake, and the engine's ANSI window cannot display Japanese on such a locale at all. In that case the mod substitutes a readable romanized title, for example `Rorona no Atelier ~Arland no Renkinjutsushi~ DX`. The Chinese and English builds, and correctly configured Japanese or UTF-8 locales, are unaffected.
+If nothing seems to have changed after installing, check this first. `arland-fix.log` appearing in the game directory is the sign the mod loaded.
 
 ### Advanced options
 
