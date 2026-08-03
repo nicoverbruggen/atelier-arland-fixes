@@ -10,6 +10,10 @@
 
 ### Fixed
 
+- **The synthesis animation no longer runs too fast above 60 Hz.** The product cards shown while synthesising animated at the frame rate rather than at the rate they were authored for, so at 144 Hz they played about two and a half times too quickly, and faster still on higher-refresh displays. The pump driving them tested whether a step was due only after taking one, so it always took at least one step per frame drawn. It now checks first, using the game's own timing values, and takes the step exactly as before when one is due. Nothing changes at 60 Hz and below. All three games.
+
+- **Logs now record which build they came from.** The first line carries the commit the binary was built from, marked `-dirty` if the working tree had uncommitted changes. A version number alone could not tell a local build from a release that reported the same number, so a log could not settle which fixes were actually present in the binary that produced it.
+
 - **Crash reports no longer blame the mod for faults in the system Direct3D driver.** This mod is a `d3d11.dll` that forwards to the system one, which under Proton is DXVK and is also called `d3d11.dll`. The report identified the faulting module by name, so any crash inside the driver was labelled as the mod's own and its address printed as an offset into the mod, which points anyone reading the log at the wrong binary entirely. Modules are now told apart by handle.
 
 ### Changed

@@ -1,0 +1,8 @@
+// SPDX-License-Identifier: MIT
+#pragma once
+
+// The commit this binary was built from, with "-dirty" appended when the
+// working tree carried uncommitted changes. Regenerated on every build, not at
+// configure time, so it cannot go stale after a commit. "unknown" when the
+// build had no git available (a source tarball, say).
+#define ARLAND_FIX_GIT "@VCS_TAG@"

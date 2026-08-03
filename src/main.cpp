@@ -9,6 +9,7 @@
 #include "sync_fix.h"
 #include "util.h"
 #include "version.h"
+#include "version_git.h"
 #include "window_mode.h"
 #include "window_title.h"
 
@@ -60,6 +61,7 @@ D3D11Proc loadSystemD3D11() {
     return d3d11Proc;
 
   log("Atelier Arland Fix version ", ARLAND_FIX_VERSION,
+      " build=", ARLAND_FIX_GIT,
       " verbose=", atfix::verboseLogging() ? 1 : 0);
 
   // Skipped when the mod is stood down: the point of that switch is a process

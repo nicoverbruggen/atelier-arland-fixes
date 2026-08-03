@@ -60,6 +60,7 @@ const Descriptor& descriptor(Feature f) {
     /* CutInDimHold       */ { "ARLAND_CUTIN_DIMMING", "Battle", "BattleCutInDimming", true },
     /* SkipStartupLogos   */ { "ARLAND_SKIP_LOGOS", "Startup", "SkipLogos", false },
     /* SkipIntroMovie     */ { "ARLAND_SKIP_INTRO_MOVIE", "Startup", "SkipIntroMovie", false },
+    /* SynthesisAnimationRate */ { "ARLAND_SYNTH_RATE", nullptr, nullptr, false },
   };
   return table[static_cast<int>(f)];
 }
@@ -95,11 +96,16 @@ constexpr Support X = Support::OnByDefault;
 // from that game's own RTTI, and each movie routine was anchored on that
 // build's own path string -- and every prologue is verified before install.
 // Confirmed in game on Rorona; Totori and Meruru are wired but untested.
+// SynthesisAnimationRate ships on in all three: it is a defect correction
+// rather than a preference, and at 59.94 Hz and below the original runs
+// untouched, so a display that never exceeds 60 Hz sees no change at all. The
+// same correction is confirmed in game in both KTGL Dusk titles.
+// ARLAND_SYNTH_RATE=0 is the A/B switch.
 constexpr Support kMatrix[3][static_cast<int>(Feature::Count)] = {
-  //           Sync Menu Atls Frme Res  MSAA ShMl Bat  CutS CutD Logo Movi
-  /* Rorona */ { X,   X,   X,   X,   X,   O,   O,   X,   X,   X,   O,   O },
-  /* Totori */ { X,   X,   X,   X,   X,   O,   O,   U,   X,   X,   O,   O },
-  /* Meruru */ { X,   X,   X,   O,   X,   O,   O,   U,   X,   X,   O,   O },
+  //           Sync Menu Atls Frme Res  MSAA ShMl Bat  CutS CutD Logo Movi Card
+  /* Rorona */ { X,   X,   X,   X,   X,   O,   O,   X,   X,   X,   O,   O,   X },
+  /* Totori */ { X,   X,   X,   X,   X,   O,   O,   U,   X,   X,   O,   O,   X },
+  /* Meruru */ { X,   X,   X,   O,   X,   O,   O,   U,   X,   X,   O,   O,   X },
 };
 
 int titleRow(Title t) {

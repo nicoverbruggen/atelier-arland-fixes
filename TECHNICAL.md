@@ -518,6 +518,33 @@ The detour intervenes only when vanilla is about to commit an input value and th
 
 The fault was reproduced from a Steam save by entering and leaving a vendor. A pre-write probe recorded a 12-row vector at `0x1d420d80`, `index=-1`, input state 2 and the exact destination `0x1d420d78`; vanilla then wrote zero there. Depending on heap layout, shop teardown subsequently made a still-live title allocation inaccessible and faulted immediately, or completed before a later XAudio or system allocation detected the damaged heap metadata. This also explains why the same executable and save did not reliably crash in the Steam-free environment: allocator layout changes where the corruption is detected, not whether the bad write occurs. With the correction active, the same reproduction logged that the write was prevented, completed teardown and remained running.
 
+## Synthesis card animation rate
+
+### TL;DR
+
+The animation on the product cards during synthesis ran at the frame rate instead of its authored rate: about 2.4 times too fast at 144 Hz and 3.34 times at 200 Hz. It now runs at the rate it was authored for, in all three games. At 59.94 Hz and below nothing changes.
+
+### Safety
+
+One prologue-verified MinHook detour per executable, on a function whose 16-byte window is byte-identical in all six Arland builds. When a tick is due the original is called completely untouched, so the shipped behaviour is reproduced bit-for-bit rather than reimplemented: the correction only decides whether to call it. The accumulator is read through the guarded-read helpers and written only after a writability check, so a bad object address declines rather than faults. `ARLAND_SYNTH_RATE=0` restores the original behaviour for a launch, and `ARLAND_MIXCARD_PROBE=1` reports ticked-versus-skipped counts.
+
+### Details
+
+`Card::Update` is a fixed-timestep pump whose loop is **bottom-tested**. The five bytes where a pre-test belongs are an alignment NOP, so the body runs at least once per rendered frame. The function computes `n = (int)(accumulator * 59.94)` and then ticks `max(1, n)` times, never zero. At 59.94 Hz and below `n` is already at least 1 and the behaviour is correct. Above it `n` is always 0 and the pump ticks anyway, so the tick rate becomes the frame rate. A corroborating symptom is that the accumulator drifts unboundedly negative above 60 fps, because the subtraction still fires on every frame whose count was zero.
+
+The correction supplies the missing pre-test and nothing else. The detour reads the accumulator at `+0x820`, adds the frame delta, and evaluates the engine's own predicate with the engine's own constants: `0x3C88AB86` (1/59.94) and `0x426FC28F` (59.94), hardcoded as exact bit patterns because the predicate is a truncation and a differently-rounded literal would decide a tick was due on a different frame. If a tick is due, the original runs. If not, the elapsed time is banked into the accumulator and the frame returns the original's only return value.
+
+It also carries a drift self-heal. Because running unfixed above 60 Hz walks the accumulator unboundedly negative, enabling the fix mid-session could otherwise leave it below the threshold for a long time and appear frozen. Normal operation keeps the value within one step of zero, so anything a whole second in the past is reset.
+
+| build | `Card::Update` | build | `Card::Update` |
+|---|---|---|---|
+| Rorona EN / ML | `0x293dc0` / `0x2a4440` | Meruru EN / ML | `0x275dd0` / `0x26c650` |
+| Totori EN / ML | `0x334b30` / `0x553860` | | |
+
+The six addresses were located by the shape of the defect rather than by homology: a scan for a truncation-to-int of a multiply by a frame rate, then whether a conditional branch separates that conversion from the loop top. It returns exactly one bottom-tested pump per executable, and every other fixed-timestep pump in the trilogy is correctly pre-tested, so this is the whole of the defect rather than one instance of a family.
+
+The same defect and the same correction are confirmed in game in Atelier Escha & Logy DX and Atelier Shallie DX, where this implementation was written first.
+
 ## Startup logo skip
 
 ### TL;DR
@@ -561,6 +588,8 @@ The detour therefore does exactly what that branch does. For index 0 with the op
 All three games are wired. The English address for each was anchored on the single reference to that build's own `Res/x64/movie` path string rather than on a homology vote, which matters because the vote came back WEAK for Totori: its routine is a slightly different compile and carries its own prologue window. The multilingual addresses are MATCH from their own English build, and index 0 was confirmed to be `opening.wmv` in all six movie tables. Confirmed in game on Rorona; Totori and Meruru are untested.
 
 ## Diagnostics
+
+Every session log opens with the commit the binary was built from, as `build=<hash>`, with `-dirty` appended when the working tree carried uncommitted changes and `unknown` when the build had no git available. A version number cannot answer "which binary is this": a local build and a tagged release can both report the same version while differing by a shipped fix, and a crash report was once diagnosed against the wrong binary for exactly that reason. The stamp is generated by `vcs_tag`, so it is re-evaluated on every build rather than frozen when the build directory was configured.
 
 The crash report identifies the faulting module by handle rather than by name. Both this mod and the system Direct3D implementation it forwards to are named `d3d11.dll`, so a name comparison reported every DXVK fault as `MOD(this)` and printed its offset as though it were an offset into this module. A fault in the system implementation is now categorised `GRAPHICS` and marked `(system, not this mod)`.
 

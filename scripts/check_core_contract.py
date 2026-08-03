@@ -23,7 +23,7 @@ SYNC_CPP = (ROOT / "src" / "sync_fix.cpp").read_text()
 FEATURES = (
     "SyncFix", "MenuHitchFix", "AtlasCache", "FrameAtlasCache",
     "ResolutionOverride", "Msaa", "ShadowMultiplier", "BattleShadows",
-    "CutInShadows", "CutInDimHold", "SkipStartupLogos", "SkipIntroMovie",
+    "CutInShadows", "CutInDimHold", "SkipStartupLogos", "SkipIntroMovie", "SynthesisAnimationRate",
 )
 
 
@@ -76,9 +76,9 @@ def main():
             r"/\*\s*(Rorona|Totori|Meruru)\s*\*/\s*\{([^}]*)\}", matrix
         )
         expected_matrix = (
-            ("Rorona", ("X", "X", "X", "X", "X", "O", "O", "X", "X", "X", "O", "O")),
-            ("Totori", ("X", "X", "X", "X", "X", "O", "O", "U", "X", "X", "O", "O")),
-            ("Meruru", ("X", "X", "X", "O", "X", "O", "O", "U", "X", "X", "O", "O")),
+            ("Rorona", ("X", "X", "X", "X", "X", "O", "O", "X", "X", "X", "O", "O", "X")),
+            ("Totori", ("X", "X", "X", "X", "X", "O", "O", "U", "X", "X", "O", "O", "X")),
+            ("Meruru", ("X", "X", "X", "O", "X", "O", "O", "U", "X", "X", "O", "O", "X")),
         )
         actual_matrix = tuple(
             (name, tuple(re.findall(r"\b([UXO])\b", values)))
@@ -99,6 +99,7 @@ def main():
             "installShopFix",
             "installLogoSkip",
             "installMovieSkip",
+            "installMixCardFix",
         ):
             if not re.search(rf"\b{installer}\s*\(", MENU_CPP):
                 raise ValueError(f"menu installer no longer calls {installer}()")

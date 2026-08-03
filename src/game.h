@@ -33,6 +33,7 @@ enum class Feature : uint8_t {
   CutInDimHold,        // hold scene light up during cut-ins (prevent dimming)
   SkipStartupLogos,    // skip the publisher/developer logos shown while booting
   SkipIntroMovie,      // skip the opening movie that follows the logos
+  SynthesisAnimationRate,  // synthesis card animation at its authored rate
   Count,
 };
 

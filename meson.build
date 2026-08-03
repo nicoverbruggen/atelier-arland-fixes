@@ -26,9 +26,26 @@ version_header = configure_file(
   configuration : version_data)
 resource_includes = include_directories('.')
 
+# Which commit a binary came from, and whether the tree was clean. A version
+# number alone cannot answer that: a local build and a tagged release can both
+# say 0.12.0 while differing by a fix, which is exactly how a crash report once
+# sent us looking in the wrong binary. vcs_tag re-runs at build time, so the
+# value follows commits without a reconfigure; `fallback` covers a build with no
+# git (a source tarball) rather than failing.
+version_git_header = vcs_tag(
+  input : 'src/version_git.h.in',
+  output : 'version_git.h',
+  # -c safe.directory="*" because the day-to-day build runs in a container
+  # where the checkout is owned by a different uid, and git otherwise refuses
+  # with "dubious ownership" and the stamp silently degrades to the fallback.
+  # This overrides the setting for one invocation and writes no config.
+  command : ['git', '-c', 'safe.directory=*', 'describe', '--always',
+             '--abbrev=8', '--dirty=-dirty'],
+  fallback : 'unknown')
+
 if host_machine.cpu_family() == 'x86'
   shared_library('msimg32',
-    ['src/launcher_proxy.cpp',
+    ['src/launcher_proxy.cpp', version_git_header,
      windows.compile_resources(
        'src/msimg32.rc',
        depend_files : version_rc,
@@ -74,6 +91,7 @@ else
     'src/shop_fix.cpp',
     'src/logo_skip.cpp',
     'src/movie_skip.cpp',
+    'src/mix_card.cpp',
     'src/supersample.cpp',
     'src/font_hires.cpp',
     'src/menu_fix.cpp',
@@ -90,7 +108,7 @@ else
   )
 
   shared_library('d3d11',
-    [sources, embedded_np, embedded_nunito, embedded_mgopen,
+    [sources, embedded_np, embedded_nunito, embedded_mgopen, version_git_header,
      windows.compile_resources(
        'src/d3d11.rc',
        depend_files : version_rc,
@@ -108,7 +126,7 @@ else
   # win_subsystem kwarg selects the GUI subsystem (WinMain) for both MinGW
   # (-mwindows) and MSVC (/SUBSYSTEM:WINDOWS).
   executable('arland-fix-launcher',
-    ['src/config_gui/main.cpp',
+    ['src/config_gui/main.cpp', version_git_header,
      # Carries the ComCtl32 v6 manifest, which is what gets the themed common
      # controls rather than the flat 5.82 ones. See the manifest for the rest.
      windows.compile_resources(
