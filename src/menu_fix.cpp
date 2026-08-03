@@ -23,6 +23,8 @@
 #include "item_guard.h"
 #include "stream_lifetime_fix.h"
 #include "shop_fix.h"
+#include "logo_skip.h"
+#include "movie_skip.h"
 #include "font_hires.h"
 #include "game.h"
 #include "log.h"
@@ -2124,6 +2126,8 @@ void detectAndInstallGameHooks() {
     atfix::installItemGuard(gameBase, game);
     atfix::installStreamLifetimeFix(gameBase, game);
     atfix::installShopFix(gameBase, game);
+    atfix::installLogoSkip(gameBase, game);
+    atfix::installMovieSkip(gameBase, game);
     const bool hiresRequested = atfix::hiResTextEnabled();
     const char* hiresStatus = game.exeBuild != BuildEnglish
       ? "not_supported"

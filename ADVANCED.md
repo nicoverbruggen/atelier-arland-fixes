@@ -40,6 +40,11 @@ The file sits beside the DLLs and is created on first launch. Close the game bef
 | `BattleCutInShadows` | `true` restores ground shadows during the close-up attack cameras. | `true` |
 | `BattleCutInDimming` | `true` keeps the original close-up dimming; `false` holds it at full brightness. | `false` |
 
+| `[Startup]` | Values | Default |
+| --- | --- | --- |
+| `SkipLogos` | `true` skips the publisher and developer logos while the game boots. | `false` |
+| `SkipIntroMovie` | `true` skips the opening movie that plays after the logos. The ending movies are unaffected. | `false` |
+
 `[Launcher] SkipLauncher` is above; `[Diagnostics] VerboseLogging` is under [Logs](#logs-and-crash-reports); `[Debug] View` is under [Debug views](#debug-views).
 
 Each resolution pair is all-or-nothing: if either half is blank or out of range, that pair is ignored. A display resolution larger than your monitor is clamped to the monitor and noted in the log, since the extra pixels would only be scaled away again.
@@ -53,6 +58,8 @@ Each resolution pair is all-or-nothing: if either half is blank or out of range,
 **Borderless wants a matching display resolution.** The window is sized to the monitor either way, so a smaller backbuffer is simply scaled up to fill it. The defaults already line up: borderless is on and a blank display resolution is your desktop resolution, so the backbuffer matches the window and nothing is scaled. Setting a display resolution below your monitor's is what reintroduces the upscale.
 
 **`Font=replaced` is English-only.** The Japanese and Chinese builds are unaffected in every mode. A different font is bundled per game (National Park SemiBold for Rorona, Nunito Regular for Totori, Cosmetica Medium for Meruru), each embedded in the DLL; their licenses are in `licenses/`. Dropping a `arland-hires-font.ttf` beside the DLL overrides whichever one would be used. `ARLAND_HIRES_SCALE` and `ARLAND_HIRES_VOFF` nudge the replacement font's size and vertical position for quick tuning.
+
+**`SkipLogos` does not shorten loading.** The logos play on a separate thread while the game loads, so they are covering work rather than delaying it. Skipping them replaces the logos with a black screen for however long that work actually takes; on a fast disk you get most of the time back, and on a slow one you may get very little. The setting also suppresses the replay that the title screen plays after it has been left idle.
 
 **SMAA and MSAA are not alternatives.** MSAA only smooths the outlines of 3D shapes; SMAA also catches edges inside textures, on cut-out foliage and hair, and in specular highlights. Turning one on never turns the other off, and SMAA alone is far cheaper than MSAA.
 

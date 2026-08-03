@@ -518,7 +518,51 @@ The detour intervenes only when vanilla is about to commit an input value and th
 
 The fault was reproduced from a Steam save by entering and leaving a vendor. A pre-write probe recorded a 12-row vector at `0x1d420d80`, `index=-1`, input state 2 and the exact destination `0x1d420d78`; vanilla then wrote zero there. Depending on heap layout, shop teardown subsequently made a still-live title allocation inaccessible and faulted immediately, or completed before a later XAudio or system allocation detected the damaged heap metadata. This also explains why the same executable and save did not reliably crash in the Steam-free environment: allocator layout changes where the corruption is detected, not whether the bad write occurs. With the correction active, the same reproduction logged that the write was prevented, completed teardown and remained running.
 
+## Startup logo skip
+
+### TL;DR
+
+`[Startup] SkipLogos=true` skips the publisher and developer logos Rorona shows while it boots. The logos are drawn on a render thread while the game loads, so they cover work rather than delay it; skipping them shows the ordinary clear colour for as long as loading genuinely takes. Off by default, and Rorona only.
+
+### Safety
+
+Two prologue-verified MinHook detours on adjacent methods of one class, both installed only when the capability matrix supports the feature and the user opted in. The skip flag is resolved once at install time and read as a plain atomic, because both detours run on the render thread and must not touch the INI or the environment there. The draw suppression installs first, so a partial install leaves the shipped sequence running and drawing rather than a stopped sequence whose picture layers are stranded on screen. Neither detour frees anything or alters the object's layout, so the game's own destructor still releases the picture layers. With the option off, both detours call the original and behavior is unchanged. Totori and Meruru install nothing.
+
+### Details
+
+The logos do not belong to the title-screen state machine. `Title` carries three logo states inherited from the original release, but nothing requests them in the DX ports; every caller of the state-request function was enumerated and none does.
+
+They belong to `ThreadEasyRenderLogo`, a small object the application constructs before it begins initializing the engine. Its `update(float)` is vtable slot 1 (Rorona English `0x21ba30`, multilingual `0x2277e0`) and its `draw` is slot 2 (`0x21bc90`, `0x227a40`); the prologue of each is byte-identical between the two builds. The object holds three fullscreen picture layers, a phase at `+0x20`, a page index at `+0x24` and a timer at `+0x28`, and steps a six-phase sequence: fade a layer in over half a second, hold it, fade it out over half a second, advance. The page table selects warning text, then Koei Tecmo, then Gust; the English builds start at the second entry and never display the warning screen.
+
+Two places wait for the sequence, and both poll only the phase field: the application's boot function, after it has finished the whole engine and resource initialization, and a title-side player that produces the attract replay once the title screen has been idle. Writing the terminal phase therefore releases both, which is why one hook covers the boot logos and the replay.
+
+The update detour writes that terminal phase and returns without calling the original. It cannot simply force the phase and let the original run, because the original's tail advances each picture layer's fade, which would bring a logo up during the load. Not advancing them leaves their alpha where construction left it, and whether that renders anything depends on state the mod does not own, so the draw is suppressed as well rather than reasoned about. The two detours together guarantee no logo pixels and an immediate release, at the cost of the clear colour being visible for the duration of the load.
+
+All three games are wired, both builds each. Every address came from that game's own RTTI vtable rather than from homology, and the two prologue windows above are byte-identical in all six executables. Confirmed in game on Rorona; Totori and Meruru are untested.
+
+## Opening-movie skip
+
+### TL;DR
+
+`[Startup] SkipIntroMovie=true` skips the opening movie that plays after the startup logos in Rorona. The ending movies are unaffected. Off by default.
+
+### Safety
+
+One prologue-verified MinHook detour, installed only when the capability matrix supports the feature and the user opted in. The skip is confined to the opening by the movie index the routine already receives as an argument; every other index calls the original untouched, so the endings play normally. The detour reproduces the routine's own "cannot play" branch rather than inventing a new state, and it neither allocates nor frees. The enable flag is resolved once at install time and read as a plain atomic. With the option off the original is always called. Totori and Meruru install nothing.
+
+### Details
+
+All movies go through one open routine, English `0x6c2d0` and multilingual `0x72fe0`, whose prologue is byte-identical between the two builds. It takes the player object and an index into a four-entry table of `0x20`-byte records, each holding a file name pointer, a frame size and a caption pointer. Index 0 is `opening.wmv`; the rest are the endings. The table was read in both builds to confirm the index, rather than assuming the multilingual layout matches.
+
+The routine begins by asking whether the movie subsystem is ready. When it is not, the routine writes 1 to the player's state byte at `+0x30` and returns without opening anything. The per-frame movie update reads that byte first and returns "not playing" immediately when it is set, so the caller treats the movie as finished and moves on. That is the engine's own graceful degradation for a movie it cannot play, which is what makes it a safe thing to trigger deliberately: the surrounding code already handles it.
+
+The detour therefore does exactly what that branch does. For index 0 with the option on, it writes the state byte and returns without calling the original. Nothing else in the movie path is touched.
+
+All three games are wired. The English address for each was anchored on the single reference to that build's own `Res/x64/movie` path string rather than on a homology vote, which matters because the vote came back WEAK for Totori: its routine is a slightly different compile and carries its own prologue window. The multilingual addresses are MATCH from their own English build, and index 0 was confirmed to be `opening.wmv` in all six movie tables. Confirmed in game on Rorona; Totori and Meruru are untested.
+
 ## Diagnostics
+
+The crash report identifies the faulting module by handle rather than by name. Both this mod and the system Direct3D implementation it forwards to are named `d3d11.dll`, so a name comparison reported every DXVK fault as `MOD(this)` and printed its offset as though it were an offset into this module. A fault in the system implementation is now categorised `GRAPHICS` and marked `(system, not this mod)`.
 
 Each session log begins with the version compiled from the repository's `VERSION` file, the recognized title and executable build, the configuration file and relevant environment overrides, the effective render settings, and concise `FIXES` records for the subsystems that installed. Installation failures, signature/prologue declines, device loss and other warnings remain visible in the normal log. A failure reached from a hot D3D path is written on its first occurrence, with sampled repeats in verbose mode, so a persistent resource failure cannot flood the file and erase the useful startup context. Successful low-level hook creation, raw addresses and object fields, repeated render-resource operations and battle lifecycle telemetry are verbose-only so the default log records release-relevant state without becoming a trace.
 

@@ -1,5 +1,23 @@
 # Changelog
 
+## v0.14
+
+### Added
+
+- **An option to skip the startup logos.** `SkipLogos=true` under `[Startup]` in `arland-fix.ini` skips the publisher and developer logos Atelier Rorona DX shows while it boots. Off by default. The logos are drawn on a separate thread while the game loads, so they cover that work rather than delay it: skipping them shows a black screen for however long the loading itself takes, which is most of the wait back on a fast disk and rather less on a slow one. The setting also suppresses the replay the title screen plays once it has been left idle. All three games.
+
+- **An option to skip the opening movie.** `SkipIntroMovie=true` under `[Startup]` goes straight past the movie that plays after the logos. Off by default, in all three games, and the ending movies are not affected: the game selects its movies by index through one routine, and only the opening index is intercepted. The skip takes the same path the game itself takes when it cannot play a movie, so nothing new happens on the way to the title screen.
+
+### Fixed
+
+- **Crash reports no longer blame the mod for faults in the system Direct3D driver.** This mod is a `d3d11.dll` that forwards to the system one, which under Proton is DXVK and is also called `d3d11.dll`. The report identified the faulting module by name, so any crash inside the driver was labelled as the mod's own and its address printed as an offset into the mod, which points anyone reading the log at the wrong binary entirely. Modules are now told apart by handle.
+
+### Changed
+
+- **The battle cut-in checkboxes are now one setting with three states.** They were two boxes describing one choice, and half their combinations were not states anyone wanted. **Enhanced** (the default) restores the ground shadows and holds the close-up at full brightness, **Shadows only** restores the shadows and keeps the original dimming, and **Classic** leaves the cut-ins as the game shipped them. `arland-fix.ini` is unchanged: the same two `BattleCutInShadows` and `BattleCutInDimming` keys store the choice, so an existing file is read exactly as before.
+
+- **The launcher's tabs have been renamed and the startup options moved.** Display is now **General** and holds the two startup skips alongside resolution and window mode, since they decide what happens on the way into the game. Image Quality is now **Graphics**. **Skip the launcher** has moved out of the button row into General, under its own heading below the startup skips, where it reads as the setting it is. And the buttons for Koei Tecmo's own settings editor and launcher, and for playing with the mod turned off, have moved to **About**, since they lead out of the window rather than changing anything in it.
+
 ## v0.12
 
 ### Fixed

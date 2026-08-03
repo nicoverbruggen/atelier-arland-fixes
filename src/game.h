@@ -31,6 +31,8 @@ enum class Feature : uint8_t {
   BattleShadows,       // restored ordinary-battle caster shadows
   CutInShadows,        // reopen the reception gate during attack cut-ins
   CutInDimHold,        // hold scene light up during cut-ins (prevent dimming)
+  SkipStartupLogos,    // skip the publisher/developer logos shown while booting
+  SkipIntroMovie,      // skip the opening movie that follows the logos
   Count,
 };
 

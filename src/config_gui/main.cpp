@@ -55,8 +55,9 @@ enum : int {
   IDC_WINMODE,
   IDC_LANG,
   IDC_OUTLINE,  // the game's own outline rendering, in its settings file
-  IDC_BCUTINSHADOW,
-  IDC_BCUTINDIM,
+  IDC_BCUTIN,        // battle cut-in appearance
+  IDC_SKIPLOGOS,     // skip the boot logos
+  IDC_SKIPMOVIE,     // skip the opening movie
   IDC_SKIPLAUNCHER,  // start the game from Steam without stopping here
   IDC_VERBOSE,
   IDC_DEBUGVIEW,     // [Debug] the one developer view that is active
@@ -127,10 +128,10 @@ HWND g_hRepoLink = nullptr;    // SysLink at the bottom of the Display page
 // that has to be right: it is where the window sends people.
 const wchar_t* const kRepositoryUrl =
   L"https://github.com/nicoverbruggen/atelier-arland-fixes";
-HWND g_hPreset, g_hWinMode, g_hLang,
+HWND g_hPreset, g_hWinMode, g_hLang, g_hBCutIn,
      g_hFont, g_hBase, g_hSS, g_hRendLbl, g_hMsaa, g_hShadow,
-     g_hSmaa, g_hOutline, g_hBCutInShadow, g_hBCutInDim,
-     g_hSkipLauncher, g_hVerbose;
+     g_hSmaa, g_hOutline,
+     g_hSkipLogos, g_hSkipMovie, g_hSkipLauncher, g_hVerbose;
 
 HFONT g_uiFont = nullptr;
 HFONT g_headingFont = nullptr;   // the same face, bold; headings only
@@ -366,6 +367,35 @@ const Preset kPresets[] = {
 };
 const int kPresetCount = 5;
 const int kPresetCustom = 4;
+
+// The two cut-in keys in arland-fix.ini are one choice, not two: they describe
+// how the close-up attack cameras look, and only three of their four
+// combinations are states anyone wants. So the window offers the choice itself
+// and keeps the file's two keys as the storage. Note BattleCutInDimming is the
+// inverse key -- true is the original dimming.
+//
+// The fourth combination (no shadows, no dimming) is not offered. An ini that
+// holds it opens on the nearest state by the shadow flag and is normalised on
+// the next save, the same way a hand-edited AnisotropicFiltering is.
+struct CutInMode {
+  const wchar_t* label;
+  bool shadows;   // [Battle] BattleCutInShadows
+  bool dimming;   // [Battle] BattleCutInDimming
+};
+const CutInMode kCutInModes[] = {
+  { L"Enhanced (default)",  true,  false },
+  { L"Shadows only",        true,  true  },
+  { L"Classic",             false, true  },
+};
+const int kCutInCount = 3;
+
+// Which entry an ini pair corresponds to, falling back on the shadow flag.
+int cutInIndex(bool shadows, bool dimming) {
+  for (int i = 0; i < kCutInCount; ++i)
+    if (kCutInModes[i].shadows == shadows && kCutInModes[i].dimming == dimming)
+      return i;
+  return shadows ? 0 : 2;
+}
 
 // Window mode spans two files: Borderless in arland-fix.ini, FullScreen in the
 // game's own ArlandDX_Settings.ini. Borderless is a window as far as the game
@@ -760,10 +790,15 @@ void loadFromIni() {
       ? BST_CHECKED : BST_UNCHECKED, 0);
 
   // [Battle]: cut-in defaults match src/game.cpp (shadows on, dimming off).
-  SendMessageW(g_hBCutInShadow, BM_SETCHECK,
-    iniBool("Battle", "BattleCutInShadows", true) ? BST_CHECKED : BST_UNCHECKED, 0);
-  SendMessageW(g_hBCutInDim, BM_SETCHECK,
-    iniBool("Battle", "BattleCutInDimming", false) ? BST_CHECKED : BST_UNCHECKED, 0);
+  SendMessageW(g_hBCutIn, CB_SETCURSEL,
+    cutInIndex(iniBool("Battle", "BattleCutInShadows", true),
+               iniBool("Battle", "BattleCutInDimming", false)), 0);
+
+  // [Startup]: both off by default, and supported in all three games.
+  SendMessageW(g_hSkipLogos, BM_SETCHECK,
+    iniBool("Startup", "SkipLogos", false) ? BST_CHECKED : BST_UNCHECKED, 0);
+  SendMessageW(g_hSkipMovie, BM_SETCHECK,
+    iniBool("Startup", "SkipIntroMovie", false) ? BST_CHECKED : BST_UNCHECKED, 0);
 
   // [Launcher]: read by the 32-bit msimg32 proxy, not by the DLL.
   SendMessageW(g_hSkipLauncher, BM_SETCHECK,
@@ -814,8 +849,9 @@ void resetToDefaults() {
   SendMessageW(g_hShadow, CB_SETCURSEL, 0, 0);    // 1024 map
   SendMessageW(g_hSmaa, BM_SETCHECK, BST_CHECKED, 0);
   SendMessageW(g_hOutline, BM_SETCHECK, BST_CHECKED, 0);   // on as it shipped
-  SendMessageW(g_hBCutInShadow, BM_SETCHECK, BST_CHECKED, 0);
-  SendMessageW(g_hBCutInDim, BM_SETCHECK, BST_UNCHECKED, 0);
+  SendMessageW(g_hBCutIn, CB_SETCURSEL, 0, 0);
+  SendMessageW(g_hSkipLogos, BM_SETCHECK, BST_UNCHECKED, 0);
+  SendMessageW(g_hSkipMovie, BM_SETCHECK, BST_UNCHECKED, 0);
   SendMessageW(g_hSkipLauncher, BM_SETCHECK, BST_UNCHECKED, 0);
   SendMessageW(g_hVerbose, BM_SETCHECK, BST_UNCHECKED, 0);
   SendMessageW(g_hDebugView, CB_SETCURSEL, 0, 0);
@@ -894,9 +930,16 @@ void saveToIni() {
   WritePrivateProfileStringA("Graphics", "Outline",
     isChecked(g_hOutline) ? "1" : "0", g_settingsPath);
 
-  iniWriteBool("Battle", "BattleCutInShadows", isChecked(g_hBCutInShadow));
-  iniWriteBool("Battle", "BattleCutInDimming", isChecked(g_hBCutInDim));
+  {
+    int mode = (int)SendMessageW(g_hBCutIn, CB_GETCURSEL, 0, 0);
+    if (mode < 0 || mode >= kCutInCount)
+      mode = 0;
+    iniWriteBool("Battle", "BattleCutInShadows", kCutInModes[mode].shadows);
+    iniWriteBool("Battle", "BattleCutInDimming", kCutInModes[mode].dimming);
+  }
 
+  iniWriteBool("Startup", "SkipLogos", isChecked(g_hSkipLogos));
+  iniWriteBool("Startup", "SkipIntroMovie", isChecked(g_hSkipMovie));
   iniWriteBool("Launcher", "SkipLauncher", isChecked(g_hSkipLauncher));
 
   iniWriteBool("Diagnostics", "VerboseLogging", isChecked(g_hVerbose));
@@ -923,7 +966,8 @@ void saveToIni() {
 // changing a setting back to its old value correctly counts as unchanged.
 struct UiState {
   int font, base, ss, msaa, shadow, winMode, lang;
-  int smaa, outline, cutInShadows, cutInDimming, skipLauncher, verbose;
+  int smaa, outline, cutIn, skipLauncher, verbose;
+  int skipLogos, skipMovie;
 };
 UiState g_savedState;
 
@@ -938,8 +982,9 @@ UiState currentState() {
   s.lang = (int)SendMessageW(g_hLang, CB_GETCURSEL, 0, 0);
   s.smaa = isChecked(g_hSmaa);
   s.outline = isChecked(g_hOutline);
-  s.cutInShadows = isChecked(g_hBCutInShadow);
-  s.cutInDimming = isChecked(g_hBCutInDim);
+  s.cutIn = (int)SendMessageW(g_hBCutIn, CB_GETCURSEL, 0, 0);
+  s.skipLogos = isChecked(g_hSkipLogos);
+  s.skipMovie = isChecked(g_hSkipMovie);
   s.skipLauncher = isChecked(g_hSkipLauncher);
   s.verbose = isChecked(g_hVerbose);
   return s;
@@ -1757,7 +1802,7 @@ void createControls(HWND w) {
   TCITEMW tab = {};
   tab.mask = TCIF_TEXT;
   const wchar_t* pageNames[4] = {
-    L"Display", L"Image Quality", L"Game", L"About" };
+    L"General", L"Graphics", L"Game", L"About" };
   for (int i = 0; i < 4; ++i) {
     tab.pszText = (LPWSTR)pageNames[i];
     SendMessageW(g_hTabs, TCM_INSERTITEMW, i, (LPARAM)&tab);
@@ -1800,9 +1845,15 @@ void createControls(HWND w) {
     w, nullptr, nullptr, nullptr);
   setFont(g_hGameLabel);
 
-  // ---------------- page 0: Display ----------------
+  // ---------------- page 0: General ----------------
   {
     Layout page(w, 0);
+    g_hLang = mkCombo(w, 0, 0, 10, IDC_LANG);
+    comboFill(g_hLang, kLangItems, kLangCount);
+    page.row(L"Language:", g_hLang,
+      L"Written to the game's own settings, and decides which of the game's "
+      L"two executables starts.");
+
     g_hBase = mkCombo(w, 0, 0, 10, IDC_BASE);
     unsigned maxW = 0, maxH = 0;
     displayMaximum(&maxW, &maxH);
@@ -1845,24 +1896,27 @@ void createControls(HWND w) {
       : L"The game runs at your display's refresh rate, 120 Hz and 144 Hz "
         L"included. The mod does not cap the frame rate.");
 
-    // The stock front-ends are still reachable: this tool replaces them, it
-    // does not remove them. Greyed out when the executable is not present.
-    page.heading(L"The game as it shipped");
-    HWND openEnv = mkButton(w, L"Settings &editor", 0, 0, 10, IDC_OPENENV);
-    HWND openLauncher = mkButton(w, L"&Original launcher", 0, 0, 10,
-      IDC_OPENLAUNCHER);
-    HWND playVanilla = mkButton(w, L"Play &without the mod", 0, 0, 10,
-      IDC_PLAYVANILLA);
-    page.buttons(openEnv, openLauncher, playVanilla);
-    if (!stockToolPresent("ArlandDXEnv.exe"))
-      EnableWindow(openEnv, FALSE);
-    if (!stockToolPresent("ArlandDXLauncher.exe"))
-      EnableWindow(openLauncher, FALSE);
-    if (!g_gameExePath[0])
-      EnableWindow(playVanilla, FALSE);
-    page.fullNote(
-      L"Koei Tecmo's own settings editor and launcher, unmodified. The third "
-      L"saves and starts the game with the mod turned off, changing nothing.");
+    page.heading(L"Startup");
+    g_hSkipLogos = mkCheck(w, L"Skip the startup logos", 0, 0, 10,
+      IDC_SKIPLOGOS);
+    page.checkRow(g_hSkipLogos,
+      L"The logos play while the game loads, so this shows a black screen "
+      L"for as long as loading takes rather than starting sooner.");
+    g_hSkipMovie = mkCheck(w, L"Skip the opening movie", 0, 0, 10,
+      IDC_SKIPMOVIE);
+    page.checkRow(g_hSkipMovie,
+      L"Goes straight to the title screen. The ending movies still play.");
+
+    // [Launcher] SkipLauncher. Read by the 32-bit msimg32 proxy rather than by
+    // the DLL, and about the launch Steam performs rather than the window in
+    // front of you, which is the half of it that is easy to get wrong.
+    page.heading(L"Launcher");
+    g_hSkipLauncher = mkCheck(w, L"Skip this window when launching from Steam",
+      0, 0, 10, IDC_SKIPLAUNCHER);
+    page.checkRow(g_hSkipLauncher,
+      L"Play in Steam goes straight into the game with the settings already "
+      L"saved here. Run arland-fix-launcher.exe to get back to this window.");
+
   }
 
   // ---------------- page 1: Image Quality ----------------
@@ -1913,25 +1967,17 @@ void createControls(HWND w) {
       L"Re-renders the game's UI text from a bundled font. English builds "
       L"only.");
 
-    g_hLang = mkCombo(w, 0, 0, 10, IDC_LANG);
-    comboFill(g_hLang, kLangItems, kLangCount);
-    page.row(L"Language:", g_hLang,
-      L"Written to the game's own settings, and decides which of the game's "
-      L"two executables starts.");
-
     g_hOutline = mkCheck(w, L"Character outlines", 0, 0, 10, IDC_OUTLINE);
     page.checkRow(g_hOutline,
       L"The game's own outline rendering. On as it shipped.");
 
     page.heading(L"Battle");
-    g_hBCutInShadow = mkCheck(w, L"Ground shadows during cut-ins", 0, 0, 10,
-      IDC_BCUTINSHADOW);
-    page.checkRow(g_hBCutInShadow,
-      L"Restores ground shadows during close-up attack cameras.");
-    g_hBCutInDim = mkCheck(w, L"Dim the scene during cut-ins", 0, 0, 10,
-      IDC_BCUTINDIM);
-    page.checkRow(g_hBCutInDim,
-      L"Uncheck to hold close-ups at full brightness.");
+    g_hBCutIn = mkCombo(w, 0, 0, 10, IDC_BCUTIN);
+    for (int i = 0; i < kCutInCount; ++i)
+      SendMessageW(g_hBCutIn, CB_ADDSTRING, 0, (LPARAM)kCutInModes[i].label);
+    page.row(L"Attack cut-ins:", g_hBCutIn,
+      L"Enhanced restores the ground shadows and holds full brightness. "
+      L"Shadows only keeps the original dimming. Classic is untouched.");
 
     page.heading(L"Diagnostics");
     g_hVerbose = mkCheck(w, L"Verbose logging", 0, 0, 10, IDC_VERBOSE);
@@ -2003,6 +2049,27 @@ void createControls(HWND w) {
     // mismatch this window exists to avoid.
     setFont(g_hRepoLink);
     page.link(g_hRepoLink);
+
+    // The stock front-ends are still reachable: this tool replaces them, it
+    // does not remove them. They sit here rather than among the settings
+    // because they lead out of this window instead of changing anything in it.
+    // Greyed out when the executable is not present.
+    page.heading(L"The game as it shipped");
+    HWND openEnv = mkButton(w, L"Settings &editor", 0, 0, 10, IDC_OPENENV);
+    HWND openLauncher = mkButton(w, L"&Original launcher", 0, 0, 10,
+      IDC_OPENLAUNCHER);
+    HWND playVanilla = mkButton(w, L"Play &without the mod", 0, 0, 10,
+      IDC_PLAYVANILLA);
+    page.buttons(openEnv, openLauncher, playVanilla);
+    if (!stockToolPresent("ArlandDXEnv.exe"))
+      EnableWindow(openEnv, FALSE);
+    if (!stockToolPresent("ArlandDXLauncher.exe"))
+      EnableWindow(openLauncher, FALSE);
+    if (!g_gameExePath[0])
+      EnableWindow(playVanilla, FALSE);
+    page.fullNote(
+      L"Koei Tecmo's own settings editor and launcher, unmodified. The third "
+      L"saves and starts the game with the mod turned off, changing nothing.");
   }
 
   // Bottom left, away from Save/Close so it cannot be hit by accident: saves
@@ -2073,34 +2140,13 @@ void createControls(HWND w) {
     EnableWindow(g_hStart, FALSE);
 
   // Distinct mnemonics across the whole window: P play, R reset, C close,
-  // E editor, O original launcher, W play without the mod, S skip.
+  // E editor, O original launcher, W play without the mod.
   HWND reset = CreateWindowExW(0, L"BUTTON", L"&Reset to defaults",
     WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
     rightEdge - closeW - S(12) - wideW, buttonTop, wideW, buttonH, w,
     (HMENU)(INT_PTR)IDC_RESET, nullptr, nullptr);
   setFont(reset);
 
-  // [Launcher] SkipLauncher, beside Play with mod because that is what it is
-  // about: the next launch from Steam does what that button does, without
-  // stopping here first. It belongs to no tab page, so it is not registered
-  // with onPage and stays visible whichever page is showing -- which also
-  // means it stands on the window background rather than a tab page, and
-  // WM_CTLCOLORBTN colours it accordingly.
-  //
-  // Saved by saveToIni like every other setting, so ticking it and pressing
-  // Play with mod is one gesture rather than two.
-  // Two lines, because the qualifier is the half that is easy to get wrong:
-  // this is about the launch Steam performs, not about the window in front of
-  // you. BS_MULTILINE is what makes the break in the caption take effect.
-  const int skipLeft = margin + wideW + S(16);
-  const int skipHeight = 2 * checkHeight();
-  g_hSkipLauncher = CreateWindowExW(0, L"BUTTON",
-    L"&Skip the launcher\n(when launching via Steam)",
-    WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTOCHECKBOX | BS_MULTILINE,
-    skipLeft, buttonTop + (buttonH - skipHeight) / 2,
-    std::max(S(60), (rightEdge - closeW - S(12) - wideW) - S(12) - skipLeft),
-    skipHeight, w, (HMENU)(INT_PTR)IDC_SKIPLAUNCHER, nullptr, nullptr);
-  setFont(g_hSkipLauncher);
   HWND close = CreateWindowExW(0, L"BUTTON", L"&Close",
     WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
     rightEdge - closeW, buttonTop, closeW, buttonH, w,
@@ -2178,18 +2224,9 @@ LRESULT CALLBACK WndProc(HWND w, UINT msg, WPARAM wp, LPARAM lp) {
         SetTextColor((HDC)wp, g_secondaryText);
         return (LRESULT)GetStockObject(NULL_BRUSH);
       }
-      // The skip checkbox is the one control that sits in the button row
-      // rather than on a page, so it takes the window's own background. With
-      // the page colour it would read as a patch laid on the strip, which is
-      // exactly what the rule below exists to prevent everywhere else.
-      if ((HWND)lp == g_hSkipLauncher) {
-        SetBkColor((HDC)wp, g_windowBack);
-        SetTextColor((HDC)wp, g_text);
-        return (LRESULT)g_windowBrush;
-      }
-      // Every other static and checkbox stands on the tab page, so all of them
-      // get the page's colour -- the theme's on Windows, the flat white under
-      // Wine. This is what stops them reading as patches laid over the panel.
+      // Every static and checkbox stands on a tab page, so all of them get the
+      // page's colour -- the theme's on Windows, the flat white under Wine.
+      // This is what stops them reading as patches laid over the panel.
       SetBkColor((HDC)wp, g_pageBack);
       SetTextColor((HDC)wp, g_text);
       // The one-line notes under each control are secondary text, so they are

@@ -21,7 +21,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-SECTIONS = ("Rendering", "Battle", "Launcher", "Diagnostics")
+SECTIONS = ("Rendering", "Battle", "Startup", "Launcher", "Diagnostics")
 
 # Options the code reads that are deliberately kept out of default.ini. Empty:
 # everything the DLL reads is a documented, shipped option.
@@ -32,6 +32,8 @@ UNDOCUMENTED = set()
 VALUE_NOT_EXTRACTABLE = {
     ("Battle", "BattleCutInShadows"),
     ("Battle", "BattleCutInDimming"),
+    ("Startup", "SkipLogos"),
+    ("Startup", "SkipIntroMovie"),
 }
 
 SECTION_ALT = "|".join(SECTIONS)

@@ -72,6 +72,8 @@ else
     'src/item_guard.cpp',
     'src/stream_lifetime_fix.cpp',
     'src/shop_fix.cpp',
+    'src/logo_skip.cpp',
+    'src/movie_skip.cpp',
     'src/supersample.cpp',
     'src/font_hires.cpp',
     'src/menu_fix.cpp',

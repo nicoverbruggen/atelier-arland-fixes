@@ -58,6 +58,8 @@ const Descriptor& descriptor(Feature f) {
     /* BattleShadows      */ { "ARLAND_BATTLE_SHADOWS", "Battle", "BattleShadows", false },
     /* CutInShadows       */ { "ARLAND_CUTIN_SHADOWS", "Battle", "BattleCutInShadows", false },
     /* CutInDimHold       */ { "ARLAND_CUTIN_DIMMING", "Battle", "BattleCutInDimming", true },
+    /* SkipStartupLogos   */ { "ARLAND_SKIP_LOGOS", "Startup", "SkipLogos", false },
+    /* SkipIntroMovie     */ { "ARLAND_SKIP_INTRO_MOVIE", "Startup", "SkipIntroMovie", false },
   };
   return table[static_cast<int>(f)];
 }
@@ -88,11 +90,16 @@ constexpr Support X = Support::OnByDefault;
 // covers both builds: its multilingual battle addresses were RTTI-located and
 // homologue-matched, then confirmed in-game, so the cut-in cells apply to every
 // supported executable.
+// The two startup skips are opt-in in all three games. Their hook targets were
+// resolved per game rather than ported by homology -- each logo vtable came
+// from that game's own RTTI, and each movie routine was anchored on that
+// build's own path string -- and every prologue is verified before install.
+// Confirmed in game on Rorona; Totori and Meruru are wired but untested.
 constexpr Support kMatrix[3][static_cast<int>(Feature::Count)] = {
-  //           Sync Menu Atls Frme Res  MSAA ShMl Bat  CutS CutD
-  /* Rorona */ { X,   X,   X,   X,   X,   O,   O,   X,   X,   X },
-  /* Totori */ { X,   X,   X,   X,   X,   O,   O,   U,   X,   X },
-  /* Meruru */ { X,   X,   X,   O,   X,   O,   O,   U,   X,   X },
+  //           Sync Menu Atls Frme Res  MSAA ShMl Bat  CutS CutD Logo Movi
+  /* Rorona */ { X,   X,   X,   X,   X,   O,   O,   X,   X,   X,   O,   O },
+  /* Totori */ { X,   X,   X,   X,   X,   O,   O,   U,   X,   X,   O,   O },
+  /* Meruru */ { X,   X,   X,   O,   X,   O,   O,   U,   X,   X,   O,   O },
 };
 
 int titleRow(Title t) {
