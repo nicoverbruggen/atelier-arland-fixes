@@ -61,6 +61,8 @@ const Descriptor& descriptor(Feature f) {
     /* SkipStartupLogos   */ { "ARLAND_SKIP_LOGOS", "Startup", "SkipLogos", false },
     /* SkipIntroMovie     */ { "ARLAND_SKIP_INTRO_MOVIE", "Startup", "SkipIntroMovie", false },
     /* SynthesisAnimationRate */ { "ARLAND_SYNTH_RATE", nullptr, nullptr, false },
+    /* FieldMonsterSnap   */ { "ARLAND_MONSTER_SNAP", "Field", "MonsterSnapFix", false },
+    /* FieldCharacterPull */ { "ARLAND_CHARACTER_PULL", "Field", "CharacterPullFix", false },
   };
   return table[static_cast<int>(f)];
 }
@@ -101,11 +103,34 @@ constexpr Support X = Support::OnByDefault;
 // untouched, so a display that never exceeds 60 Hz sees no change at all. The
 // same correction is confirmed in game in both KTGL Dusk titles.
 // ARLAND_SYNTH_RATE=0 is the A/B switch.
+// MonsterSnapFix spreads a monster's re-target correction over time instead of
+// applying it in one frame, and only touches charas the game lists as field
+// enemies. It covers Totori English plus both Rorona and both Meruru builds:
+// those two name the family properly in RTTI (nspFM::clsFM*) and expose the
+// chara manager's own update as a per-frame entry, so each game's container and
+// node offsets were read from its own disassembly rather than ported. Totori's
+// multilingual build is absent because its field tick was never mapped. It is
+// It ships on in all three games and every language version: it corrects a
+// defect in how a monster's movement is delivered rather than expressing a
+// preference, and the correction only changes how quickly the monster covers
+// ground, never where it ends up or when. CharacterPullFix clamps the
+// separation depth at zero; it is a patch to a shared engine routine and so
+// reaches every character pair including the player and party, which is why it
+// has its own key and can be turned off on its own. It ships on in all three
+// games as a defect correction rather than a preference. The arithmetic is not
+// in question: the depth is signed, nothing clamps it, and the product is
+// applied, so a pair further apart than their combined radii is pulled together
+// rather than left alone. It was measured doing exactly that, drawing a monster
+// from 0.867 to 0.800. What is not established is whether the effect is
+// perceptible, since the pair is only close enough for it to act during the
+// moment before an encounter starts. It ships on because the correction is
+// strictly subtractive: max(depth, 0) can only remove a pull, never introduce
+// or alter a push, so the patched behaviour is a subset of the original's.
 constexpr Support kMatrix[3][static_cast<int>(Feature::Count)] = {
-  //           Sync Menu Atls Frme Res  MSAA ShMl Bat  CutS CutD Logo Movi Card
-  /* Rorona */ { X,   X,   X,   X,   X,   O,   O,   X,   X,   X,   O,   O,   X },
-  /* Totori */ { X,   X,   X,   X,   X,   O,   O,   U,   X,   X,   O,   O,   X },
-  /* Meruru */ { X,   X,   X,   O,   X,   O,   O,   U,   X,   X,   O,   O,   X },
+  //           Sync Menu Atls Frme Res  MSAA ShMl Bat  CutS CutD Logo Movi Card Snap Pull
+  /* Rorona */ { X,   X,   X,   X,   X,   O,   O,   X,   X,   X,   O,   O,   X,   X,   X },
+  /* Totori */ { X,   X,   X,   X,   X,   O,   O,   U,   X,   X,   O,   O,   X,   X,   X },
+  /* Meruru */ { X,   X,   X,   O,   X,   O,   O,   U,   X,   X,   O,   O,   X,   X,   X },
 };
 
 int titleRow(Title t) {

@@ -23,6 +23,8 @@
 #include "item_guard.h"
 #include "stream_lifetime_fix.h"
 #include "shop_fix.h"
+#include "field_collision_fix.h"
+#include "staff_probe.h"
 #include "logo_skip.h"
 #include "movie_skip.h"
 #include "mix_card.h"
@@ -2127,6 +2129,8 @@ void detectAndInstallGameHooks() {
     atfix::installItemGuard(gameBase, game);
     atfix::installStreamLifetimeFix(gameBase, game);
     atfix::installShopFix(gameBase, game);
+    atfix::installFieldCollisionFix(gameBase, game);
+    atfix::installStaffProbe(gameBase, game);
     atfix::installLogoSkip(gameBase, game);
     atfix::installMovieSkip(gameBase, game);
     atfix::installMixCardFix(gameBase, game);

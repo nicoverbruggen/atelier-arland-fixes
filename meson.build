@@ -89,6 +89,8 @@ else
     'src/item_guard.cpp',
     'src/stream_lifetime_fix.cpp',
     'src/shop_fix.cpp',
+    'src/field_collision_fix.cpp',
+    'src/staff_probe.cpp',
     'src/logo_skip.cpp',
     'src/movie_skip.cpp',
     'src/mix_card.cpp',

@@ -40,6 +40,11 @@ The file sits beside the DLLs and is created on first launch. Close the game bef
 | `BattleCutInShadows` | `true` restores ground shadows during the close-up attack cameras. | `true` |
 | `BattleCutInDimming` | `true` keeps the original close-up dimming; `false` holds it at full brightness. | `false` |
 
+| `[Field]` | Values | Default |
+| --- | --- | --- |
+| `MonsterSnapFix` | Spreads a chasing monster's end-of-segment movement over time instead of applying it in a single frame, so it cannot cross your staff's reach between two frames and take the encounter with it. All three games. | `true` |
+| `CharacterPullFix` | Stops the engine's character separation pulling two characters together when they are already further apart than their combined size. Applies to every character, including your own party, in all three games. The correction only ever removes that pull; it never alters how characters are pushed apart. | `true` |
+
 | `[Startup]` | Values | Default |
 | --- | --- | --- |
 | `SkipLogos` | `true` skips the publisher and developer logos while the game boots. | `false` |

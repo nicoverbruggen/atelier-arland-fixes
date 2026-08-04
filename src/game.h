@@ -34,6 +34,8 @@ enum class Feature : uint8_t {
   SkipStartupLogos,    // skip the publisher/developer logos shown while booting
   SkipIntroMovie,      // skip the opening movie that follows the logos
   SynthesisAnimationRate,  // synthesis card animation at its authored rate
+  FieldMonsterSnap,    // spread a monster's re-target correction over time
+  FieldCharacterPull,  // stop character separation pulling bodies together
   Count,
 };
 
