@@ -10,6 +10,7 @@
 #include "util.h"
 #include "version.h"
 #include "version_git.h"
+#include "window_background.h"
 #include "window_mode.h"
 #include "window_title.h"
 
@@ -521,10 +522,14 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved) {
   switch (fdwReason) {
     case DLL_PROCESS_ATTACH:
       MH_Initialize();
-      // Hook ANSI title APIs before the game's window is created, except in
-      // the documented full pass-through mode.
-      if (!atfix::modDisabled())
+      // Both of these hook a window API and have to be in place before the
+      // game registers its class and creates its window, which is why they
+      // run here rather than at device creation. Skipped in the documented
+      // full pass-through mode.
+      if (!atfix::modDisabled()) {
         atfix::installWindowTitleFix();
+        atfix::installWindowBackgroundFix();
+      }
       break;
 
     case DLL_PROCESS_DETACH:
