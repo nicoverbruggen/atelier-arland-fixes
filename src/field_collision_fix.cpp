@@ -4,7 +4,7 @@
 //
 // Two independent defects, one shared cause of confusion. Both were found by
 // instrumenting the field encounter path; the diagnostic that found them is
-// staff_probe.cpp and stays available behind its own environment switches.
+// a probe that has since been removed; it is in the repository history.
 //
 // ---------------------------------------------------------------------------
 // 1. Monsters snap across the ground when their AI re-targets

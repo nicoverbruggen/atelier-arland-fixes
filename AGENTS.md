@@ -30,7 +30,7 @@ The current tree contains:
 - `README.md` is the user-facing overview and installation guide for the drop-in defaults.
 - `ADVANCED.md` documents the optional features and their `arland-fix.ini` configuration; user-facing configuration is documented exclusively through `arland-fix.ini` (environment switches are diagnostics and belong in `TECHNICAL.md` only).
 - `BUILDING.md` contains the build instructions.
-- `TECHNICAL.md` documents implementation details, evidence, and provenance.
+- `TECHNICAL.md` documents how each fix is implemented and why it works that way. Each section opens with a TL;DR that gives the short version of the explanation below it. Keep the language plain: a reader who knows how to program but not this engine should follow it. Measurements, test results and the record of how a conclusion was reached do not belong here.
 
 Keep the root minimal. Packaged build output belongs below ignored `out/` and must not be committed. The day-to-day Linux build script uses `build64/` and `build32/` as intermediate Meson trees before packaging the distributable archive into `out/`.
 
@@ -82,4 +82,4 @@ Documentation must describe the current repository state. Do not narrate it usin
 
 Avoid overusing em-dashes in source comments and documentation. Prefer commas, parentheses, or separate sentences; occasional correct use is fine, but do not lean on them.
 
-`TECHNICAL.md` and the code must stay in sync: every shipped fix and feature has a section in `TECHNICAL.md` describing its mechanism, and any change that adds, removes, or alters a fix's behavior or defaults amends `TECHNICAL.md` in the same change. A fix that exists only in code is undocumented and incomplete.
+`TECHNICAL.md` and the code must stay in sync: every shipped fix and feature has a section in `TECHNICAL.md` describing how it works, and any change that adds, removes, or alters a fix's behavior or defaults amends `TECHNICAL.md` in the same change. A fix that exists only in code is undocumented and incomplete. The table of contents at the top lists every section, so a new section is added there in the same change.

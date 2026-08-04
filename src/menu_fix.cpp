@@ -25,8 +25,6 @@
 #include "shop_fix.h"
 #include "field_collision_fix.h"
 #include "save_menu_fix.h"
-#include "save_menu_probe.h"
-#include "staff_probe.h"
 #include "logo_skip.h"
 #include "movie_skip.h"
 #include "mix_card.h"
@@ -2133,8 +2131,6 @@ void detectAndInstallGameHooks() {
     atfix::installShopFix(gameBase, game);
     atfix::installFieldCollisionFix(gameBase, game);
     atfix::installSaveMenuFix(gameBase, game);
-    atfix::installSaveMenuProbe(gameBase, game);
-    atfix::installStaffProbe(gameBase, game);
     atfix::installLogoSkip(gameBase, game);
     atfix::installMovieSkip(gameBase, game);
     atfix::installMixCardFix(gameBase, game);

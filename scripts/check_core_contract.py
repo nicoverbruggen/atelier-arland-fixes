@@ -7,6 +7,7 @@ code around: the feature enum/matrix, the game-side installer fan-out, and the
 D3D11 synchronization hooks on which the core fix depends.
 """
 
+import pathlib
 import re
 import sys
 from pathlib import Path
@@ -128,12 +129,30 @@ def main():
         for hook in ("CreateBuffer", "CreateTexture2D", "CreateTexture3D"):
             if not re.search(rf"\b{hook}\s*\)", SYNC_CPP):
                 raise ValueError(f"required device hook is missing: {hook}")
+        # MSVC has none of the GCC/Clang __builtin_* intrinsics, and the Linux
+        # cross-build does, so a raw builtin compiles here and fails only on the
+        # Windows CI job after a full build. util.h carries the portable
+        # wrappers; everything else must go through them.
+        src_dir = pathlib.Path(__file__).resolve().parent.parent / "src"
+        offenders = []
+        for path in sorted(src_dir.rglob("*.cpp")) + sorted(src_dir.rglob("*.h")):
+            if path.name == "util.h":
+                continue
+            for number, line in enumerate(path.read_text().splitlines(), 1):
+                if re.search(r"\b__builtin_\w+", line):
+                    offenders.append(f"{path.name}:{number}: {line.strip()}")
+        if offenders:
+            raise ValueError(
+                "GCC/Clang builtins outside util.h will not compile with MSVC; "
+                "use the portable wrapper instead:\n  " + "\n  ".join(offenders)
+            )
+
     except (OSError, ValueError) as exc:
         return fail(str(exc))
 
     print(
-        "core contract ok: feature matrix, installer fan-out, and "
-        "synchronization hook surface agree"
+        "core contract ok: feature matrix, installer fan-out, "
+        "synchronization hook surface, and compiler portability agree"
     )
     return 0
 
