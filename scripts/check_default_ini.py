@@ -21,21 +21,21 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-SECTIONS = ("Rendering", "Battle", "Field", "Menus", "Startup", "Launcher",
-            "Diagnostics")
+SECTIONS = ("Rendering", "Battle", "Debug", "Field", "Menus", "Startup",
+            "Launcher", "Diagnostics")
 
-# Options the code reads that are deliberately kept out of default.ini. Empty:
-# everything the DLL reads is a documented, shipped option.
-UNDOCUMENTED = set()
+# Options the code reads that are deliberately kept out of default.ini. [Debug]
+# View is a developer view selector with no meaning to a player; the launcher
+# only offers it when verbose logging is on. It is listed here rather than left
+# out of SECTIONS, so that the exclusion is a decision on the record instead of
+# a section nobody thought to check.
+UNDOCUMENTED = {("Debug", "View")}
 
-# Seeded per game by featureEnabled() from a per-game matrix rather than from a
-# single literal, so the value cannot be extracted from one call site.
-VALUE_NOT_EXTRACTABLE = {
-    ("Battle", "BattleCutInShadows"),
-    ("Battle", "BattleCutInDimming"),
-    ("Startup", "SkipLogos"),
-    ("Startup", "SkipIntroMovie"),
-}
+# Features seeded through featureEnabled() have no literal default at a call
+# site: the value comes from the per-game capability matrix, inverted for the
+# keys whose descriptor says so. Those used to be skipped, which meant three
+# shipped defaults were checked by nothing at all. parse_matrix_defaults()
+# derives them instead.
 
 SECTION_ALT = "|".join(SECTIONS)
 PATTERNS = (
@@ -108,6 +108,42 @@ def parse_source():
     return defaults
 
 
+def parse_matrix_defaults():
+    """Defaults that come from the capability matrix rather than a literal.
+
+    game.cpp holds a descriptor row per feature (env name, ini section, ini key,
+    invert flag) and a matrix with one column per feature and one row per game,
+    where X is on by default, O is opt-in and U is unsupported. featureEnabled()
+    turns a cell into the key's default: on-by-default means the key defaults
+    true, and an inverted descriptor flips that. A feature the matrix supports
+    differently across games has no single correct value, so it is skipped.
+    """
+    text = (ROOT / "src" / "game.cpp").read_text(encoding="utf-8")
+    rows = re.findall(
+        r'\{\s*(?:"[A-Z_0-9]+"|nullptr),\s*(?:"(\w+)"|nullptr),\s*'
+        r'(?:"(\w+)"|nullptr),\s*(true|false)\s*\}',
+        text,
+    )
+    matrix = re.findall(r"/\*\s*\w+\s*\*/\s*\{([^}]*)\}", text)
+    grids = [[c.strip() for c in m.split(",") if c.strip()] for m in matrix]
+    grids = [g for g in grids if g and all(c in ("X", "O", "U") for c in g)]
+    if len(grids) != 3 or len({len(g) for g in grids}) != 1:
+        return {}
+
+    defaults = {}
+    for index, (section, key, invert) in enumerate(rows):
+        if not section or not key or index >= len(grids[0]):
+            continue
+        cells = {g[index] for g in grids if g[index] != "U"}
+        if len(cells) != 1:
+            continue          # genuinely per-game; no single shipped default
+        on_by_default = cells.pop() == "X"
+        if invert == "true":
+            on_by_default = not on_by_default
+        defaults[(section, key)] = "true" if on_by_default else "false"
+    return defaults
+
+
 def parse_launcher():
     """(section, key) -> default value the settings launcher falls back to."""
     defaults = {}
@@ -136,10 +172,11 @@ def main():
             f"{entry[0]}/{entry[1]}: in default.ini but never read by the code"
         )
 
+    matrix_defaults = parse_matrix_defaults()
     for entry in sorted(set(ini) & set(source)):
-        if entry in VALUE_NOT_EXTRACTABLE:
-            continue
         expected = source[entry]
+        if expected is None:
+            expected = matrix_defaults.get(entry)
         if expected is None:
             continue
         actual = ini[entry]

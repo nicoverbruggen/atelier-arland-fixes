@@ -30,6 +30,7 @@ The **included launcher** replaces the standard window for the Arland games and 
 | Correct world-map analog cursor speed        | —      | ✓      | ✓      |
 | Restored battle cut-in shadows               | ✓      | ✓      | ✓      |
 | Instant save and load menus                  | ✓      | ✓      | ✓      |
+| Optional startup logo and intro-movie skip   | ✓      | ✓      | ✓      |
 | Various game-specific bug fixes              | ✓      | ✓      | ✓      |
 | Local crash logging                          | ✓      | ✓      | ✓      |
 
@@ -92,7 +93,7 @@ If nothing seems to have changed after installing, check this first. `arland-fix
 
 ### Advanced options
 
-The release archive includes an `arland-fix.ini` listing every option with its default and a short explanation; if none is present the mod creates a minimal one on first launch. You can customize settings by using the mod's launcher.
+The release archive includes an `arland-fix.ini` listing every option with its default; if none is present the mod creates a minimal one on first launch. You can customize settings by using the mod's launcher.
 
 ## Build
 

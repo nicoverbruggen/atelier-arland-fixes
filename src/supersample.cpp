@@ -263,7 +263,9 @@ ID3D11Texture2D* ssaaRedirectRenderTargetView(
   if (!isBackbuffer)
     return nullptr;
 
-  const uint32_t seen = g_redirects.fetch_add(1, std::memory_order_relaxed);
+  // Counted only once the redirect is certain to be taken. Downscale at Present
+  // gates on this counter, so counting a declined redirect would blit a target
+  // the game never rendered into over the finished frame.
   if (desc && desc->Format != DXGI_FORMAT_UNKNOWN && desc->Format != g_format) {
     static std::atomic<bool> reportedDecline{false};
     if (verboseLogging() ||
@@ -272,6 +274,7 @@ ID3D11Texture2D* ssaaRedirectRenderTargetView(
           desc->Format, " differs from backbuffer format ", g_format);
     return nullptr;
   }
+  const uint32_t seen = g_redirects.fetch_add(1, std::memory_order_relaxed);
   if (seen < 4 && verboseLogging())
     log("SSAA backbuffer render target redirected to ", std::dec,
         g_renderWidth, "x", g_renderHeight);

@@ -2113,10 +2113,16 @@ void detectAndInstallGameHooks() {
     const bool atlasInstalled = installAtlasCache(
       reinterpret_cast<BYTE*>(module), game);
     gameBase = reinterpret_cast<BYTE*>(module);
-    const bool textBitmapAllocatorInstalled =
-      installTextBitmapAllocator(gameBase, game);
+    // Consumer first, deliberately. The allocator's re-render doubles the
+    // dimensions it writes into the output object, and only the consumer puts
+    // them back; installing the allocator first would leave every string at
+    // double size if the consumer then failed. Same ordering rule as the logo
+    // skip and the travel-map fix: the dependent half goes in first.
     const bool hiResTextConsumerInstalled =
       installHiResTextConsumer(gameBase, game);
+    const bool textBitmapAllocatorInstalled =
+      hiResTextConsumerInstalled &&
+      installTextBitmapAllocator(gameBase, game);
     // The BUC scope replays through cachedRenderText, so it needs the atlas
     // hooks; without them the ctor/dtor hooks would only count balloons.
     const bool bucTextCacheInstalled = atlasInstalled

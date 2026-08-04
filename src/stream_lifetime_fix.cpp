@@ -318,14 +318,17 @@ uintptr_t STDMETHODCALLTYPE correctedIndexProducer(uintptr_t core) {
   if (!renderer)
     return originalIndexProducer(core);
 
-  const uintptr_t wrapper =
-    *reinterpret_cast<const uintptr_t*>(core + kIndexCurrentOffset);
   const uintptr_t cached =
     *reinterpret_cast<const uintptr_t*>(renderer + kIndexCacheOffset);
-  if (wrapper == cached)
+  if (*reinterpret_cast<const uintptr_t*>(core + kIndexCurrentOffset) == cached)
     return originalIndexProducer(core);
 
+  // The drain can run the engine's finalizer on a wrapper, so read the one we
+  // are about to pin after it rather than before: a value read first could be
+  // freed by the drain and pinned afterwards.
   drainDeferredReleases();
+  const uintptr_t wrapper =
+    *reinterpret_cast<const uintptr_t*>(core + kIndexCurrentOffset);
   if (!wrapper)
     return originalIndexProducer(core);
 

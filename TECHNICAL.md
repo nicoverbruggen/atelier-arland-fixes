@@ -758,11 +758,68 @@ If a game crashes, a last-chance exception filter appends a post-mortem to `arla
 
 With `[Diagnostics] VerboseLogging` enabled (off by default; `ARLAND_VERBOSE_LOG` overrides), successful low-level hook installation, render-resource redirections, battle scene/state transitions and process memory (working set, peak and commit) are logged in addition to the normal records. The `MEM` line appears about every ten seconds as a passive probe for a crash that hangs rather than throwing, so a memory climb can be captured even when the exception post-mortem never runs. Menu statistics come with it: per-transition cache statistics, per-conversation cache hit/miss totals, and a periodic per-frame heartbeat (text-render calls and time, cache hits and misses, and the battle/cinematic tracking flags) used to localize frame-time regressions. `ARLAND_MENU_STATS` overrides that either way; unset, it follows `VerboseLogging`, which it can safely do because it only observes. The traces that do move the code path they report on, the menu-transition trace and the cut-in probe among them, never follow the checkbox and have to be asked for by name.
 
-`ARLAND_ITEM_PROBE=1` logs every index the Totori item guards reject, with the whole item record and the caller, not just the first; `ARLAND_ITEM_GUARD=0` stands the read guards down. `ARLAND_ITEM_SANITIZE=0` disables load repair. See "Totori item and save corruption guard".
-
-`ARLAND_STREAM_LIFETIME_FIX=0` disables Totori's queued vertex/index stream lifetime correction. See "Totori asynchronous render-stream lifetime fix".
-
 `ARLAND_ATLAS_RECONCILE=1` checks the font-atlas cache's invalidation coverage, which is what both snapshot lifetimes rest on. It counts writes to a mutable atlas as the D3D11 layer sees them and compares them against the middleware unlocks the game-side hook observes, reporting both with an `unmatched_writes` figure on a periodic `ATLAS reconcile` line. That figure must stay at zero: above it, some path mutates an atlas without reaching the unlock hook, so a snapshot could be served after the pixels behind it changed. It is off by default because the resource predicate inspects every mapped resource.
+
+### The switches
+
+Environment variables, not `arland-fix.ini` keys. Most only add logging. The ones marked *(A/B)* switch a shipped fix back off so its effect can be compared against unmodified behaviour, and those do change how the game plays for that launch.
+
+| Variable | Effect |
+| --- | --- |
+| `ARLAND_DISABLE=1` | Stands the whole mod down for one launch. `d3d11.dll` still loads and still forwards Direct3D, but installs no hooks and changes nothing, so the game runs as it shipped. The launcher's **Play without the mod** button passes this. It is the quickest way to tell a game problem apart from a mod problem without moving files out of the game folder. |
+| `ARLAND_VERBOSE_LOG=1` | Same as `[Diagnostics] VerboseLogging`. Adds hook addresses, resource redirections and battle-object state, and turns on the observing diagnostics below, so a detailed log can be asked for without setting several variables. The heavier traces stay opt-in individually, and `ARLAND_MENU_TRANSITION_TRACE` is never included because it changes the code path it reports on. |
+| `ARLAND_CRASH_LOG=0` | Stands the crash post-mortem down. It is otherwise always written. |
+| `ARLAND_PERF_LOG=1` | Follows verbose logging unless set explicitly. Writes a `PERF` line every ten seconds: average frame rate, average frame time, and the worst single frame in that window. An average alone cannot tell a steady 60 from a steady 60 with a 90 ms hitch. |
+| `ARLAND_MENU_STATS=1` | Per-drain menu timings and cache hit rates. Follows verbose logging unless set explicitly. |
+| `ARLAND_MENU_DEEP_STATS=1` | Per-node menu construction timings. Rorona English only. |
+| `ARLAND_MENU_TRANSITION_TRACE=1` | Traces menu transitions. Never enabled by verbose logging, because it alters the path it reports on. |
+| `ARLAND_FIELD_TRACE=1` | Logs the field character's state around each loss of footing. |
+| `ARLAND_RESOLUTION_TRACE=1` | Traces the resolution override's effect on render targets. |
+| `ARLAND_PRESENT_TRACE=1` | Reports how the finished frame reaches the screen. Needs a display resolution set. |
+| `ARLAND_SCENE_TRACE=1` | Traces scene-target selection. |
+| `ARLAND_ITEM_PROBE=1` | Logs every malformed item index Totori's guards reject, with the whole record and the caller, not just the first. |
+| `ARLAND_ITEM_SAVE_TRACE=1` | Traces Totori's save-data repair as it runs. |
+| `ARLAND_ATLAS_RECONCILE=1` | Checks the font-atlas cache's invalidation coverage against what the D3D11 layer sees. |
+| `ARLAND_WORLDMAP_PROBE=1` | Logs the raw and corrected travel-map cursor movement. |
+| `ARLAND_MIXCARD_PROBE=1` | Logs the synthesis card pump's stepping. |
+| `ARLAND_LAUNCHER_DIAGNOSTIC=1` | Extra logging from the 32-bit launcher proxy. |
+| `ARLAND_PRESENT_INTERVAL=0` | Forces vsync off; `1`, `2`, `3` present every Nth refresh. Useful with an external frame limiter. Unset leaves the game's own choice alone. `0` will tear in exclusive fullscreen. |
+| `ARLAND_NO_REDIRECT=1` | Opens Koei Tecmo's own launcher instead of the mod's, for one launch. The launcher's buttons for the original tools use this, which is why they cannot loop back. |
+| `ARLAND_HIRES_SCALE`, `ARLAND_HIRES_VOFF` | Nudge the replacement font's size and vertical position, for quick tuning. |
+| `ARLAND_HIRES_FILTER`, `ARLAND_HIRES_SDF`, `ARLAND_HIRES_SHARPEN`, `ARLAND_HIRES_DUMP` | Select the upscale filter, its steepening and sharpening, and dump the result. |
+| `ARLAND_MENU_FIX=0` | *(A/B)* Skips the game-code detours and leaves the synchronization layer active. |
+| `ARLAND_ATLAS_CACHE=0` | *(A/B)* Disables the font-atlas cache. |
+| `ARLAND_FRAME_ATLAS_CACHE` | *(A/B)* `0` holds Rorona and Totori to the queue-scoped lifetime; `1` opts Meruru into the frame-scoped one. |
+| `ARLAND_TEXT_BITMAP_CACHE=0` | *(A/B)* Disables Meruru's conversation-scoped text cache. |
+| `ARLAND_FIELD_ENGINE_FIX=0` | *(A/B)* Restores the game's own minimum-movement distance, reinstating the high-refresh field problems. |
+| `ARLAND_FIELD_STABILIZER=0` | *(A/B)* Stops holding the character still at rest. Ignored unless the switch above is on. |
+| `ARLAND_WORLDMAP_FIX=0` | *(A/B)* Restores the frame-tied travel-map cursor speed. |
+| `ARLAND_MONSTER_SNAP=0`, `ARLAND_MONSTER_SNAP_SPEED` | *(A/B)* Disable the monster rate limit, or set it in world units per second. |
+| `ARLAND_CHARACTER_PULL=0` | *(A/B)* Restores the unclamped character separation. |
+| `ARLAND_SAVE_MENU_GATES=0` | *(A/B)* Restores the original waits in front of the save data slots view. |
+| `ARLAND_CUTIN_SHADOWS=0`, `ARLAND_CUTIN_DIMMING` | *(A/B)* Disable the cut-in shadow restoration, or restore the original dimming. |
+| `ARLAND_CUTIN_ACTOR_CLEAR=0` | *(A/B)* Stops clearing a mid-cut-in battler's shadow when its fade begins. |
+| `ARLAND_BATTLE_SHADOWS=0` | *(A/B)* Disables Rorona's battle shadow restoration. |
+| `ARLAND_BATTLE_MODE_GATE=0` | *(A/B)* Falls back to the watchdog alone for detecting the end of a battle. |
+| `ARLAND_ITEM_GUARD=0` | *(A/B)* Restores Totori's own unbounded item-effect lookups. |
+| `ARLAND_ITEM_SANITIZE=0` | *(A/B)* Disables the repair of damaged Totori save data on load and save. |
+| `ARLAND_STREAM_LIFETIME_FIX=0` | *(A/B)* Disables Totori's queued stream lifetime correction. |
+| `ARLAND_SYNTH_RATE=0` | *(A/B)* Restores the frame-tied synthesis card animation. |
+| `ARLAND_SKIP_LOGOS`, `ARLAND_SKIP_INTRO_MOVIE` | Override the two startup skips for one launch. |
+| `ARLAND_BORDERLESS`, `ARLAND_SMAA`, `ARLAND_MSAA`, `ARLAND_ANISO`, `ARLAND_SHADOW_MULTIPLIER`, `ARLAND_UIFONT`, `ARLAND_UI_SCALE` | Override the matching `arland-fix.ini` keys for one launch. |
+| `ARLAND_SMAA_BOUNDARY`, `ARLAND_SMAA_PREUI` | Select where the anti-aliasing pass is injected. |
+| `ARLAND_DEBUG_VIEW` | Selects a debug view; overrides `[Debug] View`. `ARLAND_SMAA_DEBUG=1|2` still selects the two SMAA views. |
+
+### Debug views
+
+Turning on verbose logging adds a **Debug** tab to the launcher holding a single **Debug view** dropdown. These are diagnostics rather than quality settings: each replaces what is drawn so one part of the mod can be checked by eye, which is why only one runs at a time. Off in a normal install.
+
+- **Wireframe** draws 3D geometry as outlines. The HUD, menus and movies are left alone, since those are flat quads drawn with depth testing off. It shows model detail and where level-of-detail models swap as the camera moves.
+- **SMAA edge detection** outlines what the anti-aliasing pass found, in red and green over a dimmed scene. The HUD stays untouched because the pass runs before the UI is drawn, which also makes this the quickest way to confirm the pre-UI injection is working.
+- **SMAA blend weights** shows the following pass. Worth a look when the edges look right and the result does not.
+- **Highlight scene target** tints the surface the anti-aliasing pass picked, at the moment it picks it. Green over the world but not the HUD means it found the right surface at the right point in the frame; green over the HUD as well means it ran too late.
+
+In the file the setting is `[Debug] View`, one of `off`, `wireframe`, `smaa-edges`, `smaa-weights` or `scene-target`.
 
 ## Runtime memory manipulation
 

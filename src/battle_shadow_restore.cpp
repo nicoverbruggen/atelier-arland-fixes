@@ -465,6 +465,12 @@ size_t dispatchBattleCharaShadows(uintptr_t helper, uintptr_t scene) {
       for (uintptr_t chara : battleCharas) {
         if (!chara || dispatchedBattleCharas.count(chara))
           continue;
+        // The list is not cleared between battles, so an entry can name an
+        // object the engine has already freed. readableRange first, exactly as
+        // registerBattleCharaShadows does before the same dereference; the
+        // vtable test alone would happily pass on recycled bytes.
+        if (!readableRange(chara, 0x20))
+          continue;
         const uintptr_t vtable = *reinterpret_cast<const uintptr_t*>(chara);
         if (!isBattleCharaVtable(vtable))
           continue;
@@ -830,7 +836,12 @@ uintptr_t tracedDeferredHideArm(uintptr_t obj, uintptr_t target,
 uintptr_t tracedTacticalHideAll(uintptr_t a, uintptr_t b,
                                 uintptr_t c, uintptr_t d) {
   const uintptr_t result = originalTacticalHideAll(a, b, c, d);
-  if (g_battleActive.load(std::memory_order_acquire)) {
+  // Both halves of the pair or neither. Only tracedTacticalShowAll sets a
+  // restore deadline, so clearing here with showAll missing would drop every
+  // caster's shadow for the rest of the session with no path back. The
+  // deferred-hide detour above gates on the same flag for the same reason.
+  if (g_battleActive.load(std::memory_order_acquire) &&
+      g_tacticalHooksActive.load(std::memory_order_acquire)) {
     clearBattleSnodeFlags("hide_all");
     g_snodeRestoreDeadlineMs.store(0, std::memory_order_release);
   }

@@ -262,8 +262,8 @@ LONG WINAPI crashFilter(EXCEPTION_POINTERS* pointers) {
     // address), an audio module up the stack points at the XAudio2 path — the
     // signature Totori in-battle "screech" crash the D3D11 layer cannot fix.
     if (audioInStack ||
-        std::strcmp(classifyModule(faultName, moduleHandleOf(
-          reinterpret_cast<uintptr_t>(record->ExceptionAddress))), "AUDIO") == 0)
+        (record && std::strcmp(classifyModule(faultName, moduleHandleOf(
+          reinterpret_cast<uintptr_t>(record->ExceptionAddress))), "AUDIO") == 0))
       log("CRASH hint: audio module (XAudio2) implicated — this is an "
         "audio-path fault, not a rendering fault");
   }

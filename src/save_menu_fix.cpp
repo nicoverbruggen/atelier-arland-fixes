@@ -196,7 +196,11 @@ constexpr InputSite kInputSites[] = {
     { 0x40, 0x53, 0x48, 0x83, 0xec, 0x30, 0x80, 0xb9, 0xf8, 0x25, 0x00, 0x00, 0x00, 0x48, 0x8b, 0xd9 } },
 };
 
-constexpr size_t kButtonCount = 16;   // one byte per button in each array
+// One byte per button in each array. The engine clears this state as five
+// consecutive qwords covering both arrays and a little beyond, so writing
+// sixteen entries of the previous-state array stays inside the block the engine
+// itself treats as one unit.
+constexpr size_t kButtonCount = 16;
 
 using UpdateProc = uint8_t (STDMETHODCALLTYPE*)(uintptr_t);
 UpdateProc originalUpdate = nullptr;
@@ -205,24 +209,34 @@ BYTE* heldState = nullptr;       // current-state array, kButtonCount bytes
 BYTE* previousState = nullptr;   // previous-state array
 uint32_t openFlagOffset = 0;
 
-// Which buttons were already down when the view opened, and whether the view was
-// up on the previous call. Update runs on one thread, so plain values are enough.
+// Which buttons were already down when the view opened, and which scene that
+// was. Update is a method, so the same detour serves every instance; keying the
+// state to the instance means a second scene cannot inherit the first's carried
+// set, and a torn-down scene cannot clear a live one's. One instance is what the
+// engine actually constructs, through a lazy singleton, so this costs a pointer
+// compare to remove a whole class of question rather than to fix a seen bug.
+//
+// These are plain values because Update runs on the game's main thread, the same
+// one that fills the pad state it reads.
+uintptr_t trackedScene = 0;
 uint32_t carried = 0;
-bool viewWasOpen = false;
 
 uint8_t STDMETHODCALLTYPE repairedUpdate(uintptr_t self) {
   const bool open = *reinterpret_cast<const BYTE*>(self + openFlagOffset) != 0;
 
   if (!open) {
-    // Closed. Forget everything, so the next opening starts from the pad as it
-    // is at that moment rather than from a stale set.
-    carried = 0;
-    viewWasOpen = false;
+    // Closed. Forget this scene's set, so the next opening starts from the pad
+    // as it is at that moment rather than from a stale one. Another scene's
+    // tracking is left alone.
+    if (trackedScene == self) {
+      trackedScene = 0;
+      carried = 0;
+    }
     return originalUpdate(self);
   }
 
-  if (!viewWasOpen) {
-    viewWasOpen = true;
+  if (trackedScene != self) {
+    trackedScene = self;
     carried = 0;
     for (size_t i = 0; i < kButtonCount; ++i) {
       if (heldState[i])
@@ -280,6 +294,24 @@ bool installCarriedPressRepair(BYTE* base, const Game& game) {
 // All or nothing. A half-applied set would leave the view reachable through one
 // path and gated through another, which is the worst thing to hand someone
 // trying to measure whether this helped.
+// Put back the original branch bytes for the first `count` gates. Used only to
+// unwind a patch loop that failed part way, so the executable is left as the
+// game shipped it rather than half patched.
+void restoreGates(BYTE* base, const Gate* gates, size_t count) {
+  for (size_t i = 0; i < count; ++i) {
+    BYTE* branch = base + gates[i].comissRva + gates[i].branchOffset;
+    DWORD previous = 0;
+    if (!VirtualProtect(branch, gates[i].branchLength, PAGE_EXECUTE_READWRITE,
+                        &previous))
+      continue;
+    std::memcpy(branch, gates[i].expected.data() + gates[i].branchOffset,
+                gates[i].branchLength);
+    DWORD ignored = 0;
+    VirtualProtect(branch, gates[i].branchLength, previous, &ignored);
+    FlushInstructionCache(GetCurrentProcess(), branch, gates[i].branchLength);
+  }
+}
+
 bool applyGates(BYTE* base, const Gate* gates, size_t count) {
   for (size_t i = 0; i < count; ++i) {
     if (!matches(base + gates[i].comissRva, gates[i].expected)) {
@@ -293,6 +325,12 @@ bool applyGates(BYTE* base, const Gate* gates, size_t count) {
     DWORD previous = 0;
     if (!VirtualProtect(branch, gates[i].branchLength, PAGE_EXECUTE_READWRITE,
                         &previous)) {
+      // Undo whatever this loop already wrote. Leaving some gates removed and
+      // others in place is the one outcome the all-or-nothing rule above exists
+      // to prevent, and it is worse than not applying the feature at all: the
+      // paths that were patched open the view instantly with no carried-press
+      // repair, which is the defect the repair exists for.
+      restoreGates(base, gates, i);
       log("FIXES save_menu_gates=protect_failed at ", gates[i].name);
       return false;
     }
