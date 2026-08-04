@@ -83,6 +83,7 @@
 #include "log.h"
 #include "mem.h"
 #include "staff_probe.h"
+#include "util.h"
 
 namespace atfix {
 
@@ -882,7 +883,7 @@ uintptr_t STDMETHODCALLTYPE probedSetLocalTransform(uintptr_t node,
                                                     uintptr_t a,
                                                     uintptr_t b) {
   const uintptr_t raw =
-    reinterpret_cast<uintptr_t>(__builtin_return_address(0));
+    reinterpret_cast<uintptr_t>(arlandReturnAddress());
   recordNodeSetter(node,
                    moduleBase && raw > moduleBase ? raw - moduleBase : raw);
   return originalSetLocalTransform(node, a, b);
@@ -1151,7 +1152,7 @@ void reportJump(uintptr_t chara, uintptr_t node, const char* where,
 uintptr_t STDMETHODCALLTYPE probedLocalMove(uintptr_t object, uintptr_t vector,
                                             uintptr_t flag) {
   const uintptr_t raw =
-    reinterpret_cast<uintptr_t>(__builtin_return_address(0));
+    reinterpret_cast<uintptr_t>(arlandReturnAddress());
   moveRing[moveRingNext].object = object;
   moveRing[moveRingNext].callerRva =
     moduleBase && raw > moduleBase ? raw - moduleBase : raw;
@@ -1459,7 +1460,7 @@ uintptr_t STDMETHODCALLTYPE probedSetPosition(uintptr_t self,
 
   if (haveBefore && reported < kMaxReports && tryRead(destination, after)) {
     const uintptr_t raw =
-      reinterpret_cast<uintptr_t>(__builtin_return_address(0));
+      reinterpret_cast<uintptr_t>(arlandReturnAddress());
     const uintptr_t caller =
       moduleBase && raw > moduleBase ? raw - moduleBase : raw;
 
@@ -1533,7 +1534,7 @@ uintptr_t STDMETHODCALLTYPE probedEncounterTrigger(uintptr_t request,
                                                    uint32_t spawnId,
                                                    uint32_t advantage) {
   const uintptr_t raw =
-    reinterpret_cast<uintptr_t>(__builtin_return_address(0));
+    reinterpret_cast<uintptr_t>(arlandReturnAddress());
   const uintptr_t caller =
     moduleBase && raw > moduleBase ? raw - moduleBase : raw;
   const bool fromDetection = caller == kDetectionTriggerReturn;
