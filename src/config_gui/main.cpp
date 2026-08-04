@@ -444,8 +444,40 @@ bool iniBool(const char* section, const char* key, bool def) {
          value[0] == 'y' || value[0] == 'Y';
 }
 
+// Every INI write is checked. WritePrivateProfileStringA caches, so a failure
+// can surface at any call or only at the flush that commits the file, and the
+// user needs to be told which of the two files did not get written rather than
+// which line failed. saveToIni clears these on entry and reports them back.
+bool g_iniWriteFailed = false;
+bool g_settingsWriteFailed = false;
+
+bool iniWrite(const char* section, const char* key, const char* value,
+              const char* path) {
+  // No adopted game folder means no settings file to write, which is a normal
+  // state rather than a failure. Writing there anyway would report a problem
+  // the user cannot act on.
+  if (!path || !path[0])
+    return true;
+  if (WritePrivateProfileStringA(section, key, value, path))
+    return true;
+  if (path == g_settingsPath)
+    g_settingsWriteFailed = true;
+  else
+    g_iniWriteFailed = true;
+  return false;
+}
+
+// What saveToIni managed to write. Both files are written independently, so a
+// partial failure leaves the resolution split across them, which is the state
+// the two are kept in step to avoid.
+struct SaveOutcome {
+  bool ini = true;
+  bool settings = true;
+  bool ok() const { return ini && settings; }
+};
+
 void iniWriteBool(const char* section, const char* key, bool on) {
-  WritePrivateProfileStringA(section, key, on ? "true" : "false", g_iniPath);
+  iniWrite(section, key, on ? "true" : "false", g_iniPath);
 }
 
 // ---- combo helpers ---------------------------------------------------------
@@ -864,10 +896,13 @@ bool isChecked(HWND ctrl) {
   return SendMessageW(ctrl, BM_GETCHECK, 0, 0) == BST_CHECKED;
 }
 
-void saveToIni() {
+SaveOutcome saveToIni() {
+  g_iniWriteFailed = false;
+  g_settingsWriteFailed = false;
+
   // Write only the known keys. WritePrivateProfileStringA leaves every other
   // line in the file untouched, so anything unrecognized is preserved.
-  WritePrivateProfileStringA("Rendering", "Font",
+  iniWrite("Rendering", "Font",
     comboValue(g_hFont, kFontItems, 3), g_iniPath);
 
   // Base resolution -> DisplayWidth/DisplayHeight. "Auto" writes them blank
@@ -877,17 +912,17 @@ void saveToIni() {
   char num[16] = {};
   if (selectedBase(&bw, &bh)) {
     wsprintfA(num, "%u", bw);
-    WritePrivateProfileStringA("Rendering", "DisplayWidth", num, g_iniPath);
+    iniWrite("Rendering", "DisplayWidth", num, g_iniPath);
     // Keep the game's own settings file in step: the mod overrides the swap
     // chain with the display resolution anyway, and leaving the two disagreeing
     // is what makes "which resolution am I actually running?" hard to answer.
-    WritePrivateProfileStringA("Graphics", "ScreenWidth", num, g_settingsPath);
+    iniWrite("Graphics", "ScreenWidth", num, g_settingsPath);
     wsprintfA(num, "%u", bh);
-    WritePrivateProfileStringA("Rendering", "DisplayHeight", num, g_iniPath);
-    WritePrivateProfileStringA("Graphics", "ScreenHeight", num, g_settingsPath);
+    iniWrite("Rendering", "DisplayHeight", num, g_iniPath);
+    iniWrite("Graphics", "ScreenHeight", num, g_settingsPath);
   } else {
-    WritePrivateProfileStringA("Rendering", "DisplayWidth", "", g_iniPath);
-    WritePrivateProfileStringA("Rendering", "DisplayHeight", "", g_iniPath);
+    iniWrite("Rendering", "DisplayWidth", "", g_iniPath);
+    iniWrite("Rendering", "DisplayHeight", "", g_iniPath);
   }
 
   // Supersampling -> RenderWidth/RenderHeight = the selected display or desktop
@@ -896,24 +931,24 @@ void saveToIni() {
   unsigned rw, rh;
   if (computeRender(&rw, &rh)) {
     wsprintfA(num, "%u", rw);
-    WritePrivateProfileStringA("Rendering", "RenderWidth", num, g_iniPath);
+    iniWrite("Rendering", "RenderWidth", num, g_iniPath);
     wsprintfA(num, "%u", rh);
-    WritePrivateProfileStringA("Rendering", "RenderHeight", num, g_iniPath);
+    iniWrite("Rendering", "RenderHeight", num, g_iniPath);
   } else {
-    WritePrivateProfileStringA("Rendering", "RenderWidth", "", g_iniPath);
-    WritePrivateProfileStringA("Rendering", "RenderHeight", "", g_iniPath);
+    iniWrite("Rendering", "RenderWidth", "", g_iniPath);
+    iniWrite("Rendering", "RenderHeight", "", g_iniPath);
   }
 
-  WritePrivateProfileStringA("Rendering", "MSAA",
+  iniWrite("Rendering", "MSAA",
     comboValue(g_hMsaa, kMsaaItems, 4), g_iniPath);
   // Normalised, not offered. The control is gone and the value is meant to be
   // 16 for everyone, but an ini written before that change still says 8 and
   // nothing else would ever raise it. Saving once migrates it; hand-editing
   // still wins until the next save, which is the same deal every other key
   // here gets.
-  WritePrivateProfileStringA("Rendering", "AnisotropicFiltering", "16",
+  iniWrite("Rendering", "AnisotropicFiltering", "16",
     g_iniPath);
-  WritePrivateProfileStringA("Rendering", "ShadowMultiplier",
+  iniWrite("Rendering", "ShadowMultiplier",
     comboValue(g_hShadow, kShadowItems, 4), g_iniPath);
   iniWriteBool("Rendering", "SMAA", isChecked(g_hSmaa));
   {
@@ -922,12 +957,12 @@ void saveToIni() {
       sel = 0;
     const WindowModeItem& mode = kWindowModes[sel];
     iniWriteBool("Rendering", "Borderless", mode.borderless);
-    WritePrivateProfileStringA("Window", "FullScreen", mode.fullscreen,
+    iniWrite("Window", "FullScreen", mode.fullscreen,
       g_settingsPath);
   }
-  WritePrivateProfileStringA("Lang", "Language",
+  iniWrite("Lang", "Language",
     comboValue(g_hLang, kLangItems, kLangCount), g_settingsPath);
-  WritePrivateProfileStringA("Graphics", "Outline",
+  iniWrite("Graphics", "Outline",
     isChecked(g_hOutline) ? "1" : "0", g_settingsPath);
 
   {
@@ -949,12 +984,35 @@ void saveToIni() {
   int debugViewSel = (int)SendMessageW(g_hDebugView, CB_GETCURSEL, 0, 0);
   if (debugViewSel < 0 || debugViewSel > 4)
     debugViewSel = 0;
-  WritePrivateProfileStringA("Debug", "View",
+  iniWrite("Debug", "View",
     debugViewSel ? kDebugViewItems[debugViewSel].value : nullptr, g_iniPath);
 
-  // Flush the cache so the file is on disk before we report success.
-  WritePrivateProfileStringA(nullptr, nullptr, nullptr, g_iniPath);
-  WritePrivateProfileStringA(nullptr, nullptr, nullptr, g_settingsPath);
+  // Flush the cache so each file is on disk before we report success. This is
+  // the call that actually commits, so its result matters most of the three.
+  iniWrite(nullptr, nullptr, nullptr, g_iniPath);
+  iniWrite(nullptr, nullptr, nullptr, g_settingsPath);
+  return SaveOutcome{!g_iniWriteFailed, !g_settingsWriteFailed};
+}
+
+// Name the file that did not get written. "Settings were saved" over a failed
+// write is worse than the failure: the user has no way to tell it happened, and
+// the most likely cause, a read-only arland-fix.ini left behind by a Steam file
+// verification, is something they can fix in a moment once they know.
+void reportSaveFailure(HWND owner, SaveOutcome outcome) {
+  if (outcome.ok())
+    return;
+  const wchar_t* which =
+    !outcome.ini && !outcome.settings
+      ? L"arland-fix.ini and the game's own ArlandDX_Settings.ini could not be "
+        L"written."
+      : (!outcome.ini
+           ? L"arland-fix.ini could not be written."
+           : L"The game's own ArlandDX_Settings.ini could not be written, so "
+             L"the resolution there no longer matches the mod's.");
+  wchar_t text[512];
+  wsprintfW(text, L"%s\n\nThe file may be read-only, or the game folder may "
+                  L"not be writable. Your settings have not been saved.", which);
+  MessageBoxW(owner, text, L"Atelier Arland Fixes", MB_OK | MB_ICONWARNING);
 }
 
 // ---- unsaved-change tracking -----------------------------------------------
@@ -1244,9 +1302,20 @@ bool startGame(HWND w, bool standDownMod) {
   // one outcome nobody wants from either of these buttons. It matters just as
   // much without the mod, since resolution and language live in the game's own
   // settings file and it reads them either way.
-  saveToIni();
-  // Nothing is pending any more, so a failed launch leaves no close prompt.
-  markSaved();
+  const SaveOutcome saved = saveToIni();
+  if (!saved.ok()) {
+    // Launching now would run with settings that were never written, which is
+    // the confusing outcome: the game ignores what is on screen and nothing
+    // says why. Offer the choice rather than deciding it.
+    reportSaveFailure(w, saved);
+    if (MessageBoxW(w, L"Start the game anyway, with the settings that are "
+                       L"already in the file?", L"Atelier Arland Fixes",
+                    MB_YESNO | MB_ICONQUESTION) != IDYES)
+      return false;
+  } else {
+    // Nothing is pending any more, so a failed launch leaves no close prompt.
+    markSaved();
+  }
 
   // Which executable to run follows the language that was just saved, exactly
   // as the game's own launcher decides it. Read from the control rather than
@@ -2290,7 +2359,13 @@ LRESULT CALLBACK WndProc(HWND w, UINT msg, WPARAM wp, LPARAM lp) {
           if (answer != IDYES)
             return 0;
           resetToDefaults();
-          saveToIni();
+          const SaveOutcome reset = saveToIni();
+          if (!reset.ok()) {
+            // No markSaved: the values are on screen but not on disk, so the
+            // close prompt has to stay armed.
+            reportSaveFailure(w, reset);
+            return 0;
+          }
           markSaved();
           // Name the game back to the user: this tool configures whichever
           // folder it sits in, and saying which one closes that loop.
@@ -2345,7 +2420,7 @@ LRESULT CALLBACK WndProc(HWND w, UINT msg, WPARAM wp, LPARAM lp) {
         if (answer == IDCANCEL)
           return 0;
         if (answer == IDYES)
-          saveToIni();
+          reportSaveFailure(w, saveToIni());
       }
       DestroyWindow(w);
       return 0;
