@@ -738,14 +738,32 @@ void loadFromIni() {
   unsigned dispH = (unsigned)std::strtoul(h, nullptr, 10);
   int baseSel = 0;   // Auto by default (index 0)
   if (dispW && dispH) {
+    // Match on what the combo actually holds rather than on a kBaseItems index.
+    // The list is filtered to what the display can show, so the two stop lining
+    // up as soon as anything is dropped; using the table index there selects
+    // nothing, and the resolution is then written back blank.
     baseSel = -1;
-    for (int i = 0; i < kBaseCount; ++i)
-      if (kBaseItems[i].w == dispW && kBaseItems[i].h == dispH) { baseSel = i; break; }
-    if (baseSel < 0) {   // not a preset: add a custom item so it survives a save
-      wchar_t label[32];
-      wsprintfW(label, L"%u x %u", dispW, dispH);
-      baseSel = (int)SendMessageW(g_hBase, CB_ADDSTRING, 0, (LPARAM)label);
-      SendMessageW(g_hBase, CB_SETITEMDATA, baseSel, packRes(dispW, dispH));
+    const int count = (int)SendMessageW(g_hBase, CB_GETCOUNT, 0, 0);
+    for (int i = 0; i < count; ++i)
+      if ((LPARAM)SendMessageW(g_hBase, CB_GETITEMDATA, i, 0) ==
+          packRes(dispW, dispH)) { baseSel = i; break; }
+    if (baseSel < 0) {
+      unsigned maxW = 0, maxH = 0;
+      displayMaximum(&maxW, &maxH);
+      if (maxW && maxH && (dispW > maxW || dispH > maxH)) {
+        // Saved for a bigger display than this one. The launcher does not offer
+        // resolutions the panel cannot show, so this one is not added either:
+        // it falls back to Auto, which is the desktop resolution and always
+        // correct here. The saved value is lost on the next save, deliberately.
+        baseSel = 0;
+      } else {
+        // Fits this display but is not one of the presets, so add it and keep
+        // it selectable.
+        wchar_t label[32];
+        wsprintfW(label, L"%u x %u", dispW, dispH);
+        baseSel = (int)SendMessageW(g_hBase, CB_ADDSTRING, 0, (LPARAM)label);
+        SendMessageW(g_hBase, CB_SETITEMDATA, baseSel, packRes(dispW, dispH));
+      }
     }
   }
   SendMessageW(g_hBase, CB_SETCURSEL, baseSel, 0);
