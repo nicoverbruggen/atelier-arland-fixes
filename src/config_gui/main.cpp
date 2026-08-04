@@ -613,6 +613,24 @@ double selectedMult() {
 // gets lost.
 bool g_ssReduced = false;
 
+// Select a kSSItems index, reducing to the largest multiplier this base allows
+// when the list does not hold the one asked for. setSsIndex on its own lands on
+// Off, which throws the setting away instead of honouring as much of it as
+// fits, so every caller that means "restore this selection" comes through here.
+void setSsIndexReducing(int index) {
+  setSsIndex(index);
+  g_ssReduced = false;
+  if (index > 0 && ssIndex() != index) {
+    // The list is built in ascending order, so its last entry is the largest
+    // multiplier available for this base.
+    const int count = (int)SendMessageW(g_hSS, CB_GETCOUNT, 0, 0);
+    if (count > 1) {
+      SendMessageW(g_hSS, CB_SETCURSEL, count - 1, 0);
+      g_ssReduced = true;
+    }
+  }
+}
+
 void refillSupersampling() {
   const int wanted = ssIndex();
   unsigned bw = 0, bh = 0;
@@ -636,18 +654,7 @@ void refillSupersampling() {
     const int at = (int)SendMessageW(g_hSS, CB_ADDSTRING, 0, (LPARAM)label);
     SendMessageW(g_hSS, CB_SETITEMDATA, at, i);
   }
-  setSsIndex(wanted);
-  // setSsIndex lands on Off when the list does not hold what was asked for. The
-  // list is built in ascending order, so its last entry is the largest
-  // multiplier this base allows: take that instead.
-  g_ssReduced = false;
-  if (wanted > 0 && ssIndex() != wanted) {
-    const int count = (int)SendMessageW(g_hSS, CB_GETCOUNT, 0, 0);
-    if (count > 1) {
-      SendMessageW(g_hSS, CB_SETCURSEL, count - 1, 0);
-      g_ssReduced = true;
-    }
-  }
+  setSsIndexReducing(wanted);
 }
 
 // Compute the render resolution (base x multiplier) into out. Returns false
@@ -666,7 +673,10 @@ void applyPreset(int index) {
   if (index < 0 || index >= kPresetCustom)
     return;
   const Preset& preset = kPresets[index];
-  setSsIndex(preset.supersampling);
+  // Reducing rather than discarding matters most here: landing on Off would
+  // also make detectPreset report Custom, so picking Maximum would visibly
+  // refuse to stay picked.
+  setSsIndexReducing(preset.supersampling);
   SendMessageW(g_hMsaa, CB_SETCURSEL, preset.msaa, 0);
   SendMessageW(g_hShadow, CB_SETCURSEL, preset.shadow, 0);
   SendMessageW(g_hSmaa, BM_SETCHECK,
@@ -793,10 +803,10 @@ void loadFromIni() {
     }
   }
   // The list has to hold the multipliers for this base before one can be
-  // selected. A saved value the base no longer allows falls back to Off, which
-  // is the same answer the mod's own clamp gives that ini.
+  // selected. A saved value the base no longer allows is reduced to the largest
+  // that does fit, not discarded.
   refillSupersampling();
-  setSsIndex(ssSel);
+  setSsIndexReducing(ssSel);
 
   // Sync the computed render-resolution label and the Auto-greys-out rule.
   updateRenderResolution();
