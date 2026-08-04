@@ -63,6 +63,7 @@ const Descriptor& descriptor(Feature f) {
     /* SynthesisAnimationRate */ { "ARLAND_SYNTH_RATE", nullptr, nullptr, false },
     /* FieldMonsterSnap   */ { "ARLAND_MONSTER_SNAP", "Field", "MonsterSnapFix", false },
     /* FieldCharacterPull */ { "ARLAND_CHARACTER_PULL", "Field", "CharacterPullFix", false },
+    /* FastSaveMenu       */ { "ARLAND_SAVE_MENU_GATES", "Menus", "FastSaveMenu", false },
   };
   return table[static_cast<int>(f)];
 }
@@ -126,11 +127,20 @@ constexpr Support X = Support::OnByDefault;
 // moment before an encounter starts. It ships on because the correction is
 // strictly subtractive: max(depth, 0) can only remove a pull, never introduce
 // or alter a push, so the patched behaviour is a subset of the original's.
+// FastSaveMenu removes the hardcoded waits in front of the save data slots
+// view: 0.3 s then 0.5 s from the main menu, 1.5 s from inside the Atelier, and
+// 1.5 s again on the way out. None of the waits polls I/O or object readiness;
+// every condition is pure elapsed time, which is why the view was equally slow
+// on a rig where the storage calls are local file operations. Totori only for
+// All three games, both builds each; Rorona and Meruru carry a fifth gate that
+// Totori lacks. Confirmed in play on Rorona and Totori English. Reading the code
+// suggested Rorona's title wait paced a real fade; playing it showed no fade
+// there at all, so that concern is withdrawn.
 constexpr Support kMatrix[3][static_cast<int>(Feature::Count)] = {
-  //           Sync Menu Atls Frme Res  MSAA ShMl Bat  CutS CutD Logo Movi Card Snap Pull
-  /* Rorona */ { X,   X,   X,   X,   X,   O,   O,   X,   X,   X,   O,   O,   X,   X,   X },
-  /* Totori */ { X,   X,   X,   X,   X,   O,   O,   U,   X,   X,   O,   O,   X,   X,   X },
-  /* Meruru */ { X,   X,   X,   O,   X,   O,   O,   U,   X,   X,   O,   O,   X,   X,   X },
+  //           Sync Menu Atls Frme Res  MSAA ShMl Bat  CutS CutD Logo Movi Card Snap Pull Save
+  /* Rorona */ { X,   X,   X,   X,   X,   O,   O,   X,   X,   X,   O,   O,   X,   X,   X,   X },
+  /* Totori */ { X,   X,   X,   X,   X,   O,   O,   U,   X,   X,   O,   O,   X,   X,   X,   X },
+  /* Meruru */ { X,   X,   X,   O,   X,   O,   O,   U,   X,   X,   O,   O,   X,   X,   X,   X },
 };
 
 int titleRow(Title t) {

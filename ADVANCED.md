@@ -45,6 +45,10 @@ The file sits beside the DLLs and is created on first launch. Close the game bef
 | `MonsterSnapFix` | Spreads a chasing monster's end-of-segment movement over time instead of applying it in a single frame, so it cannot cross your staff's reach between two frames and take the encounter with it. All three games. | `true` |
 | `CharacterPullFix` | Stops the engine's character separation pulling two characters together when they are already further apart than their combined size. Applies to every character, including your own party, in all three games. The correction only ever removes that pull; it never alters how characters are pushed apart. | `true` |
 
+| `[Menus]` | Values | Default |
+| --- | --- | --- |
+| `FastSaveMenu` | Removes the hardcoded waits in front of the save data slots view, and the one in front of leaving it, so it opens as soon as the game has built it. The waits pace nothing: none of them polls a file, a load or whether anything is ready. All three games. | `true` |
+
 | `[Startup]` | Values | Default |
 | --- | --- | --- |
 | `SkipLogos` | `true` skips the publisher and developer logos while the game boots. | `false` |

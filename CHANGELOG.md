@@ -8,6 +8,8 @@
 
 - **An option to skip the opening movie.** `SkipIntroMovie=true` under `[Startup]` goes straight past the movie that plays after the logos. Off by default, in all three games, and the ending movies are not affected: the game selects its movies by index through one routine, and only the opening index is intercepted. The skip takes the same path the game itself takes when it cannot play a movie, so nothing new happens on the way to the title screen.
 
+- **The save data slots view now opens immediately.** Bringing up your save data, from the title screen or from the Atelier, waited on a hardcoded timer before the view appeared, and again before it would let you leave. Those waits paced nothing: none of them checks a file, a load or whether anything is ready, they only count elapsed time, and the one in front of the exit already waits for the fade's own signal and then counts a second and a half on top of it. The view now appears as soon as the game has built it. Holding the confirm button no longer carries that press into the view and opens the load prompt by itself, which the old delay had been hiding. All three games, every language version, and `[Menus] FastSaveMenu` puts the original pacing back.
+
 ### Fixed
 
 - **The grey flash at startup is now black.** The game registered its window with a grey background, so the second between the window opening and the first frame being drawn was filled with mid-grey. It is black now, which is what the game fades up from anyway. All three games, every language version, on Windows as well as under Proton.

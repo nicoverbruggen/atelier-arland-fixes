@@ -1,0 +1,341 @@
+// SPDX-License-Identifier: MIT
+//
+// The waits in front of the save data slots view.
+//
+// Opening the save data slots view is slow, and the delay is not file access.
+// It is a set of hardcoded wall-clock waits, which is why it is just as slow on
+// a test rig where the Steam storage calls are local file operations.
+//
+// Each wait has the same shape: an accumulator gains the frame delta, is
+// compared against a constant from a shared read-only float pool, and a
+// conditional branch skips the work until the constant is reached.
+//
+//   movss  xmm0, [obj + acc]
+//   comiss xmm0, [rip + constant]
+//   jb/jbe skip           <- the branch this replaces with NOPs
+//   ... the work the wait holds up ...
+//
+// There are two ways into the view and both are gated:
+//
+//   - from the main menu: 0.3 s before the helper object is even allocated,
+//     then 0.5 s before the view is opened. 0.8 s in total.
+//   - from inside the Atelier: 1.5 s before the view is opened. A separate
+//     1.5 s gate on the way back out.
+//
+// The constants must not be patched. They are shared float-pool entries: the
+// 0.3 and 0.5 sit beside a 0.4 that other code reads, and each 1.5 is a single
+// pooled dword with many references. The branch is what changes.
+//
+// Why this is safe to do, established by reading each site:
+//
+//   - No gate polls I/O, an async load, or object readiness. Every condition is
+//     pure elapsed time. The one exception proves the rule: the in-game exit
+//     gate polls a fade's busy flag *and then* waits 1.5 s on top, so the timer
+//     is pacing layered over the animation rather than standing in for it.
+//   - The first gate branches straight to the accumulator update and returns,
+//     with nothing in between, and the work it holds up is an allocation and a
+//     constructor that build four sub-objects synchronously. Nothing to wait on.
+//   - Nothing fires twice. Each gate's fall-through path sets the state that
+//     stops it being reached again: the first stores the new object pointer,
+//     the second advances a state field, and the in-game gates set a one-shot
+//     flag on the same path.
+//
+// Rorona and Meruru carry a fifth gate that Totori does not: a dispatch gate in
+// front of a jump table of scene-open calls, reached on a re-entry path.
+//
+// A caveat that reading the code raised and playing it withdrew. Rorona's title
+// gate sits in a function that also starts a fade of 0.5 s, from the same pool
+// entry the gate compares against, which read like the wait pacing a real
+// animation one for one. In play there is no fade on Rorona at all, before or
+// after, so whatever that object is it does not show. The other two games do
+// fade into the view, Totori slightly to white and Meruru to black, and neither
+// is affected. The matching constant was a coincidence, or the fade runs on
+// something invisible; either way it does not constrain this.
+//
+// Removing the waits exposed a second defect, which this file also fixes. See
+// "the carried press" below.
+//
+// Measured on Totori after these were removed: the view opens immediately, and
+// what remains is a single text render of roughly 9 ms when the highlighted slot
+// changes. The per-frame row rebuild everyone expected to be the cost measures
+// 36 microseconds a call, under one percent of wall clock, and moving the cursor
+// touches no file or storage call at all.
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+
+#include <array>
+#include <cstdint>
+#include <cstdlib>
+#include <cstring>
+
+#include "game.h"
+#include "hook_util.h"
+#include "log.h"
+#include "save_menu_fix.h"
+
+namespace atfix {
+
+extern Log log;  // main.cpp
+
+namespace {
+
+// Each gate is verified across a 16-byte window starting at the comiss, because
+// that window carries the RIP displacement of the constant and so pins the site
+// far better than the branch alone would. The branch sits at a known offset
+// inside it. Windows are per build: the displacement differs even where the
+// branch bytes are identical.
+struct Gate {
+  const char* name;
+  uintptr_t comissRva;
+  uint8_t branchOffset;   // from comissRva
+  uint8_t branchLength;   // 2 for the short forms, 6 for the near form
+  std::array<BYTE, 16> expected;
+};
+
+constexpr Gate kRoronaEn[] = {
+  { "title_alloc", 0x21ef41, 7, 2, { 0x0f,0x2f,0x05,0x34,0x7d,0x4f,0x00,0x72,0x49,0xb9,0x30,0x00,0x00,0x00,0xe8,0xc0 } },
+  { "title_open", 0x22dce5, 12, 2, { 0x0f,0x2f,0x35,0x94,0x8f,0x4e,0x00,0xf3,0x0f,0x11,0x73,0x18,0x76,0xd6,0x48,0x8b } },
+  { "ingame_open", 0x23055b, 7, 6, { 0x0f,0x2f,0x05,0x22,0x67,0x4e,0x00,0x0f,0x86,0xbd,0x00,0x00,0x00,0x83,0xe9,0x01 } },
+  { "ingame_disp", 0x230404, 7, 6, { 0x0f,0x2f,0x05,0x79,0x68,0x4e,0x00,0x0f,0x86,0x14,0x02,0x00,0x00,0x40,0x38,0xb7 } },
+  { "ingame_exit", 0x230663, 7, 6, { 0x0f,0x2f,0x05,0x1a,0x66,0x4e,0x00,0x0f,0x86,0x83,0x00,0x00,0x00,0xba,0x04,0x00 } },
+};
+constexpr Gate kRoronaMulti[] = {
+  { "title_alloc", 0x22acf1, 7, 2, { 0x0f,0x2f,0x05,0x74,0x43,0x50,0x00,0x72,0x49,0xb9,0x30,0x00,0x00,0x00,0xe8,0xe0 } },
+  { "title_open", 0x23a0e5, 12, 2, { 0x0f,0x2f,0x35,0x84,0x4f,0x4f,0x00,0xf3,0x0f,0x11,0x73,0x18,0x76,0xd6,0x48,0x8b } },
+  { "ingame_open", 0x23cefb, 7, 6, { 0x0f,0x2f,0x05,0x72,0x21,0x4f,0x00,0x0f,0x86,0xbd,0x00,0x00,0x00,0x83,0xe9,0x01 } },
+  { "ingame_disp", 0x23cda4, 7, 6, { 0x0f,0x2f,0x05,0xc9,0x22,0x4f,0x00,0x0f,0x86,0x14,0x02,0x00,0x00,0x40,0x38,0xb7 } },
+  { "ingame_exit", 0x23d003, 7, 6, { 0x0f,0x2f,0x05,0x6a,0x20,0x4f,0x00,0x0f,0x86,0x83,0x00,0x00,0x00,0xba,0x04,0x00 } },
+};
+constexpr Gate kMeruruEn[] = {
+  { "title_alloc", 0x1f8cdc, 7, 2, { 0x0f,0x2f,0x05,0xa5,0xf9,0x42,0x00,0x72,0x36,0xb9,0x30,0x00,0x00,0x00,0xe8,0xe5 } },
+  { "title_open", 0x2018a4, 12, 2, { 0x0f,0x2f,0x05,0xe1,0x6d,0x42,0x00,0xf3,0x0f,0x11,0x41,0x28,0x76,0x17,0x48,0x8b } },
+  { "ingame_open", 0x2014f7, 7, 6, { 0x0f,0x2f,0x05,0x92,0x71,0x42,0x00,0x0f,0x86,0xd3,0x00,0x00,0x00,0x83,0xe9,0x01 } },
+  { "ingame_disp", 0x2013e4, 7, 6, { 0x0f,0x2f,0x05,0xa5,0x72,0x42,0x00,0x0f,0x86,0xe6,0x01,0x00,0x00,0x40,0x38,0x77 } },
+  { "ingame_exit", 0x20160f, 7, 2, { 0x0f,0x2f,0x05,0x7a,0x70,0x42,0x00,0x76,0x79,0xba,0x04,0x00,0x00,0x00,0x48,0x8d } },
+};
+constexpr Gate kMeruruMulti[] = {
+  { "title_alloc", 0x1e995c, 7, 2, { 0x0f,0x2f,0x05,0x7d,0xaa,0x43,0x00,0x72,0x36,0xb9,0x30,0x00,0x00,0x00,0xe8,0xc5 } },
+  { "title_open", 0x1f2694, 12, 2, { 0x0f,0x2f,0x05,0x49,0x1d,0x43,0x00,0xf3,0x0f,0x11,0x41,0x28,0x76,0x17,0x48,0x8b } },
+  { "ingame_open", 0x1f22e7, 7, 6, { 0x0f,0x2f,0x05,0xfa,0x20,0x43,0x00,0x0f,0x86,0xd3,0x00,0x00,0x00,0x83,0xe9,0x01 } },
+  { "ingame_disp", 0x1f21d4, 7, 6, { 0x0f,0x2f,0x05,0x0d,0x22,0x43,0x00,0x0f,0x86,0xe6,0x01,0x00,0x00,0x40,0x38,0x77 } },
+  { "ingame_exit", 0x1f23ff, 7, 2, { 0x0f,0x2f,0x05,0xe2,0x1f,0x43,0x00,0x76,0x79,0xba,0x04,0x00,0x00,0x00,0x48,0x8d } },
+};
+
+constexpr Gate kTotoriEn[] = {
+  { "title_alloc",  0x27a4cc, 7,  2, { 0x0f,0x2f,0x05,0x11,0x75,0x40,0x00,0x72,0x36,0xb9,0x30,0x00,0x00,0x00,0xe8,0x05 } },
+  { "title_open",   0x286c84, 12, 2, { 0x0f,0x2f,0x05,0x61,0xad,0x3f,0x00,0xf3,0x0f,0x11,0x41,0x28,0x76,0x17,0x48,0x8b } },
+  { "ingame_open",  0x286947, 7,  6, { 0x0f,0x2f,0x05,0x8a,0xc4,0x3f,0x00,0x0f,0x86,0xe2,0x00,0x00,0x00,0x83,0xe9,0x01 } },
+  { "ingame_exit",  0x286a67, 7,  2, { 0x0f,0x2f,0x05,0x6a,0xc3,0x3f,0x00,0x76,0x6b,0xba,0x04,0x00,0x00,0x00,0x48,0x8d } },
+};
+
+constexpr Gate kTotoriMulti[] = {
+  { "title_alloc",  0x49724c, 7,  2, { 0x0f,0x2f,0x05,0x91,0x08,0x48,0x00,0x72,0x36,0xb9,0x30,0x00,0x00,0x00,0xe8,0x85 } },
+  { "title_open",   0x4a3b74, 12, 2, { 0x0f,0x2f,0x05,0x71,0x3f,0x47,0x00,0xf3,0x0f,0x11,0x41,0x28,0x76,0x17,0x48,0x8b } },
+  { "ingame_open",  0x4a3837, 7,  6, { 0x0f,0x2f,0x05,0x92,0x78,0x47,0x00,0x0f,0x86,0xe2,0x00,0x00,0x00,0x83,0xe9,0x01 } },
+  { "ingame_exit",  0x4a3957, 7,  2, { 0x0f,0x2f,0x05,0x72,0x77,0x47,0x00,0x76,0x6b,0xba,0x04,0x00,0x00,0x00,0x48,0x8d } },
+};
+
+// ---- the carried press ------------------------------------------------------
+//
+// The save data slots view acts on a button's RELEASE, not its press. The first
+// thing WinSaveLoadScene::Update does once its own 0.1 s input window expires is
+// ask the pad whether button 0xc was just released.
+//
+// So the press that opens the view is not the problem; the release of that same
+// press is. Press confirm, the menu opens the view, keep holding, let go, and
+// the view that your press just opened consumes your release as its own confirm
+// and shows the load prompt. Vanilla hides this behind the 0.5 s wait in front
+// of the view: by the time it exists, you have long since let go. With the wait
+// removed the view is up in time to catch the release, and a hold of much over
+// 0.1 s triggers it.
+//
+// The engine's pad state is two 16-byte arrays, current and previous, one byte
+// per button, with previous 0x10 above current. The query at the end of the
+// gated path is a plain edge test over them:
+//
+//   mode 0 = cur                 held
+//   mode 1 = cur && !prev        just pressed
+//   mode 2 = prev && !cur        just released     <- what the view asks for
+//
+// The repair keeps the edge test honest rather than adding the delay back. On
+// the first frame the view is open, every button already down was down before
+// the view existed, so no edge belongs to this view. Those buttons are recorded,
+// and while each stays down its previous byte is forced to match its current
+// one, which makes both edges impossible for it. On the frame it comes up, the
+// forced write lands first and lands as zero, so the release edge cannot fire
+// either, and the button then stops being tracked. Buttons pressed after the
+// view opened are never touched, so the view responds normally to everything
+// that is genuinely aimed at it.
+//
+// This is a real defect in the game, not one the gate removal introduced: the
+// same thing happens in vanilla if you hold confirm for over half a second. The
+// repair is installed with the gate removal because that is what makes it easy
+// to hit, and so that turning the feature off restores vanilla exactly.
+struct InputSite {
+  Title title;
+  uint8_t build;
+  uintptr_t updateRva;
+  uint32_t openFlagOffset;   // scene byte, nonzero while the view is up
+  uintptr_t heldStateRva;    // current-state array; previous sits 0x10 above
+  std::array<BYTE, 16> expected;
+};
+
+constexpr InputSite kInputSites[] = {
+  // title          build                update    open    held state
+  { Title::Rorona, BuildEnglish,       0x0669a0, 0x25f8, 0x10e6cb8,
+    { 0x40, 0x53, 0x48, 0x83, 0xec, 0x30, 0x80, 0xb9, 0xf8, 0x25, 0x00, 0x00, 0x00, 0x48, 0x8b, 0xd9 } },
+  { Title::Rorona, BuildMultilingual,  0x06c7e0, 0x25f8, 0x1123fb8,
+    { 0x40, 0x53, 0x48, 0x83, 0xec, 0x30, 0x80, 0xb9, 0xf8, 0x25, 0x00, 0x00, 0x00, 0x48, 0x8b, 0xd9 } },
+  { Title::Totori, BuildEnglish,       0x029360, 0x2628, 0x0cddd68,
+    { 0x40, 0x53, 0x48, 0x83, 0xec, 0x30, 0x80, 0xb9, 0x28, 0x26, 0x00, 0x00, 0x00, 0x48, 0x8b, 0xd9 } },
+  { Title::Totori, BuildMultilingual,  0x244fe0, 0x2628, 0x103f138,
+    { 0x40, 0x53, 0x48, 0x83, 0xec, 0x30, 0x80, 0xb9, 0x28, 0x26, 0x00, 0x00, 0x00, 0x48, 0x8b, 0xd9 } },
+  { Title::Meruru, BuildEnglish,       0x0cbea0, 0x25f8, 0x0fe7608,
+    { 0x40, 0x53, 0x48, 0x83, 0xec, 0x30, 0x80, 0xb9, 0xf8, 0x25, 0x00, 0x00, 0x00, 0x48, 0x8b, 0xd9 } },
+  { Title::Meruru, BuildMultilingual,  0x0b7ea0, 0x25f8, 0x1045ae8,
+    { 0x40, 0x53, 0x48, 0x83, 0xec, 0x30, 0x80, 0xb9, 0xf8, 0x25, 0x00, 0x00, 0x00, 0x48, 0x8b, 0xd9 } },
+};
+
+constexpr size_t kButtonCount = 16;   // one byte per button in each array
+
+using UpdateProc = uint8_t (STDMETHODCALLTYPE*)(uintptr_t);
+UpdateProc originalUpdate = nullptr;
+
+BYTE* heldState = nullptr;       // current-state array, kButtonCount bytes
+BYTE* previousState = nullptr;   // previous-state array
+uint32_t openFlagOffset = 0;
+
+// Which buttons were already down when the view opened, and whether the view was
+// up on the previous call. Update runs on one thread, so plain values are enough.
+uint32_t carried = 0;
+bool viewWasOpen = false;
+
+uint8_t STDMETHODCALLTYPE repairedUpdate(uintptr_t self) {
+  const bool open = *reinterpret_cast<const BYTE*>(self + openFlagOffset) != 0;
+
+  if (!open) {
+    // Closed. Forget everything, so the next opening starts from the pad as it
+    // is at that moment rather than from a stale set.
+    carried = 0;
+    viewWasOpen = false;
+    return originalUpdate(self);
+  }
+
+  if (!viewWasOpen) {
+    viewWasOpen = true;
+    carried = 0;
+    for (size_t i = 0; i < kButtonCount; ++i) {
+      if (heldState[i])
+        carried |= 1u << i;
+    }
+  }
+
+  for (size_t i = 0; i < kButtonCount; ++i) {
+    const uint32_t bit = 1u << i;
+    if (!(carried & bit))
+      continue;
+    // Order matters. Writing previous before testing means the release frame
+    // writes a zero, which is what stops the release edge the view acts on.
+    previousState[i] = heldState[i];
+    if (!heldState[i])
+      carried &= ~bit;
+  }
+
+  return originalUpdate(self);
+}
+
+bool installCarriedPressRepair(BYTE* base, const Game& game) {
+  const InputSite* site = nullptr;
+  for (const InputSite& candidate : kInputSites) {
+    if (candidate.title == currentTitle() && candidate.build == game.exeBuild) {
+      site = &candidate;
+      break;
+    }
+  }
+  if (!site) {
+    log("FIXES save_menu_carried_press=not_applicable");
+    return false;
+  }
+
+  BYTE* update = base + site->updateRva;
+  if (!matches(update, site->expected)) {
+    log("FIXES save_menu_carried_press=signature_mismatch at 0x", std::hex,
+        site->updateRva, std::dec);
+    return false;
+  }
+
+  // The state pointers go in before the hook, because the detour dereferences
+  // them on its first call and there is no ordering between the two otherwise.
+  heldState = base + site->heldStateRva;
+  previousState = heldState + 0x10;
+  openFlagOffset = site->openFlagOffset;
+
+  const bool ok = installMinHookDetour(update,
+    reinterpret_cast<void*>(&repairedUpdate),
+    reinterpret_cast<void**>(&originalUpdate));
+  log("FIXES save_menu_carried_press=", ok ? "active" : "failed");
+  return ok;
+}
+
+// All or nothing. A half-applied set would leave the view reachable through one
+// path and gated through another, which is the worst thing to hand someone
+// trying to measure whether this helped.
+bool applyGates(BYTE* base, const Gate* gates, size_t count) {
+  for (size_t i = 0; i < count; ++i) {
+    if (!matches(base + gates[i].comissRva, gates[i].expected)) {
+      log("FIXES save_menu_gates=signature_mismatch at ", gates[i].name,
+          " 0x", std::hex, gates[i].comissRva, std::dec, "; nothing patched");
+      return false;
+    }
+  }
+  for (size_t i = 0; i < count; ++i) {
+    BYTE* branch = base + gates[i].comissRva + gates[i].branchOffset;
+    DWORD previous = 0;
+    if (!VirtualProtect(branch, gates[i].branchLength, PAGE_EXECUTE_READWRITE,
+                        &previous)) {
+      log("FIXES save_menu_gates=protect_failed at ", gates[i].name);
+      return false;
+    }
+    std::memset(branch, 0x90, gates[i].branchLength);
+    DWORD ignored = 0;
+    VirtualProtect(branch, gates[i].branchLength, previous, &ignored);
+    FlushInstructionCache(GetCurrentProcess(), branch, gates[i].branchLength);
+    log("FIXES save_menu_gate ", gates[i].name, " neutered at 0x", std::hex,
+        gates[i].comissRva + gates[i].branchOffset, std::dec, " (",
+        static_cast<int>(gates[i].branchLength), " bytes)");
+  }
+  return true;
+}
+
+}  // namespace
+
+bool installSaveMenuFix(BYTE* base, const Game& game) {
+  if (featureSupport(Feature::FastSaveMenu) == Support::Unsupported) {
+    log("FIXES save_menu_gates=not_applicable");
+    return false;
+  }
+  if (!featureEnabled(Feature::FastSaveMenu)) {
+    log("FIXES save_menu_gates=off");
+    return false;
+  }
+  const bool english = game.exeBuild == BuildEnglish;
+  const Gate* gates = nullptr;
+  size_t count = 0;
+  switch (currentTitle()) {
+    case Title::Totori:
+      gates = english ? kTotoriEn : kTotoriMulti; count = 4; break;
+    case Title::Rorona:
+      gates = english ? kRoronaEn : kRoronaMulti; count = 5; break;
+    case Title::Meruru:
+      gates = english ? kMeruruEn : kMeruruMulti; count = 5; break;
+    default:
+      log("FIXES save_menu_gates=not_applicable"); return false;
+  }
+  const bool ok = applyGates(base, gates, count);
+  log("FIXES save_menu_gates=", ok ? "active" : "failed");
+  if (ok)
+    installCarriedPressRepair(base, game);
+  return ok;
+}
+
+}  // namespace atfix

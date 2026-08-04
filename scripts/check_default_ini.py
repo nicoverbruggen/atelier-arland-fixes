@@ -21,7 +21,8 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-SECTIONS = ("Rendering", "Battle", "Field", "Startup", "Launcher", "Diagnostics")
+SECTIONS = ("Rendering", "Battle", "Field", "Menus", "Startup", "Launcher",
+            "Diagnostics")
 
 # Options the code reads that are deliberately kept out of default.ini. Empty:
 # everything the DLL reads is a documented, shipped option.

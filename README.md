@@ -29,6 +29,7 @@ The **included launcher** replaces the standard window for the Arland games and 
 | Borderless windowed at your desktop size     | ✓      | ✓      | ✓      |
 | Correct world-map analog cursor speed        | —      | ✓      | ✓      |
 | Restored battle cut-in shadows               | ✓      | ✓      | ✓      |
+| Instant save and load menus                  | ✓      | ✓      | ✓      |
 | Various game-specific bug fixes              | ✓      | ✓      | ✓      |
 | Local crash logging                          | ✓      | ✓      | ✓      |
 

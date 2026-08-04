@@ -24,6 +24,8 @@
 #include "stream_lifetime_fix.h"
 #include "shop_fix.h"
 #include "field_collision_fix.h"
+#include "save_menu_fix.h"
+#include "save_menu_probe.h"
 #include "staff_probe.h"
 #include "logo_skip.h"
 #include "movie_skip.h"
@@ -2130,6 +2132,8 @@ void detectAndInstallGameHooks() {
     atfix::installStreamLifetimeFix(gameBase, game);
     atfix::installShopFix(gameBase, game);
     atfix::installFieldCollisionFix(gameBase, game);
+    atfix::installSaveMenuFix(gameBase, game);
+    atfix::installSaveMenuProbe(gameBase, game);
     atfix::installStaffProbe(gameBase, game);
     atfix::installLogoSkip(gameBase, game);
     atfix::installMovieSkip(gameBase, game);

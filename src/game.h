@@ -36,6 +36,7 @@ enum class Feature : uint8_t {
   SynthesisAnimationRate,  // synthesis card animation at its authored rate
   FieldMonsterSnap,    // spread a monster's re-target correction over time
   FieldCharacterPull,  // stop character separation pulling bodies together
+  FastSaveMenu,        // drop the hardcoded waits before the save slots view
   Count,
 };
 

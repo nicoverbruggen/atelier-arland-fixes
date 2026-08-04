@@ -543,7 +543,7 @@ It also carries a drift self-heal. Because running unfixed above 60 Hz walks the
 
 The six addresses were located by the shape of the defect rather than by homology: a scan for a truncation-to-int of a multiply by a frame rate, then whether a conditional branch separates that conversion from the loop top. It returns exactly one bottom-tested pump per executable, and every other fixed-timestep pump in the trilogy is correctly pre-tested, so this is the whole of the defect rather than one instance of a family.
 
-The same defect and the same correction are confirmed in game in Atelier Escha & Logy DX and Atelier Shallie DX, where this implementation was written first.
+The same defect and the same correction are confirmed in game in Atelier Escha & Logy DX and Atelier Shallie DX, where this implementation was written first, and the Arland port is confirmed in game in all three of those titles.
 
 ## Totori field character collision
 
@@ -591,7 +591,7 @@ Two places wait for the sequence, and both poll only the phase field: the applic
 
 The update detour writes that terminal phase and returns without calling the original. It cannot simply force the phase and let the original run, because the original's tail advances each picture layer's fade, which would bring a logo up during the load. Not advancing them leaves their alpha where construction left it, and whether that renders anything depends on state the mod does not own, so the draw is suppressed as well rather than reasoned about. The two detours together guarantee no logo pixels and an immediate release, at the cost of the clear colour being visible for the duration of the load.
 
-All three games are wired, both builds each. Every address came from that game's own RTTI vtable rather than from homology, and the two prologue windows above are byte-identical in all six executables. Confirmed in game on Rorona; Totori and Meruru are untested.
+All three games are wired, both builds each. Every address came from that game's own RTTI vtable rather than from homology, and the two prologue windows above are byte-identical in all six executables. Confirmed in game in all three.
 
 ## Opening-movie skip
 
@@ -612,6 +612,38 @@ The routine begins by asking whether the movie subsystem is ready. When it is no
 The detour therefore does exactly what that branch does. For index 0 with the option on, it writes the state byte and returns without calling the original. Nothing else in the movie path is touched.
 
 All three games are wired. The English address for each was anchored on the single reference to that build's own `Res/x64/movie` path string rather than on a homology vote, which matters because the vote came back WEAK for Totori: its routine is a slightly different compile and carries its own prologue window. The multilingual addresses are MATCH from their own English build, and index 0 was confirmed to be `opening.wmv` in all six movie tables. Confirmed in game on Rorona; Totori and Meruru are untested.
+
+## Save data slots view pacing
+
+### TL;DR
+
+`[Menus] FastSaveMenu` removes the hardcoded waits in front of the save data slots view, so it opens as soon as the game has built it instead of after a fixed delay. On by default in all three games, both builds each.
+
+### Safety
+
+In-place byte patches over branch instructions, all-or-nothing: every site's sixteen-byte window is verified against the build's own bytes before any of them is written, and a single mismatch leaves the executable untouched. Nothing is hooked and no code is added; each patch turns one conditional branch into `nop`, so the taken path is the one the game already runs once its timer expires. The gates are per game and per build, four in Totori and five in Rorona and Meruru.
+
+### Details
+
+Each gate is the same shape. A float accumulates elapsed time in a scene field, a `comiss` compares it against a constant from a shared pool, and a conditional branch skips the work while the accumulator is short of it. Removing the branch runs the work on the first frame rather than after the delay.
+
+What makes this safe is what the gates do not do. None of them polls a file, an asynchronous load, or a readiness flag; every condition is elapsed time and nothing else. The clearest case is the exit gate, which reads a fade's own busy flag, waits for it to clear, and then counts a further 1.5 seconds on top. The timer there is pacing layered over a real readiness check, not standing in for one. The work behind the first gate is an allocation and a constructor that builds four sub-objects synchronously, so there is nothing outstanding for the delay to cover.
+
+One concern came out of reading the code and did not survive playing it. Rorona's title gate sits in a function that also starts a fade of 0.5 seconds, from the same pool entry the gate compares against, which reads like a wait pacing a real animation one for one. In play Rorona shows no fade into the view at all, with the gate or without it. The other two do, and neither is affected: Totori fades slightly to white and Meruru fades to black. The trilogy is simply not consistent here. Either the matching constant was a coincidence or the fade drives something that never becomes visible; it does not constrain the change.
+
+Confirmed in play on Rorona English and Totori English, gates and carried-press repair together. Meruru and the three multilingual builds are byte-verified and unexercised.
+
+The remaining cost was measured rather than assumed, with a probe that timed the row builder per call and counted the Steam storage helpers (`ARLAND_SAVE_MENU_PROBE`, Totori English). Moving the cursor between slots reaches no file or storage call at all: the boot scan parses every save once into a record vector, and the view reads that. The row builder, which runs every frame the view is up and copies roughly 4 KB per row, averages 36 microseconds a call. What is left is a single text render of about 9 milliseconds when the highlighted slot changes, which is the same text path documented under [Repeated font-atlas reads](#repeated-font-atlas-reads).
+
+### The carried press
+
+Removing the waits exposed a second defect. The view acts on a button's release, not its press: the first thing `WinSaveLoadScene::Update` does once its own 0.1 s input window expires is ask the pad whether button `0xc` was just released. So the press that opens the view is harmless and the release of that same press is not. Hold confirm, and the view your press just opened consumes your release as its own confirm and shows the load prompt. Vanilla hides this behind the 0.5 s wait: by the time the view exists, the player has let go. It is still reachable in vanilla with a hold of over half a second.
+
+The engine's pad state is two 16-byte arrays, current and previous, one byte per button, previous `0x10` above current. The query is a plain edge test: mode 0 is held, mode 1 is `cur && !prev` (just pressed), mode 2 is `prev && !cur` (just released), and the view asks for mode 2.
+
+The repair keeps that edge test honest rather than restoring the delay. On the first frame the view is open, every button already down was down before the view existed, so no edge belongs to this view; those buttons are recorded. While each stays down its previous byte is forced to match its current one, making both edges impossible for it. On the frame it comes up, the forced write lands first and lands as zero, so the release edge cannot fire, and the button stops being tracked. Buttons pressed after the view opened are never touched.
+
+`Update` was taken from each build's own `WinSaveLoadScene` RTTI vtable, slot 1, not from homology. All six prologues are byte-identical apart from the scene's open-flag offset (`0x2628` in Totori, `0x25f8` in Rorona and Meruru), and each build's pad arrays were read from the query its own `Update` calls. The repair installs only when the gate patch succeeded, so turning the feature off restores vanilla exactly, including vanilla's own version of this defect.
 
 ## Startup window background
 
