@@ -448,8 +448,38 @@ bool iniBool(const char* section, const char* key, bool def) {
 // can surface at any call or only at the flush that commits the file, and the
 // user needs to be told which of the two files did not get written rather than
 // which line failed. saveToIni clears these on entry and reports them back.
-bool g_iniWriteFailed = false;
-bool g_settingsWriteFailed = false;
+//
+// What failed is kept alongside whether it failed, because "could not be
+// written" on its own leaves nobody anywhere: the Win32 error separates a
+// read-only file from a missing folder from something holding the file open.
+struct WriteFailure {
+  bool failed = false;
+  DWORD error = 0;
+  char where[64] = {};        // "Section/Key", or "flush" for the commit call
+};
+WriteFailure g_iniFailure;
+WriteFailure g_settingsFailure;
+
+// The last value this save committed to each file, kept so a reported failure
+// can be checked against what is actually on disk. See verifyWrite below.
+struct LastWrite {
+  bool have = false;
+  char section[32] = {};
+  char key[32] = {};
+  char value[64] = {};
+};
+LastWrite g_iniLastWrite;
+LastWrite g_settingsLastWrite;
+
+void noteLastWrite(LastWrite* last, const char* section, const char* key,
+                   const char* value) {
+  if (!section || !key || !value)
+    return;                   // the flush carries no key to check
+  last->have = true;
+  lstrcpynA(last->section, section, sizeof(last->section));
+  lstrcpynA(last->key, key, sizeof(last->key));
+  lstrcpynA(last->value, value, sizeof(last->value));
+}
 
 bool iniWrite(const char* section, const char* key, const char* value,
               const char* path) {
@@ -458,13 +488,104 @@ bool iniWrite(const char* section, const char* key, const char* value,
   // the user cannot act on.
   if (!path || !path[0])
     return true;
-  if (WritePrivateProfileStringA(section, key, value, path))
+  const bool settings = path == g_settingsPath;
+  if (WritePrivateProfileStringA(section, key, value, path)) {
+    noteLastWrite(settings ? &g_settingsLastWrite : &g_iniLastWrite,
+                  section, key, value);
     return true;
-  if (path == g_settingsPath)
-    g_settingsWriteFailed = true;
-  else
-    g_iniWriteFailed = true;
+  }
+  WriteFailure* failure = settings ? &g_settingsFailure : &g_iniFailure;
+  const DWORD error = GetLastError();
+  // Keep the FIRST failure. It is the one that explains the rest, and a later
+  // call overwriting it with a stale or cleared error is how this kind of
+  // report ends up saying ERROR_SUCCESS.
+  if (!failure->failed) {
+    failure->failed = true;
+    failure->error = error;
+    if (section && key)
+      wsprintfA(failure->where, "%.28s/%.28s", section, key);
+    else
+      lstrcpynA(failure->where, "flush", sizeof(failure->where));
+  }
   return false;
+}
+
+// Did the write actually not happen? WritePrivateProfileStringA reporting
+// failure and the value not reaching the file are different things, and under
+// Wine the flush form (null section, null key) reports failure while every
+// value written before it is on disk. Reporting a lost save that was not lost
+// is the worse error of the two: it sends the user to check permissions on a
+// folder that is fine, and it teaches them to ignore the warning.
+//
+// So a reported failure is checked against the file: read back the last value
+// this save wrote and see whether it is there. Nothing to check against means
+// trusting the report, which is the safe direction.
+bool verifyWrite(const char* path, const LastWrite& last) {
+  if (!path || !path[0] || !last.have)
+    return false;
+  char readBack[64] = {};
+  GetPrivateProfileStringA(last.section, last.key, "\x01", readBack,
+    sizeof(readBack), path);
+  return readBack[0] != '\x01' && lstrcmpA(readBack, last.value) == 0;
+}
+
+// The launcher shares arland-fix.log with the DLL rather than opening a second
+// file: it is the file the user is asked for when reporting a problem, and a
+// save failure is exactly the kind of thing that needs to be in it. Appended,
+// never truncated, and every failure here is silent -- a tool that cannot write
+// the ini very possibly cannot write the log either, and saying so twice helps
+// nobody.
+void appendToLog(const char* line) {
+  if (!g_iniPath[0] || !line)
+    return;
+  char logPath[MAX_PATH];
+  lstrcpynA(logPath, g_iniPath, MAX_PATH);
+  const size_t len = std::strlen(logPath);
+  if (len < 4 || len >= MAX_PATH)
+    return;
+  std::memcpy(logPath + len - 3, "log", 3);   // arland-fix.ini -> .log
+  const HANDLE file = CreateFileA(logPath, FILE_APPEND_DATA,
+    FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_ALWAYS,
+    FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (file == INVALID_HANDLE_VALUE)
+    return;
+  DWORD written = 0;
+  WriteFile(file, line, (DWORD)std::strlen(line), &written, nullptr);
+  CloseHandle(file);
+}
+
+// The short version of a Win32 error, for the three that actually come up here.
+// The number is always printed too, because the interesting case is the one
+// this list does not cover.
+const char* writeErrorName(DWORD error) {
+  switch (error) {
+    case ERROR_ACCESS_DENIED:    return "access denied (read-only file or folder)";
+    case ERROR_FILE_NOT_FOUND:   return "file not found";
+    case ERROR_PATH_NOT_FOUND:   return "path not found (folder missing)";
+    case ERROR_SHARING_VIOLATION:return "file is open in another program";
+    case ERROR_WRITE_PROTECT:    return "media is write protected";
+    case ERROR_DISK_FULL:        return "disk full";
+    case ERROR_SUCCESS:          return "the call reported failure without setting an error";
+    default:                     return "see the Win32 error code";
+  }
+}
+
+// One line per file per save, and only when something reported a failure.
+// `real` says whether the value was actually missing from the file afterwards:
+// a reported failure that verified fine is logged as misreported, which is the
+// line that explains a warning the user did not get.
+void logSaveFailure(const char* name, const char* path,
+                    const WriteFailure& failure, bool verifiedOk) {
+  if (!failure.failed)
+    return;
+  char line[512];
+  wsprintfA(line,
+    "[launcher] %s write %s at %s: error %lu, %s (path %s)\r\n",
+    name,
+    verifiedOk ? "MISREPORTED (the value is on disk)" : "FAILED",
+    failure.where, failure.error, writeErrorName(failure.error),
+    path && path[0] ? path : "(none)");
+  appendToLog(line);
 }
 
 // What saveToIni managed to write. Both files are written independently, so a
@@ -927,8 +1048,10 @@ bool isChecked(HWND ctrl) {
 }
 
 SaveOutcome saveToIni() {
-  g_iniWriteFailed = false;
-  g_settingsWriteFailed = false;
+  g_iniFailure = WriteFailure{};
+  g_settingsFailure = WriteFailure{};
+  g_iniLastWrite = LastWrite{};
+  g_settingsLastWrite = LastWrite{};
 
   // Write only the known keys. WritePrivateProfileStringA leaves every other
   // line in the file untouched, so anything unrecognized is preserved.
@@ -1017,11 +1140,23 @@ SaveOutcome saveToIni() {
   iniWrite("Debug", "View",
     debugViewSel ? kDebugViewItems[debugViewSel].value : nullptr, g_iniPath);
 
-  // Flush the cache so each file is on disk before we report success. This is
-  // the call that actually commits, so its result matters most of the three.
+  // Flush the cache so each file is on disk before we report success.
   iniWrite(nullptr, nullptr, nullptr, g_iniPath);
   iniWrite(nullptr, nullptr, nullptr, g_settingsPath);
-  return SaveOutcome{!g_iniWriteFailed, !g_settingsWriteFailed};
+
+  // A reported failure is checked against the file before it becomes a warning,
+  // and every failure is logged either way: the ones that turn out to be real
+  // need the Win32 error to be diagnosable at all, and the ones that do not are
+  // worth knowing about because they mean the platform is misreporting.
+  SaveOutcome outcome;
+  outcome.ini = !g_iniFailure.failed ||
+                verifyWrite(g_iniPath, g_iniLastWrite);
+  outcome.settings = !g_settingsFailure.failed ||
+                     verifyWrite(g_settingsPath, g_settingsLastWrite);
+  logSaveFailure("arland-fix.ini", g_iniPath, g_iniFailure, outcome.ini);
+  logSaveFailure("ArlandDX_Settings.ini", g_settingsPath, g_settingsFailure,
+                 outcome.settings);
+  return outcome;
 }
 
 // Name the file that did not get written. "Settings were saved" over a failed
@@ -1039,9 +1174,23 @@ void reportSaveFailure(HWND owner, SaveOutcome outcome) {
            ? L"arland-fix.ini could not be written."
            : L"The game's own ArlandDX_Settings.ini could not be written, so "
              L"the resolution there no longer matches the mod's.");
-  wchar_t text[512];
-  wsprintfW(text, L"%s\n\nThe file may be read-only, or the game folder may "
-                  L"not be writable. Your settings have not been saved.", which);
+  // Name the reason, not just the fact. The user cannot act on "could not be
+  // written"; they can act on "read-only file or folder", and the code and the
+  // failing key are what makes a report from someone else diagnosable.
+  const WriteFailure& first =
+    !outcome.ini && g_iniFailure.failed ? g_iniFailure : g_settingsFailure;
+  wchar_t reason[192] = {};
+  if (first.failed) {
+    char detail[160];
+    wsprintfA(detail, "%s (error %lu, writing %s)",
+      writeErrorName(first.error), first.error, first.where);
+    MultiByteToWideChar(CP_ACP, 0, detail, -1, reason, 160);
+  }
+  wchar_t text[768];
+  wsprintfW(text,
+    L"%s\n\n%s%sYour settings have not been saved.\n\n"
+    L"The details are in arland-fix.log beside the game.",
+    which, reason[0] ? reason : L"", reason[0] ? L"\n\n" : L"");
   MessageBoxW(owner, text, L"Atelier Arland Fixes", MB_OK | MB_ICONWARNING);
 }
 
@@ -1084,6 +1233,32 @@ void markSaved() { g_savedState = currentState(); }
 bool hasUnsavedChanges() {
   const UiState now = currentState();
   return std::memcmp(&now, &g_savedState, sizeof(now)) != 0;
+}
+
+// Create arland-fix.ini with the defaults, for a folder that has one of the
+// DLLs but has never run the game. These are the same keys and values
+// src/config.cpp writes in configPath() when it creates the file itself, and
+// scripts/check_default_ini.py checks both against default.ini, so the two
+// cannot drift apart quietly. The cut-in keys are deliberately absent here as
+// well: featureEnabled() seeds those lazily from the per-game matrix, which
+// this tool cannot see.
+//
+// False when the first write fails, which is the only interesting outcome: the
+// file is created by that write, so if it succeeds the rest will too.
+bool seedIniDefaults() {
+  if (!g_iniPath[0])
+    return false;
+  if (!WritePrivateProfileStringA("Rendering", "MSAA", "1", g_iniPath))
+    return false;
+  WritePrivateProfileStringA("Rendering", "DisplayWidth", "", g_iniPath);
+  WritePrivateProfileStringA("Rendering", "DisplayHeight", "", g_iniPath);
+  WritePrivateProfileStringA("Rendering", "RenderWidth", "", g_iniPath);
+  WritePrivateProfileStringA("Rendering", "RenderHeight", "", g_iniPath);
+  WritePrivateProfileStringA("Rendering", "ShadowMultiplier", "2", g_iniPath);
+  WritePrivateProfileStringA("Rendering", "AnisotropicFiltering", "16",
+    g_iniPath);
+  WritePrivateProfileStringA("Battle", "BattleShadows", "true", g_iniPath);
+  return true;
 }
 
 // ---- ini location ----------------------------------------------------------
@@ -2491,12 +2666,20 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int) {
       L"Atelier Arland Fixes", MB_OK | MB_ICONERROR);
     return 1;
   }
-  if (GetFileAttributesA(g_iniPath) == INVALID_FILE_ATTRIBUTES) {
+  // A missing arland-fix.ini used to be a hard stop here, which was wrong in
+  // the one case it was most likely to happen. Deleting the ini to start over,
+  // or copying the launcher into a folder before ever running the game, left
+  // the launcher refusing to open at all, and the only way back in was to
+  // launch the game once so the DLL could seed the file. Create it instead,
+  // with the same keys src/config.cpp seeds in configPath(), so a launcher-made
+  // file and a DLL-made one are the same file. Only a failure to write it is
+  // worth stopping for, and that is a real problem the user can act on.
+  if (GetFileAttributesA(g_iniPath) == INVALID_FILE_ATTRIBUTES &&
+      !seedIniDefaults()) {
     MessageBoxW(nullptr,
-      L"arland-fix.ini was not found in this folder.\n\n"
-      L"It ships in the release archive alongside the DLLs. Copy it in "
-      L"next to the game executable, or launch the game once to have the "
-      L"mod create one.",
+      L"arland-fix.ini is missing and could not be created in this folder.\n\n"
+      L"The game folder may be read-only, which a Steam file verification can "
+      L"leave behind. Check the folder's permissions and try again.",
       L"Atelier Arland Fixes", MB_OK | MB_ICONERROR);
     return 1;
   }
