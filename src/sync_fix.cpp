@@ -272,7 +272,8 @@ ID3D11ShaderResourceView* getShadowResTwinSrv(
 // The write-path patches consume CPU-side constant-buffer writes (a Map payload
 // is only visible between Map and Unmap).
 bool cbCaptureEnabled() {
-  return cutinShadowsEnabled() || shadowMapResolution() > 1024;
+  return cutinShadowsEnabled() || shadowMapResolution() > 1024 ||
+         cutinCbTraceEnabled();
 }
 
 mutex g_cbCaptureMutex;
@@ -321,6 +322,7 @@ void captureCbUnmap(ID3D11DeviceContext*, ID3D11Resource* resource,
   // them: dim-hold on the 16-byte $Params, gate-hold on the 880 receiver.
   if (arlandInCinematicBattle()) {
     if (cutinDimHoldEnabled())
+      cutinCbTraceScan("map", pending.first, pending.second);
       dimHoldPatch(const_cast<void*>(pending.first), pending.second);
     if (cutinGateHoldEnabled())
       gateHoldPatch(const_cast<void*>(pending.first), pending.second);
@@ -2226,6 +2228,9 @@ HRESULT STDMETHODCALLTYPE ID3D11Device_CreateBuffer(
       pData = &gateInit;
     }
   }
+  if (pDesc && pData && pData->pSysMem &&
+      (pDesc->BindFlags & D3D11_BIND_CONSTANT_BUFFER))
+    cutinCbTraceScan("create", pData->pSysMem, pDesc->ByteWidth);
   D3D11_SUBRESOURCE_DATA dimInit;
   static thread_local std::vector<uint8_t> dimInitCopy;
   if (cutinDimHoldEnabled() && arlandInCinematicBattle() &&
@@ -2279,6 +2284,8 @@ HRESULT STDMETHODCALLTYPE ID3D11Device_CreateVertexShader(
   auto procs = getDeviceProcs(pDevice);
   const HRESULT hr = procs->CreateVertexShader(pDevice, pShaderBytecode,
     BytecodeLength, pClassLinkage, ppVertexShader);
+  if (SUCCEEDED(hr) && ppVertexShader && *ppVertexShader)
+    cutinNoteShaderBytecode(*ppVertexShader, pShaderBytecode, BytecodeLength);
   return hr;
 }
 
@@ -3582,6 +3589,7 @@ void STDMETHODCALLTYPE ID3D11DeviceContext_UpdateSubresource(
     D3D11_BUFFER_DESC desc = {};
     if (isConstantBuffer(pResource, &desc)) {
       if (arlandInCinematicBattle()) {
+        cutinCbTraceScan("update", pData, desc.ByteWidth);
         // Dim-hold: keep the faded light $Params at 1.0 during the cut-in.
         // pData is const (DEFAULT buffer), so patch a copy and pass that on.
         if (cutinDimHoldEnabled() && dimHoldEligibleSize(desc.ByteWidth)) {
@@ -4014,6 +4022,7 @@ void STDMETHODCALLTYPE ID3D11DeviceContext_Draw(
   flushDirtyShadows(pContext);
   updateViewportScissor(pContext);
   gateHoldAtDraw(pContext);
+  cutinTraceBoundShader(pContext);
   smaaDrawBoundary(pContext);
   applyWireframeForDraw(pContext);
   traceResolutionDraw(pContext, "draw", VertexCount, 1);
@@ -4059,6 +4068,7 @@ void STDMETHODCALLTYPE ID3D11DeviceContext_DrawIndexed(
   flushDirtyShadows(pContext);
   updateViewportScissor(pContext);
   gateHoldAtDraw(pContext);
+  cutinTraceBoundShader(pContext);
   smaaDrawBoundary(pContext);
   applyWireframeForDraw(pContext);
   traceResolutionDraw(pContext, "indexed", IndexCount, 1);
@@ -4123,6 +4133,7 @@ void STDMETHODCALLTYPE ID3D11DeviceContext_DrawInstanced(
   flushDirtyShadows(pContext);
   updateViewportScissor(pContext);
   gateHoldAtDraw(pContext);
+  cutinTraceBoundShader(pContext);
   smaaDrawBoundary(pContext);
   applyWireframeForDraw(pContext);
   traceResolutionDraw(
@@ -4139,6 +4150,7 @@ void STDMETHODCALLTYPE ID3D11DeviceContext_DrawIndexedInstanced(
   flushDirtyShadows(pContext);
   updateViewportScissor(pContext);
   gateHoldAtDraw(pContext);
+  cutinTraceBoundShader(pContext);
   smaaDrawBoundary(pContext);
   applyWireframeForDraw(pContext);
   traceResolutionDraw(
