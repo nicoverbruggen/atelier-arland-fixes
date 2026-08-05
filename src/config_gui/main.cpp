@@ -102,10 +102,10 @@ int g_game = -1;   // index into kGames, -1 when the folder holds no game
 HWND g_hTabs = nullptr;
 HWND g_hDesc[32] = {};   // greyed notes; drawn in g_secondaryText
 int  g_descCount = 0;
-// Five pages, but the fifth (Debug) is only inserted into the tab strip when
-// verbose logging is on -- its controls are always created, just unreachable.
-HWND g_pageCtrls[5][40] = {};   // which controls belong to which tab page
-int  g_pageCount[5] = {};
+// Four pages, but Debug is only inserted into the tab strip when verbose
+// logging is on -- its controls are always created, just unreachable.
+HWND g_pageCtrls[4][40] = {};   // which controls belong to which tab page
+int  g_pageCount[4] = {};
 HWND g_hDebugView = nullptr;
 HWND g_hStart = nullptr;   // focused at startup; see createControls
 
@@ -114,15 +114,15 @@ HWND g_hStart = nullptr;   // focused at startup; see createControls
 // need it earlier.
 void syncDebugTab(bool show);
 
-// Which page a tab-strip position shows. Debug sits at position 3, ahead of
+// Which page a tab-strip position shows. Debug sits at position 2, ahead of
 // About; when it is hidden, About takes that slot while keeping its own page.
 int pageForTab(int tabIndex) {
   const bool debugShown =
-    g_hTabs && SendMessageW(g_hTabs, TCM_GETITEMCOUNT, 0, 0) == 5;
-  return (debugShown || tabIndex < 3) ? tabIndex : tabIndex + 1;
+    g_hTabs && SendMessageW(g_hTabs, TCM_GETITEMCOUNT, 0, 0) == 4;
+  return (debugShown || tabIndex < 2) ? tabIndex : tabIndex + 1;
 }
 HWND g_hGameLabel = nullptr;   // sits on the tab strip; painted transparent
-HWND g_hRepoLink = nullptr;    // SysLink at the bottom of the Display page
+HWND g_hRepoLink = nullptr;    // SysLink on the About page
 
 // Shown in full and opened on click, so it is the one string in this window
 // that has to be right: it is where the window sends people.
@@ -327,7 +327,7 @@ const int kSSCount = 6;
 const unsigned kMaxRenderWidth = 7680;
 const unsigned kMaxRenderHeight = 4320;
 
-// Quality presets. These set only the Image Quality group -- resolution,
+// Quality presets. These set only the Graphics group -- resolution,
 // borderless, frame rate, the battle options and the UI font are preferences
 // rather than quality levels, and a preset that silently changed them would
 // surprise more than it helped. Selecting Custom changes nothing; any manual
@@ -1845,7 +1845,7 @@ void repaintUnder(HWND ctrl) {
 }
 
 void showPage(int page) {
-  for (int p = 0; p < 5; ++p)
+  for (int p = 0; p < 4; ++p)
     for (int i = 0; i < g_pageCount[p]; ++i)
       ShowWindow(g_pageCtrls[p][i], p == page ? SW_SHOW : SW_HIDE);
   // The outgoing page's labels leave their text behind them, so the page is
@@ -2032,20 +2032,20 @@ void syncDebugTab(bool show) {
     return;
   const int count = (int)SendMessageW(g_hTabs, TCM_GETITEMCOUNT, 0, 0);
   bool changed = false;
-  if (show && count == 4) {
+  if (show && count == 3) {
     TCITEMW tab = {};
     tab.mask = TCIF_TEXT;
     tab.pszText = (LPWSTR)L"Debug";
-    SendMessageW(g_hTabs, TCM_INSERTITEMW, 3, (LPARAM)&tab);
+    SendMessageW(g_hTabs, TCM_INSERTITEMW, 2, (LPARAM)&tab);
     changed = true;
-  } else if (!show && count == 5) {
+  } else if (!show && count == 4) {
     // Leaving the selection on a page that is about to vanish would show an
-    // empty sheet, so step back to Display first.
-    if ((int)SendMessageW(g_hTabs, TCM_GETCURSEL, 0, 0) == 3) {
+    // empty sheet, so step back to General first.
+    if ((int)SendMessageW(g_hTabs, TCM_GETCURSEL, 0, 0) == 2) {
       SendMessageW(g_hTabs, TCM_SETCURSEL, 0, 0);
       showPage(0);
     }
-    SendMessageW(g_hTabs, TCM_DELETEITEM, 3, 0);
+    SendMessageW(g_hTabs, TCM_DELETEITEM, 2, 0);
     changed = true;
   }
   // Adding or removing an entry makes the tab control repaint its whole
@@ -2080,9 +2080,9 @@ void createControls(HWND w) {
   SetWindowSubclass(g_hTabs, TabProc, 0, 0);
   TCITEMW tab = {};
   tab.mask = TCIF_TEXT;
-  const wchar_t* pageNames[4] = {
-    L"General", L"Graphics", L"Game", L"About" };
-  for (int i = 0; i < 4; ++i) {
+  const wchar_t* pageNames[3] = {
+    L"General", L"Graphics", L"About" };
+  for (int i = 0; i < 3; ++i) {
     tab.pszText = (LPWSTR)pageNames[i];
     SendMessageW(g_hTabs, TCM_INSERTITEMW, i, (LPARAM)&tab);
   }
@@ -2195,10 +2195,9 @@ void createControls(HWND w) {
     page.checkRow(g_hSkipLauncher,
       L"Play in Steam goes straight into the game with the settings already "
       L"saved here. Run arland-fix-launcher.exe to get back to this window.");
-
   }
 
-  // ---------------- page 1: Image Quality ----------------
+  // ---------------- page 1: Graphics ----------------
   {
     Layout page(w, 1);
     g_hPreset = mkCombo(w, 0, 0, 10, IDC_PRESET);
@@ -2235,20 +2234,17 @@ void createControls(HWND w) {
     page.checkRow(g_hSmaa,
       L"Cheap, and smooths edges multisampling cannot -- including "
       L"edges inside textures.");
-  }
 
-  // ---------------- page 2: Game ----------------
-  {
-    Layout page(w, 2);
+    g_hOutline = mkCheck(w, L"Character outlines", 0, 0, 10, IDC_OUTLINE);
+    page.checkRow(g_hOutline,
+      L"The game's own outline rendering. On as it shipped.");
+
+    page.heading(L"Text");
     g_hFont = mkCombo(w, 0, 0, 10, IDC_FONT);
     comboFill(g_hFont, kFontItems, 3);
     page.row(L"UI font:", g_hFont,
       L"Re-renders the game's UI text from a bundled font. English builds "
       L"only.");
-
-    g_hOutline = mkCheck(w, L"Character outlines", 0, 0, 10, IDC_OUTLINE);
-    page.checkRow(g_hOutline,
-      L"The game's own outline rendering. On as it shipped.");
 
     page.heading(L"Battle");
     g_hBCutIn = mkCombo(w, 0, 0, 10, IDC_BCUTIN);
@@ -2257,18 +2253,13 @@ void createControls(HWND w) {
     page.row(L"Attack cut-ins:", g_hBCutIn,
       L"Classic is the close-up as the game shipped it. Enhanced restores the "
       L"ground shadows and keeps the scene at full brightness.");
-
-    page.heading(L"Diagnostics");
-    g_hVerbose = mkCheck(w, L"Verbose logging", 0, 0, 10, IDC_VERBOSE);
-    page.checkRow(g_hVerbose,
-      L"Extra detail in arland-fix.log. Crash reports are always written.");
   }
 
-  // ---------------- page 3: Debug ----------------
+  // ---------------- page 2: Debug ----------------
   // Developer views. Reachable only with verbose logging on (see syncDebugTab),
   // and off in a normal install.
   {
-    Layout page(w, 3);
+    Layout page(w, 2);
     page.heading(L"View");
 
     g_hDebugView = mkCombo(w, 0, 0, 10, IDC_DEBUGVIEW);
@@ -2298,10 +2289,10 @@ void createControls(HWND w) {
       L"to hide this tab.");
   }
 
-  // ---------------- page 4: About ----------------
+  // ---------------- page 3: About ----------------
   // What is installed, where it came from, and what it is not.
   {
-    Layout page(w, 4);
+    Layout page(w, 3);
     wchar_t installed[160];
     wsprintfW(installed, L"Mod version: %s", modVersion());
     page.label(installed);
@@ -2349,6 +2340,15 @@ void createControls(HWND w) {
     page.fullNote(
       L"Koei Tecmo's own settings editor and launcher, unmodified. The third "
       L"saves and starts the game with the mod turned off, changing nothing.");
+
+    // Verbose logging sits here rather than among the settings: it changes what
+    // the mod writes about itself, not what the game does. It also decides
+    // whether the Debug tab exists, which is why the checkbox handler calls
+    // syncDebugTab.
+    page.heading(L"Diagnostics");
+    g_hVerbose = mkCheck(w, L"Verbose logging", 0, 0, 10, IDC_VERBOSE);
+    page.checkRow(g_hVerbose,
+      L"Extra detail in arland-fix.log. Crash reports are always written.");
   }
 
   // Bottom left, away from Save/Close so it cannot be hit by accident: saves
