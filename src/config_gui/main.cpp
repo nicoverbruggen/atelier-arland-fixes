@@ -811,15 +811,17 @@ void loadFromIni() {
   // Sync the computed render-resolution label and the Auto-greys-out rule.
   updateRenderResolution();
 
-  // MSAA / ShadowMultiplier default to 1 (off). The
-  // treats 0 and 1 as off, but an absent key is 8x, not off, because
-  // anisotropic filtering the mod applies is not read here at all any more --
-  // it ships on at 16x and this window no longer offers it. Falling back
-  // to "1" here would show Off for a default install and then persist it.
+  // An absent key falls back to what the DLL would do with it, not to the first
+  // combo entry. MSAA is off unless asked for, so its fallback is "1".
+  // ShadowMultiplier ships at "2", so falling back to "1" here would show
+  // Normal for a default install and then persist that on the next save,
+  // quietly turning the feature off for anyone who opened the launcher.
+  // Anisotropic filtering is not read here at all any more: it ships on at 16x
+  // and this window no longer offers it.
   iniString("Rendering", "MSAA", buf, sizeof(buf));
   comboSelectByValue(g_hMsaa, kMsaaItems, 4, buf[0] ? buf : "1", 0);
   iniString("Rendering", "ShadowMultiplier", buf, sizeof(buf));
-  comboSelectByValue(g_hShadow, kShadowItems, 4, buf[0] ? buf : "1", 0);
+  comboSelectByValue(g_hShadow, kShadowItems, 4, buf[0] ? buf : "2", 1);
 
   // SMAA is on by default.
   SendMessageW(g_hSmaa, BM_SETCHECK,
@@ -906,7 +908,7 @@ void resetToDefaults() {
   SendMessageW(g_hFont, CB_SETCURSEL, 0, 0);      // replaced
   setSsIndex(0);                                  // supersampling off
   SendMessageW(g_hMsaa, CB_SETCURSEL, 0, 0);      // 1x
-  SendMessageW(g_hShadow, CB_SETCURSEL, 0, 0);    // 1024 map
+  SendMessageW(g_hShadow, CB_SETCURSEL, 1, 0);    // 2048 map, the shipped default
   SendMessageW(g_hSmaa, BM_SETCHECK, BST_CHECKED, 0);
   SendMessageW(g_hOutline, BM_SETCHECK, BST_CHECKED, 0);   // on as it shipped
   SendMessageW(g_hBCutIn, CB_SETCURSEL, 0, 0);

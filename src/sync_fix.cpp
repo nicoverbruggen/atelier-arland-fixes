@@ -143,10 +143,11 @@ std::atomic<uint64_t> g_transitionShadowFlushBytes = 0;
 // absent so it appears in the file for the user. Defined below with configPath.
 bool arlandConfigBool(const char* section, const char* key, bool def);
 
-// ShadowMultiplier (arland-fix.ini [Rendering], default 1 = unchanged): scales
+// ShadowMultiplier (arland-fix.ini [Rendering], default 2): scales
 // the engine's two 1024x1024 R24G8 shadow maps. Values 2, 4 and 8 enlarge the
 // maps to 2048/4096/8192 (plus the caster viewport, the A->B copy box and the
-// receiver's PCF tap scale); anything else keeps vanilla behaviour.
+// receiver's PCF tap scale); anything else, 1 included, keeps vanilla
+// behaviour.
 // ARLAND_SHADOW_MULTIPLIER overrides the ini. Defined below with configPath.
 UINT shadowMapResolution();
 

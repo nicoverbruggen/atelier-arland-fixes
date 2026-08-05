@@ -50,7 +50,7 @@ const char* configPath() {
       WritePrivateProfileStringA("Rendering", "DisplayHeight", "", result.data());
       WritePrivateProfileStringA("Rendering", "RenderWidth", "", result.data());
       WritePrivateProfileStringA("Rendering", "RenderHeight", "", result.data());
-      WritePrivateProfileStringA("Rendering", "ShadowMultiplier", "1", result.data());
+      WritePrivateProfileStringA("Rendering", "ShadowMultiplier", "2", result.data());
       // Written out even though it matches the built-in default, so the key is
       // discoverable and so the launcher reads a value rather than inferring
       // one. Anisotropic filtering ships on: it costs nothing per frame.
@@ -84,14 +84,19 @@ bool arlandConfigBool(const char* section, const char* key, bool def) {
          value[0] == 'y' || value[0] == 'Y';
 }
 
-// Shadow-map edge length. Opt-in: only 2048/4096/8192 enlarge the maps; any
-// other value (or no config) keeps the vanilla 1024 behaviour byte-identical.
+// Shadow-map edge length. Only 2048/4096/8192 enlarge the maps; any other value
+// keeps the vanilla 1024 behaviour byte-identical, and 1 is how you ask for it.
 // ARLAND_SHADOW_MULTIPLIER overrides arland-fix.ini [Rendering] ShadowMultiplier;
 // like arlandConfigBool, a missing ini key is written back for discovery. The
 // multiplier (1, 2, 4 or 8) scales the engine's 1024x1024 shadow map.
+//
+// Defaults to 2. The engine draws every shadow in a scene into one 1024 map, so
+// at the resolutions this mod renders at the edges are visibly blocky; 2048
+// costs little video memory and is what stops it looking broken. Both seed
+// sites have to agree: this one and the file creation in configPath() above.
 UINT shadowMapResolution() {
   static const UINT resolution = []() -> UINT {
-    unsigned long multiplier = 1;
+    unsigned long multiplier = 2;
     char value[16] = { };
     const DWORD length = GetEnvironmentVariableA(
       "ARLAND_SHADOW_MULTIPLIER", value, sizeof(value));
@@ -102,7 +107,7 @@ UINT shadowMapResolution() {
       GetPrivateProfileStringA("Rendering", "ShadowMultiplier", "\x01",
         iniValue, sizeof(iniValue), path);
       if (iniValue[0] == '\x01')
-        WritePrivateProfileStringA("Rendering", "ShadowMultiplier", "1", path);
+        WritePrivateProfileStringA("Rendering", "ShadowMultiplier", "2", path);
       else
         multiplier = std::strtoul(iniValue, nullptr, 10);
     }

@@ -31,7 +31,7 @@ The file sits beside the DLLs and is created on first launch. Close the game bef
 | `SMAA` | `true` / `false` | `true` |
 | `MSAA` | `1` (off), `2`, `4`, `8` | `1` |
 | `Font` | `replaced`, `upscaled`, `original` | `replaced` |
-| `ShadowMultiplier` | `1` (off), `2`, `4`, `8` | `1` |
+| `ShadowMultiplier` | `1` (off), `2`, `4`, `8` | `2` |
 | `AnisotropicFiltering` | `1` (off), `2`, `4`, `8`, `16` | `16` |
 
 The launcher has no control for `AnisotropicFiltering` and rewrites it to `16` every time you save, so a hand-set lower value survives only until the next save from the launcher. The same applies to a hand-edited cut-in combination the launcher's three states cannot express: it is read as the nearest state and written back that way.
@@ -64,7 +64,7 @@ Each resolution pair is all-or-nothing: if either half is blank or out of range,
 
 **Supersampling is the expensive one.** Cost scales with pixels drawn: 3840×2160 into a 2560×1440 window is 2.25× the pixels of 1440p, and 4× if the window is 1080p. It resolves detail genuinely finer than a display pixel, and sharpens menus and text along with the scene, which no amount of anti-aliasing can do. Exact integer ratios are the sharpest. Because it already anti-aliases geometry, drop `MSAA` back to `1` rather than paying for both. The render resolution is capped at 7680×4320, with the ratio kept and a line in the log; past 8K these 2010-era assets have no sub-pixel detail left to recover.
 
-**`ShadowMultiplier=8` is not recommended.** Its cost in video memory is substantial and its stability over long sessions is still being validated. Prefer `2` or `4`.
+**`ShadowMultiplier` ships at `2`.** The games draw every shadow in a scene into one 1024×1024 map, which is blocky at any resolution this mod renders at, so `2` is the default rather than something to opt into. It costs little video memory. `4` is sharper again and worth trying. **`8` is not recommended:** an 8192 map holds 64 times the pixels of the game's own 1024 one, and four times a 4096 one. Setting `1` restores the game's own 1024 map and turns the whole mechanism off.
 
 **Borderless wants a matching display resolution.** The window is sized to the monitor either way, so a smaller backbuffer is simply scaled up to fill it. The defaults already line up: borderless is on and a blank display resolution is your desktop resolution, so the backbuffer matches the window and nothing is scaled. Setting a display resolution below your monitor's is what reintroduces the upscale.
 
