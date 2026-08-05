@@ -22,7 +22,7 @@
 #include <vector>
 
 #include "../vendor/minhook/include/MinHook.h"
-#include "config.h"        // arlandConfigBool
+#include "config.h"        // verboseLogging
 #include "game.h"          // featureEnabled, Feature, currentTitle, Title
 #include "hook_util.h"     // Game, matches, installDetour, installMinHookDetour
 #include "log.h"
@@ -96,17 +96,20 @@ std::atomic<uintptr_t> g_lastSceneHelper{0};
 
 // ==== C1: gates/traces/tables/regs ====
 // Master switch for the whole battle-shadow subsystem (env ARLAND_BATTLE_SHADOWS,
-// ini [Battle] BattleShadows, default on). This is deliberately NOT the per-game
-// gate: it also enables Meruru's cinematic battle-state detection
-// (installMeruruBattleStateHook depends on it), which the cut-in shadow fix needs.
+// on unless that says 0). This is deliberately NOT the per-game gate: it also
+// enables Meruru's cinematic battle-state detection (installMeruruBattleStateHook
+// depends on it), which the cut-in shadow fix needs.
 // Per-game ordinary-combat caster restoration is gated separately by
 // g_battleAddrs->casterRestore (Rorona only; Totori and Meruru cast natively
 // and use this subsystem only for battle tracking and cut-in protection).
+//
+// There is no ini key. Rorona is missing shadows the engine means to draw, so
+// putting them back is a defect correction rather than a preference, and the
+// env variable is here for an A/B during development, not for players.
 bool battleShadowRestoreEnabled() {
   static const bool enabled = [] {
-    if (const char* value = std::getenv("ARLAND_BATTLE_SHADOWS"))
-      return value[0] != '0';   // env overrides the ini
-    return atfix::arlandConfigBool("Battle", "BattleShadows", true);  // default on
+    const char* value = std::getenv("ARLAND_BATTLE_SHADOWS");
+    return !value || value[0] != '0';
   }();
   return enabled;
 }

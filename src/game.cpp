@@ -55,7 +55,7 @@ const Descriptor& descriptor(Feature f) {
     /* ResolutionOverride */ { nullptr, nullptr, nullptr, false },
     /* Msaa               */ { nullptr, nullptr, nullptr, false },
     /* ShadowMultiplier   */ { nullptr, nullptr, nullptr, false },
-    /* BattleShadows      */ { "ARLAND_BATTLE_SHADOWS", "Battle", "BattleShadows", false },
+    /* BattleShadows      */ { "ARLAND_BATTLE_SHADOWS", nullptr, nullptr, false },
     /* CutInShadows       */ { "ARLAND_CUTIN_SHADOWS", "Battle", "BattleCutInShadows", false },
     /* CutInDimHold       */ { "ARLAND_CUTIN_DIMMING", "Battle", "BattleCutInDimming", true },
     /* SkipStartupLogos   */ { "ARLAND_SKIP_LOGOS", "Startup", "SkipLogos", false },
@@ -79,21 +79,19 @@ constexpr Support X = Support::OnByDefault;
 // Notes: FrameAtlasCache is OnByDefault on Rorona and Totori, OptIn on Meruru,
 // where it measurably buys nothing: its queue drain already serves all but three
 // of the reads, so a longer snapshot lifetime would be exposure without a win.
-// BattleShadows (mod-side
-// caster restoration) is OnByDefault only on Rorona; Meruru and Totori cast
-// them natively (Totori confirmed healthy by the 2026-07-23 probe). CutInShadows
-// and CutInDimHold ship OnByDefault on all three games: cut-ins keep their
-// ground shadows and stay at full brightness. Turn either back off via [Battle]
-// BattleCutInShadows / BattleCutInDimming (the latter is the inverse key, see
-// the descriptor -- BattleCutInDimming=true restores the original dimming).
-// They shipped opt-in until the cut-in character-juggling stray-shadow glitch
-// was fixed on 2026-07-23 (the settle-gated reception hold plus the
-// force-expiry per-actor hide; validated in Rorona, Meruru, and Totori), and
-// are on by default now that the playtest they were waiting on has happened.
-// Totori's cut-in support now
-// covers both builds: its multilingual battle addresses were RTTI-located and
-// homologue-matched, then confirmed in-game, so the cut-in cells apply to every
-// supported executable.
+// BattleShadows (mod-side caster restoration) is OnByDefault only on Rorona;
+// Meruru and Totori cast them natively (Totori confirmed healthy by the
+// 2026-07-23 probe). It has no ini key: Rorona ships without shadows the engine
+// plainly means to draw, so restoring them is a defect correction and not a
+// preference. ARLAND_BATTLE_SHADOWS=0 remains, for an A/B during development.
+// CutInShadows and CutInDimHold are OptIn on all three games. They change how
+// the close-up attack cameras look rather than repair them, and they are still
+// being playtested, so they ship off and are selected in the launcher's
+// "Attack cut-ins" list ([Battle] BattleCutInShadows / BattleCutInDimming; the
+// latter is the inverse key, see the descriptor -- BattleCutInDimming=true is
+// the original dimming). Totori's cut-in support covers both builds: its
+// multilingual battle addresses were RTTI-located and homologue-matched, then
+// confirmed in-game, so the cut-in cells apply to every supported executable.
 // The two startup skips are opt-in in all three games. Their hook targets were
 // resolved per game rather than ported by homology -- each logo vtable came
 // from that game's own RTTI, and each movie routine was anchored on that
@@ -138,9 +136,9 @@ constexpr Support X = Support::OnByDefault;
 // there at all, so that concern is withdrawn.
 constexpr Support kMatrix[3][static_cast<int>(Feature::Count)] = {
   //           Sync Menu Atls Frme Res  MSAA ShMl Bat  CutS CutD Logo Movi Card Snap Pull Save
-  /* Rorona */ { X,   X,   X,   X,   X,   O,   O,   X,   X,   X,   O,   O,   X,   X,   X,   X },
-  /* Totori */ { X,   X,   X,   X,   X,   O,   O,   U,   X,   X,   O,   O,   X,   X,   X,   X },
-  /* Meruru */ { X,   X,   X,   O,   X,   O,   O,   U,   X,   X,   O,   O,   X,   X,   X,   X },
+  /* Rorona */ { X,   X,   X,   X,   X,   O,   O,   X,   O,   O,   O,   O,   X,   X,   X,   X },
+  /* Totori */ { X,   X,   X,   X,   X,   O,   O,   U,   O,   O,   O,   O,   X,   X,   X,   X },
+  /* Meruru */ { X,   X,   X,   O,   X,   O,   O,   U,   O,   O,   O,   O,   X,   X,   X,   X },
 };
 
 int titleRow(Title t) {

@@ -55,12 +55,12 @@ const char* configPath() {
       // discoverable and so the launcher reads a value rather than inferring
       // one. Anisotropic filtering ships on: it costs nothing per frame.
       WritePrivateProfileStringA("Rendering", "AnisotropicFiltering", "16", result.data());
-      WritePrivateProfileStringA("Battle", "BattleShadows", "true", result.data());
       // The cut-in keys (BattleCutInShadows / BattleCutInDimming) are seeded
       // lazily by featureEnabled() using their per-game matrix defaults, so they
-      // stay correct when those defaults change (currently OnByDefault on every
-      // supported game, so shadows are restored and dimming is held off); not
-      // written eagerly here.
+      // stay correct when those defaults change (currently OptIn on every
+      // supported game, so the cut-ins render as the game shipped them); not
+      // written eagerly here. Rorona's ordinary-battle shadow restoration has no
+      // key at all: it is a fix, not a setting.
     }
     return result;
   }();

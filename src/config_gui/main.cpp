@@ -369,32 +369,37 @@ const int kPresetCount = 5;
 const int kPresetCustom = 4;
 
 // The two cut-in keys in arland-fix.ini are one choice, not two: they describe
-// how the close-up attack cameras look, and only three of their four
-// combinations are states anyone wants. So the window offers the choice itself
-// and keeps the file's two keys as the storage. Note BattleCutInDimming is the
+// how the close-up attack cameras look, and the window offers that choice while
+// keeping the file's two keys as the storage. Note BattleCutInDimming is the
 // inverse key -- true is the original dimming.
 //
-// The fourth combination (no shadows, no dimming) is not offered. An ini that
-// holds it opens on the nearest state by the shadow flag and is normalised on
-// the next save, the same way a hand-edited AnisotropicFiltering is.
+// Only the two combinations anyone asks for are offered: the game as it shipped,
+// and both halves restored. The keys stay independent in the ini for anyone who
+// wants one half on its own. An ini holding a combination not listed here opens
+// on Enhanced and is normalised on the next save, the same way a hand-edited
+// AnisotropicFiltering is.
 struct CutInMode {
   const wchar_t* label;
   bool shadows;   // [Battle] BattleCutInShadows
   bool dimming;   // [Battle] BattleCutInDimming
 };
+// Classic is the default and comes first: Enhanced changes how the game looks
+// rather than repairing it, and it is still being played through.
 const CutInMode kCutInModes[] = {
-  { L"Enhanced (default)",  true,  false },
-  { L"Shadows only",        true,  true  },
-  { L"Classic",             false, true  },
+  { L"Classic (default)",   false, true  },
+  { L"Enhanced",            true,  false },
 };
-const int kCutInCount = 3;
+const int kCutInCount = 2;
 
-// Which entry an ini pair corresponds to, falling back on the shadow flag.
+// Which entry an ini pair corresponds to. A combination the list cannot express
+// opens on Enhanced: both of them ask for one half of the restoration, so the
+// file was edited by someone who wanted more than the shipped close-up, and
+// Enhanced is the nearest state that is offered.
 int cutInIndex(bool shadows, bool dimming) {
   for (int i = 0; i < kCutInCount; ++i)
     if (kCutInModes[i].shadows == shadows && kCutInModes[i].dimming == dimming)
       return i;
-  return shadows ? 0 : 2;
+  return 1;
 }
 
 // Window mode spans two files: Borderless in arland-fix.ini, FullScreen in the
@@ -974,8 +979,8 @@ void loadFromIni() {
 
   // [Battle]: cut-in defaults match src/game.cpp (shadows on, dimming off).
   SendMessageW(g_hBCutIn, CB_SETCURSEL,
-    cutInIndex(iniBool("Battle", "BattleCutInShadows", true),
-               iniBool("Battle", "BattleCutInDimming", false)), 0);
+    cutInIndex(iniBool("Battle", "BattleCutInShadows", false),
+               iniBool("Battle", "BattleCutInDimming", true)), 0);
 
   // [Startup]: both off by default, and supported in all three games.
   SendMessageW(g_hSkipLogos, BM_SETCHECK,
@@ -1032,7 +1037,7 @@ void resetToDefaults() {
   SendMessageW(g_hShadow, CB_SETCURSEL, 1, 0);    // 2048 map, the shipped default
   SendMessageW(g_hSmaa, BM_SETCHECK, BST_CHECKED, 0);
   SendMessageW(g_hOutline, BM_SETCHECK, BST_CHECKED, 0);   // on as it shipped
-  SendMessageW(g_hBCutIn, CB_SETCURSEL, 0, 0);
+  SendMessageW(g_hBCutIn, CB_SETCURSEL, 0, 0);   // Classic, as the game shipped
   SendMessageW(g_hSkipLogos, BM_SETCHECK, BST_UNCHECKED, 0);
   SendMessageW(g_hSkipMovie, BM_SETCHECK, BST_UNCHECKED, 0);
   SendMessageW(g_hSkipLauncher, BM_SETCHECK, BST_UNCHECKED, 0);
@@ -1241,7 +1246,8 @@ bool hasUnsavedChanges() {
 // scripts/check_default_ini.py checks both against default.ini, so the two
 // cannot drift apart quietly. The cut-in keys are deliberately absent here as
 // well: featureEnabled() seeds those lazily from the per-game matrix, which
-// this tool cannot see.
+// this tool cannot see. There is no [Battle] key for the restored ordinary
+// battle shadows on Rorona; that one is a fix and cannot be turned off.
 //
 // False when the first write fails, which is the only interesting outcome: the
 // file is created by that write, so if it succeeds the rest will too.
@@ -1257,7 +1263,6 @@ bool seedIniDefaults() {
   WritePrivateProfileStringA("Rendering", "ShadowMultiplier", "2", g_iniPath);
   WritePrivateProfileStringA("Rendering", "AnisotropicFiltering", "16",
     g_iniPath);
-  WritePrivateProfileStringA("Battle", "BattleShadows", "true", g_iniPath);
   return true;
 }
 
@@ -2250,8 +2255,8 @@ void createControls(HWND w) {
     for (int i = 0; i < kCutInCount; ++i)
       SendMessageW(g_hBCutIn, CB_ADDSTRING, 0, (LPARAM)kCutInModes[i].label);
     page.row(L"Attack cut-ins:", g_hBCutIn,
-      L"Enhanced restores the ground shadows and holds full brightness. "
-      L"Shadows only keeps the original dimming. Classic is untouched.");
+      L"Classic is the close-up as the game shipped it. Enhanced restores the "
+      L"ground shadows and keeps the scene at full brightness.");
 
     page.heading(L"Diagnostics");
     g_hVerbose = mkCheck(w, L"Verbose logging", 0, 0, 10, IDC_VERBOSE);

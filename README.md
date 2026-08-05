@@ -28,7 +28,7 @@ The **included launcher** replaces the standard window for the Arland games and 
 | Correct behaviour at high refresh rates      | ✓      | ✓      | ✓      |
 | Borderless windowed at your desktop size     | ✓      | ✓      | ✓      |
 | Correct world-map analog cursor speed        | —      | ✓      | ✓      |
-| Restored battle cut-in shadows               | ✓      | ✓      | ✓      |
+| Restored ordinary-battle shadows             | ✓      | —      | —      |
 | Instant save and load menus                  | ✓      | ✓      | ✓      |
 | Optional startup logo and intro-movie skip   | ✓      | ✓      | ✓      |
 | Various game-specific bug fixes              | ✓      | ✓      | ✓      |
@@ -44,6 +44,7 @@ If the game crashes, the mod appends a report to `arland-fix.log` that helps pin
 | MSAA                                         | ✓      | ✓      | ✓      |
 | Anisotropic filtering                        | ✓      | ✓      | ✓      |
 | Shadow multiplier                            | ✓      | ✓      | ✓      |
+| Battle cut-in shadows and brightness         | ✓      | ✓      | ✓      |
 
 ## Safety
 

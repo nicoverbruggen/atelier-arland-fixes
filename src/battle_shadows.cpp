@@ -89,44 +89,37 @@ bool dimHoldValuePatch(float* v) {
 // @0), the chara_*_frag PS family (16, @0), and the toon character VS families
 // (224,@208) (13024,@13008) (12960,@12944) (160,@144) (96,@80).
 struct DimHoldField { uint32_t size; uint32_t offset; uint32_t components; };
-// Rorona and Meruru: the 16-byte $Params the common pack uses for the scene
-// fade, plus the arena-authored layouts. Battle arenas ship their own shaders,
-// and until these were added the single 16-byte entry covered the ground only,
-// leaving water, cloud and sky materials dark through a cut-in.
+// Rorona and Meruru. Every entry was checked with an exhaustive census: for a
+// candidate (size, offset), does that offset land on `diffuse` in EVERY shader
+// with a constant buffer of that size, across cg, btlField, chara, obj,
+// effmodel and item_obj? Anything less than 100% means some other field can
+// occupy those bytes and only the value predicate stands between the mod and
+// writing to it.
 //
-// Every entry here was checked for offset ambiguity across the whole asset
-// tree (btlField, cg, chara, obj, effmodel, item_obj) before being added: each
-// carries `diffuse` at one offset and one offset only. Two candidates were
-// deliberately LEFT OUT, and adding them by size would be unsafe:
+//   {304, 272}  diffuse in 359 of 359 shaders (Rorona), 518 of 518 (Meruru)
+//   {432, 336}  diffuse in 14 of 14 (Meruru only; absent from Rorona, where an
+//               entry whose size never occurs simply never matches)
 //
-//   320  `diffuse` sits at 272 in some shaders and at 288 in others, within a
-//        single asset group in every game. The rival field at 272 is `Kd`, the
-//        Phong diffuse reflectance -- semantically a diffuse colour, so a grey
-//        Kd is indistinguishable from the fade under any value predicate. 5
-//        shaders in Rorona, 11 in Totori, 6 in Meruru.
-//   112@80  `lightColor` in ~1900 shaders across the trilogy. Never patch it.
+// {16, 0} predates this and does NOT pass: HdrRange, gammaParam, hsvParam,
+// TexelSize, colorRate, BlurStart and others also sit at offset 0 of a 16-byte
+// buffer. It stays because it is the scene fade's real home on these two games
+// and removing it would remove the feature. It is the entry to replace first if
+// this ever moves to shader-identity matching.
 //
-// (112, 96) IS included, as a float3. The complete layout census across cg,
-// btlField, chara, obj, effmodel and item_obj found only three distinct
-// 112-byte layouts in the whole trilogy:
-//
-//   ModelViewProj@0 lightPositionOS@64 lightColor@80 diffuse@96(12)
-//       Rorona 782, Totori 459, Meruru 673
-//   WvpXf@0 ... refRate@88 diffuse@96(16)          Rorona 2, Meruru 6
-//   interval@0 ... ModelViewProj@32 HdrRange@96(4) Rorona 1, Meruru 3
-//
-// So offset 96 is `diffuse` in every layout but one, and Totori has only the
-// first. The residual is `HdrRange`, a lone float whose following 8 bytes are
-// undeclared: firing there needs three equal floats in (0.5, 0.98) spanning a
-// field and its padding, and the effect if it ever did would be to move one
-// HDR range from about 0.7 to 1.0 on one shader during a cut-in.
-//
-// 432 and 240 exist only in Meruru, 128 in both; an entry whose size never
-// appears in the running game simply never matches, so one table serves both.
+// Deliberately NOT here, each rejected by the census rather than by argument:
+//   {112, 96}   Rorona has 1 HdrRange at that offset, Meruru 3. Safe in Totori
+//               only, where it is diffuse in 459 of 459, so it lives in that
+//               game's table instead.
+//   {128, 96}   rivals ModelViewProj, modelview, modelviewi
+//   {240, 208}  rivals ModelViewProj, Model
+//   {320, 272}  rival Kd, the Phong diffuse reflectance -- a diffuse colour by
+//               definition, so no value predicate can separate them
+//   {320, 288}  rivals uSpeed, brightColor
+//   {112, 80}   lightColor in ~1900 shaders
 constexpr DimHoldField kDimFieldsClassic[] = {
-  {16, 0, 4}, {112, 96, 3}, {128, 96, 4}, {240, 208, 4},
-  {304, 272, 4}, {432, 336, 4},
+  {16, 0, 4}, {304, 272, 4}, {432, 336, 4},
 };
+
 // Totori's battle arenas render with the FIELDMAP shader family (runtime
 // CUTIN_CB trace 2026-07-23: the dim flowed through (304,16) fieldmap fog,
 // (48,32), (80,0), (32,0) — not the btl_field layouts the static analysis
@@ -156,11 +149,24 @@ constexpr DimHoldField kDimFieldsClassic[] = {
 // 272. dimHoldPatch therefore refuses 272 on any buffer whose offset 16
 // already looks like the fade, which leaves the matrix row untouched in the
 // only layout where it exists.
-// 320 is left out here for the same reason as in kDimFieldsClassic: `diffuse`
-// sits at 272 in btlField and 288 in chara, with both offsets present inside
-// obj alone, and the rival at 272 is `Kd`. (112, 96) is included as a float3;
-// in Totori that offset is `diffuse` in 459 of 459 shaders, the only game
-// where the census finds no other layout at all.
+// Against the same census, Totori's entries fall into three groups.
+//
+// Clean, diffuse at that offset in every shader of that size:
+//   {112, 96} 459/459   {416, 336} 8/8   {96, 80}   {12960, 12944}
+//   {13024, 13008}
+// Guarded, one known rival that content separates:
+//   {304, 272}  2 shaders have PSSGLightModelViewProjTex there; dimHoldPatch
+//               refuses 272 when offset 16 already looks like the fade.
+// Inherited and NOT clean, kept because the feature needs them:
+//   {304, 16}   WorldITXf in 361 shaders against diffuse in 2. This is the
+//               most exposed entry in either table and the value predicate is
+//               all that protects it -- a runtime trace on 2026-08-05 logged a
+//               near-miss at 304@256, inside that same matrix, which is how
+//               close a matrix row gets.
+//   {16,0} {32,0} {48,32} {80,0} {144,0} {160,16} {160,144} {224,208}
+//
+// 320 is rejected outright at both offsets: the rival at 272 is `Kd`, the Phong
+// diffuse reflectance, which is a diffuse colour by definition.
 constexpr DimHoldField kDimFieldsTotori[] = {
   {16, 0, 4}, {32, 0, 4}, {48, 32, 4}, {80, 0, 4}, {96, 80, 4},
   {112, 96, 3}, {144, 0, 4}, {160, 16, 4}, {160, 144, 4}, {224, 208, 4},
@@ -224,129 +230,6 @@ bool dimHoldPatch(void* data, uint32_t size) {
     patched = true;
   }
   return patched;
-}
-
-// ---- ARLAND_CUTIN_CB_TRACE -------------------------------------------------
-// Discovery diagnostic: during cinematic battle states, scan every constant
-// buffer written on any path for the cut-in fade and log each unique
-// (path, size, offset) once with the value it carried.
-//
-// This is a restoration of the probe that produced kDimFieldsTotori on
-// 2026-07-23 and was removed once it had answered that question. Three of its
-// limits are lifted, because each is on its own enough to explain why the
-// table it produced misses the arena-authored materials that leave water and
-// clouds dark:
-//
-//   - it stopped at 16384 bytes, so the two ~13000-byte skinning layouts were
-//     scanned only in part and anything past that not at all;
-//   - it stopped after 64 unique records, which a scene with arena shaders
-//     can exhaust before it reaches them;
-//   - it logged only exact matches, so a float3 `diffuse` (the arena phong
-//     materials put one at offset 96 of a 112-byte buffer) was invisible: the
-//     four bytes after it are structure padding, so the w-component test fails
-//     and the record was silently dropped.
-//
-// The near-miss logging is the important addition. A location that matches on
-// xyz but not on w is exactly the shape of a float3 field, and telling those
-// apart from noise is what the value predicate cannot do on its own.
-//
-// 16-byte alignment is kept and is not a limit: HLSL constant-buffer packing
-// never lets a float4 straddle a 16-byte boundary, so a scan at that stride
-// cannot miss one.
-bool cutinCbTraceEnabled() {
-  static const bool enabled = [] {
-    const char* value = std::getenv("ARLAND_CUTIN_CB_TRACE");
-    return value && value[0] != '0';
-  }();
-  return enabled;
-}
-
-void cutinCbTraceScan(const char* path, const void* data, uint32_t size) {
-  if (!cutinCbTraceEnabled() || !data || size < 16 ||
-      !arlandInCinematicBattle())
-    return;
-  static mutex traceMutex;
-  static std::set<uint64_t> seen;
-  const uint8_t* bytes = static_cast<const uint8_t*>(data);
-  const auto ad = [](float a, float b) { float d = a - b; return d < 0 ? -d : d; };
-  for (uint32_t off = 0; off + 16 <= size; off += 16) {
-    float v[4];
-    std::memcpy(v, bytes + off, sizeof(v));
-    const float s = v[0];
-    if (!(s > 0.5f && s < 0.98f) ||
-        ad(v[0], v[1]) >= 0.01f || ad(v[0], v[2]) >= 0.01f)
-      continue;
-    // Exact when w is ~1 (a float4 field), near-miss otherwise (very likely a
-    // float3 field whose w is the padding that follows it).
-    const bool exact = ad(v[3], 1.0f) < 0.02f;
-    const uint64_t key = (uint64_t(uintptr_t(path) & 0xffffu) << 48) |
-      (uint64_t(size) << 20) | off;
-    {
-      std::lock_guard lock(traceMutex);
-      if (seen.size() >= 4096 || !seen.insert(key).second)
-        continue;
-    }
-    log("CUTIN_CB ", exact ? "match" : "near ", " path=", path,
-        " size=", std::dec, size, " offset=", off,
-        " v=(", v[0], ",", v[1], ",", v[2], ",", v[3], ")");
-  }
-}
-
-// Which shader is bound when the receiver's constant buffer is in play.
-// Totori ships two 304-byte fieldmap receivers whose reflection is identical,
-// `fieldmap_shadow_fog_vert` and its HDR variant, and they differ only in the
-// gate constant (2.7 against 2.5) and in whether `diffuse` also multiplies the
-// vertex colour. Nothing static separates them, so this records the DXBC
-// digest of the vertex shader bound at a draw that has a 304-byte constant
-// buffer, and the digest is matched against the shader pack offline. Logging a
-// digest rather than trying to name the shader in-process keeps this to a
-// hash comparison and puts the identification where the assets are.
-static const GUID IID_CutinShaderDigest =
-  {0x9a3c17e6,0x5b62,0x4f0a,{0xb1,0x77,0x2e,0x64,0x9d,0x3f,0x8c,0x21}};
-
-void cutinNoteShaderBytecode(ID3D11DeviceChild* shader,
-                             const void* bytecode, SIZE_T length) {
-  if (!cutinCbTraceEnabled() || !shader || !bytecode || length < 20)
-    return;
-  // DXBC lays its 16-byte digest at offset 4. The first eight bytes are plenty
-  // to tell two shaders apart and keep the log line short.
-  uint64_t digest = 0;
-  std::memcpy(&digest, static_cast<const uint8_t*>(bytecode) + 4, sizeof(digest));
-  shader->SetPrivateData(IID_CutinShaderDigest, sizeof(digest), &digest);
-}
-
-void cutinTraceBoundShader(ID3D11DeviceContext* context) {
-  if (!cutinCbTraceEnabled() || !arlandInCinematicBattle())
-    return;
-  ID3D11Buffer* cb = nullptr;
-  context->VSGetConstantBuffers(0, 1, &cb);
-  if (!cb)
-    return;
-  D3D11_BUFFER_DESC bd = { };
-  cb->GetDesc(&bd);
-  cb->Release();
-  if (bd.ByteWidth != 304)
-    return;
-  ID3D11VertexShader* vs = nullptr;
-  context->VSGetShader(&vs, nullptr, nullptr);
-  if (!vs)
-    return;
-  uint64_t digest = 0;
-  UINT digestSize = sizeof(digest);
-  if (SUCCEEDED(vs->GetPrivateData(IID_CutinShaderDigest, &digestSize, &digest)) &&
-      digestSize == sizeof(digest)) {
-    static mutex digestMutex;
-    static std::set<uint64_t> seenDigests;
-    bool fresh = false;
-    {
-      std::lock_guard lock(digestMutex);
-      fresh = seenDigests.size() < 64 && seenDigests.insert(digest).second;
-    }
-    if (fresh)
-      log("CUTIN_VS 304-byte cb bound, vs_digest=0x", std::hex, digest,
-          std::dec);
-  }
-  vs->Release();
 }
 
 // Transition-aware settle detector for the reception gate (stray-shadow fix,

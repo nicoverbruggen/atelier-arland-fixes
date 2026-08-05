@@ -28,11 +28,4 @@ bool gateHoldPatch(void* data, uint32_t size);
 bool tapScalePatch(void* data, uint32_t size);
 void gateHoldAtDraw(ID3D11DeviceContext* context);
 
-// ARLAND_CUTIN_CB_TRACE discovery diagnostic. Inert unless the switch is set.
-bool cutinCbTraceEnabled();
-void cutinCbTraceScan(const char* path, const void* data, uint32_t size);
-void cutinNoteShaderBytecode(ID3D11DeviceChild* shader,
-                             const void* bytecode, SIZE_T length);
-void cutinTraceBoundShader(ID3D11DeviceContext* context);
-
 }  // namespace atfix

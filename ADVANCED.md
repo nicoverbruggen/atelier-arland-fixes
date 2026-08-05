@@ -34,13 +34,14 @@ The file sits beside the DLLs and is created on first launch. Close the game bef
 | `ShadowMultiplier` | `1` (off), `2`, `4`, `8` | `2` |
 | `AnisotropicFiltering` | `1` (off), `2`, `4`, `8`, `16` | `16` |
 
-The launcher has no control for `AnisotropicFiltering` and rewrites it to `16` every time you save, so a hand-set lower value survives only until the next save from the launcher. The same applies to a hand-edited cut-in combination the launcher's three states cannot express: it is read as the nearest state and written back that way.
+The launcher has no control for `AnisotropicFiltering` and rewrites it to `16` every time you save, so a hand-set lower value survives only until the next save from the launcher. The same applies to a hand-edited cut-in combination the launcher's two states cannot express: it is read as Enhanced and written back that way.
 
 | `[Battle]` | Values | Default |
 | --- | --- | --- |
-| `BattleShadows` | Restores Rorona's missing ordinary-battle shadows. Meruru and Totori cast them natively and are unaffected. | `true` |
-| `BattleCutInShadows` | `true` restores ground shadows during the close-up attack cameras. | `true` |
-| `BattleCutInDimming` | `true` keeps the original close-up dimming; `false` holds it at full brightness. | `false` |
+| `BattleCutInShadows` | `true` restores ground shadows during the close-up attack cameras. | `false` |
+| `BattleCutInDimming` | `true` keeps the original close-up dimming; `false` holds it at full brightness. | `true` |
+
+Both cut-in keys are off as shipped, which leaves the close-ups as the game renders them. Set them from the launcher's "Attack cut-ins" list rather than by hand. Rorona's missing ordinary-battle shadows are restored without a setting, because that is a fix rather than a preference; Meruru and Totori cast them natively and are unaffected.
 
 | `[Field]` | Values | Default |
 | --- | --- | --- |
