@@ -12,8 +12,6 @@
 
 ### Fixed
 
-- **With MSAA enabled, the blurred backdrop behind conversation text no longer renders black in Atelier Totori DX.** At conversation open the engine idles the scene for one frame and then snapshots the previously presented frame for the backdrop. The multisample target counted as newer than the visible texture as soon as it was bound, so that idle frame resolved a bare clear over the finished frame, presented it black, and the snapshot froze the black for the whole conversation. The multisample target now counts as newer only once something has been drawn into it.
-
 - **The grey flash at startup is now black**, which is what the game fades up from anyway. All three games.
 
 - **Combat no longer fails to start when you swing your staff at a monster.** A chasing monster covered the end of each step in a single frame, so on a high-refresh display it could cross the reach of your staff between two frames and the swing connected with nothing. That movement is spread over time now, and the monster still arrives in the same place at the same moment. Set `[Field] MonsterSnapFix=false` to turn it off.
@@ -26,7 +24,7 @@
 
 ### Changed
 
-- **MSAA has been removed.** It was optional and off by default, and it never solved the problem people actually see in these games: multisampling smooths the outlines of 3D shapes, while what aliases here is the fine detail inside textures and alpha-tested edges, on costume trim and foliage. SMAA catches that and is on by default, and supersampling resolves it properly. What settled it was a defect: with MSAA on, Atelier Totori DX rendered the blurred backdrop behind conversation text as solid black. Five separate explanations were built and measured over an evening and every one of them was wrong, on top of two earlier MSAA faults fixed in v0.10 and since. A feature that costs that much to keep working, that is off by default, and that is bettered by two features already shipping, is not worth carrying. `MSAA` in `arland-fix.ini` is gone, the launcher's dropdown with it, and the **Medium** preset now steps up through supersampling like the rungs above it. A `MSAA` line in an existing file is ignored.
+- **MSAA has been removed.** It was optional and off by default, and it never solved the problem people actually see in these games: multisampling smooths the outlines of 3D shapes, while what aliases here is the fine detail inside textures and alpha-tested edges, on costume trim and foliage. SMAA catches that and is on by default, and supersampling resolves it properly. What settled it was a defect: with MSAA on, Atelier Totori DX rendered the blurred backdrop behind conversation text as solid black. Five separate explanations were built and measured over an evening and every one of them was wrong, on top of two earlier MSAA faults fixed in v0.10 and since. A feature that costs that much to keep working, that is off by default, and that is bettered by two features already shipping, is not worth carrying. `MSAA` in `arland-fix.ini` is gone and the launcher's dropdown with it. A `MSAA` line in an existing file is ignored.
 
 - **Shadows now default to a 2048 map.** The engine draws every shadow in a scene into a single 1024 map, which looks coarse at 1440p and above. `[Rendering] ShadowMultiplier` defaults to `2`, and `1` restores the original. An `arland-fix.ini` that already has the key keeps its value.
 
@@ -34,7 +32,7 @@
 
 - **Rorona's restored ordinary-battle shadows no longer have a setting.** Rorona alone is missing the character and enemy shadows in the normal battle view, so putting them back is a fix and is always on. The `[Battle] BattleShadows` key is gone, and a line for it in an existing file is ignored. Totori and Meruru cast those shadows natively and are unaffected.
 
-- **The launcher has been reorganized.** It is down to three tabs: **General**, **Graphics** and **About**. Everything that changes what you see is on Graphics, and the settings that were on their own tab have moved there. Several bugs were fixed along the way, the important one being that settings could fail to save while the window reported success.
+- **The launcher has been reorganized.** It is down to three tabs: **General**, **Graphics** and **About**. Everything that changes what you see is on Graphics, and the settings that were on their own tab have moved there. The quality presets are gone with them: each removal of the last few releases took a dimension off that ladder, and what remained set two dropdowns that sit directly underneath it and already say what they cost. Set them yourself. Several bugs were fixed along the way, the important one being that settings could fail to save while the window reported success.
 
 ## v0.12
 

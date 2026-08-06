@@ -49,7 +49,6 @@ enum : int {
   IDC_RENDLBL,  // read-only computed render-resolution label
   IDC_SHADOW,
   IDC_SMAA,
-  IDC_PRESET,
   IDC_TABS,
   IDC_WINMODE,
   IDC_LANG,
@@ -127,7 +126,7 @@ HWND g_hRepoLink = nullptr;    // SysLink on the About page
 // that has to be right: it is where the window sends people.
 const wchar_t* const kRepositoryUrl =
   L"https://github.com/nicoverbruggen/atelier-arland-fixes";
-HWND g_hPreset, g_hWinMode, g_hLang, g_hBCutIn,
+HWND g_hWinMode, g_hLang, g_hBCutIn,
      g_hFont, g_hBase, g_hSS, g_hRendLbl, g_hShadow,
      g_hSmaa, g_hOutline,
      g_hSkipLogos, g_hSkipMovie, g_hSkipLauncher, g_hVerbose;
@@ -322,44 +321,14 @@ const int kSSCount = 6;
 const unsigned kMaxRenderWidth = 7680;
 const unsigned kMaxRenderHeight = 4320;
 
-// Quality presets. These set only the Graphics group -- resolution,
-// borderless, frame rate, the battle options and the UI font are preferences
-// rather than quality levels, and a preset that silently changed them would
-// surprise more than it helped. Selecting Custom changes nothing; any manual
-// edit switches the box to Custom so it never claims a preset it is not on.
-struct Preset {
-  const wchar_t* label;
-  int supersampling;   // index into kSSItems
-  bool smaa;
-  int shadow;          // index into kShadowItems
-};
-// The ladder spends in the order things are worth paying for: edge smoothing
-// first (SMAA is nearly free), then multisampling, then shadow maps, and only
-// at the top supersampling, which costs the most by a wide margin.
+// There used to be a quality preset dropdown above these controls. It set
+// anti-aliasing, multisampling, shadow detail and supersampling together, and
+// each removal took a dimension off it: anisotropic filtering, which stopped
+// being a setting, then multisampling in 0.14. What was left set two adjacent
+// dropdowns, one of which writes the resulting resolution into its own labels,
+// so the ladder said nothing the controls underneath did not. The Graphics page
+// now carries the controls on their own, each with its cost written beside it.
 //
-// Anisotropic filtering used to be a rung dimension and a control, and is
-// neither now: it ships on at 16x, costs nothing measurable per frame, and a
-// setting with no trade in it is not a setting. Removing it collapsed Low and
-// Balanced, which had differed in nothing else, so Balanced takes the floor.
-// The Dusk launcher carries the same ladder for the same reasons.
-//
-// Balanced matches what the mod ships with (default.ini and the literals in
-// src/), so a fresh install opens on a named preset rather than on Custom, and
-// the launcher and the drop-in DLL agree about what "default" means.
-//
-// Anti-aliasing is SMAA at every tier, one cheap full-frame pass, and the rungs
-// above Balanced buy detail with supersampling rather than with more passes.
-const Preset kPresets[] = {
-  //                        SS  SMAA  shadow
-  { L"Balanced (default)",   0,  true,      1 },
-  { L"Medium",               1,  true,      1 },
-  { L"High",                 2,  true,      1 },
-  { L"Maximum",              3,  true,      2 },
-  { L"Custom",              -1,  true,     -1 },
-};
-const int kPresetCount = 5;
-const int kPresetCustom = 4;
-
 // The two cut-in keys in arland-fix.ini are one choice, not two: they describe
 // how the close-up attack cameras look, and the window offers that choice while
 // keeping the file's two keys as the storage. Note BattleCutInDimming is the
@@ -800,36 +769,6 @@ bool computeRender(unsigned* rw, unsigned* rh) {
   return true;
 }
 
-// Push a preset's values into the quality controls.
-void applyPreset(int index) {
-  if (index < 0 || index >= kPresetCustom)
-    return;
-  const Preset& preset = kPresets[index];
-  // Reducing rather than discarding matters most here: landing on Off would
-  // also make detectPreset report Custom, so picking Maximum would visibly
-  // refuse to stay picked.
-  setSsIndexReducing(preset.supersampling);
-  SendMessageW(g_hShadow, CB_SETCURSEL, preset.shadow, 0);
-  SendMessageW(g_hSmaa, BM_SETCHECK,
-    preset.smaa ? BST_CHECKED : BST_UNCHECKED, 0);
-}
-
-// Which preset the current controls correspond to, or Custom if none.
-int detectPreset() {
-  for (int i = 0; i < kPresetCustom; ++i) {
-    const Preset& preset = kPresets[i];
-    if (ssIndex() == preset.supersampling &&
-        (int)SendMessageW(g_hShadow, CB_GETCURSEL, 0, 0) == preset.shadow &&
-        (SendMessageW(g_hSmaa, BM_GETCHECK, 0, 0) == BST_CHECKED) == preset.smaa)
-      return i;
-  }
-  return kPresetCustom;
-}
-
-void refreshPreset() {
-  SendMessageW(g_hPreset, CB_SETCURSEL, detectPreset(), 0);
-}
-
 // Defined with the rest of the drawing code below.
 void repaintUnder(HWND ctrl);
 LRESULT CALLBACK TabProc(HWND, UINT, WPARAM, LPARAM, UINT_PTR, DWORD_PTR);
@@ -868,7 +807,7 @@ void loadFromIni() {
   // Base (display) resolution: DisplayWidth/Height, or Width/Height when those
   // are absent, which migrates a file written by an earlier version onto the
   // current keys on the next save. Blank => Auto. A concrete value that is not
-  // one of the listed presets is added as its own item so it round-trips.
+  // one of the listed resolutions is added as its own item so it round-trips.
   unsigned dispW = iniDimension("DisplayWidth", "Width");
   unsigned dispH = iniDimension("DisplayHeight", "Height");
   int baseSel = 0;   // Auto by default (index 0)
@@ -892,8 +831,8 @@ void loadFromIni() {
         // correct here. The saved value is lost on the next save, deliberately.
         baseSel = 0;
       } else {
-        // Fits this display but is not one of the presets, so add it and keep
-        // it selectable.
+        // Fits this display but is not one of the listed resolutions, so add it
+        // and keep it selectable.
         wchar_t label[32];
         wsprintfW(label, L"%u x %u", dispW, dispH);
         baseSel = (int)SendMessageW(g_hBase, CB_ADDSTRING, 0, (LPARAM)label);
@@ -991,11 +930,8 @@ void loadFromIni() {
     iniBool("Diagnostics", "VerboseLogging", false) ? BST_CHECKED : BST_UNCHECKED, 0);
 
 
-  // Last, once every quality control holds its loaded value: show which preset
-  // that combination is, or Custom.
-  refreshPreset();
+  // Last, once every quality control holds its loaded value.
   updateRenderResolution();
-
 }
 
 // Put every setting back to a known-good starting point: the mod's own
@@ -1006,9 +942,8 @@ void loadFromIni() {
 // English because they wanted their graphics settings back would be a hostile
 // reading of "defaults". saveToIni writes it back unchanged from its control.
 //
-// The values here are the same ones default.ini ships and src/ parses; the
-// Balanced preset is defined to match, which is why this leaves the preset box
-// reading Balanced rather than Custom.
+// The values here are the same ones default.ini ships and src/ parses, so a
+// reset and a fresh install land on the same configuration.
 void resetToDefaults() {
   // 720p windowed: the safe floor. It is the one resolution every display this
   // runs on can show, including a handheld, so a reset from a configuration
@@ -1037,7 +972,6 @@ void resetToDefaults() {
   SendMessageW(g_hVerbose, BM_SETCHECK, BST_UNCHECKED, 0);
   SendMessageW(g_hDebugView, CB_SETCURSEL, 0, 0);
   syncDebugTab(false);
-  refreshPreset();
   updateRenderResolution();
 }
 
@@ -2194,11 +2128,6 @@ void createControls(HWND w) {
   // ---------------- page 1: Graphics ----------------
   {
     Layout page(w, 1);
-    g_hPreset = mkCombo(w, 0, 0, 10, IDC_PRESET);
-    for (int i = 0; i < kPresetCount; ++i)
-      SendMessageW(g_hPreset, CB_ADDSTRING, 0, (LPARAM)kPresets[i].label);
-    page.row(L"Preset:", g_hPreset, L"Sets the three options below.");
-
     g_hSS = mkCombo(w, 0, 0, 10, IDC_SS);
     refillSupersampling();
     page.row(L"Supersampling:", g_hSS,
@@ -2524,22 +2453,8 @@ LRESULT CALLBACK WndProc(HWND w, UINT msg, WPARAM wp, LPARAM lp) {
       }
       // Base or supersampling changed: recompute the render label and the
       // Auto-disables-supersampling rule live.
-      if (HIWORD(wp) == CBN_SELCHANGE && LOWORD(wp) == IDC_PRESET) {
-        applyPreset((int)SendMessageW(g_hPreset, CB_GETCURSEL, 0, 0));
-        updateRenderResolution();
-        return 0;
-      }
-      // Any hand-edited quality setting means the preset no longer describes
-      // what is selected, so the box drops to Custom rather than lying.
-      if ((HIWORD(wp) == CBN_SELCHANGE &&
-           (LOWORD(wp) == IDC_SS ||
-            LOWORD(wp) == IDC_SHADOW)) ||
-          (HIWORD(wp) == BN_CLICKED && LOWORD(wp) == IDC_SMAA)) {
-        refreshPreset();
-        updateRenderResolution();
-        return 0;
-      }
-      if (HIWORD(wp) == CBN_SELCHANGE && LOWORD(wp) == IDC_BASE) {
+      if (HIWORD(wp) == CBN_SELCHANGE &&
+          (LOWORD(wp) == IDC_SS || LOWORD(wp) == IDC_BASE)) {
         updateRenderResolution();
         return 0;
       }

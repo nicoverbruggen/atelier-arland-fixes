@@ -13,7 +13,7 @@ The current tree contains:
 - old-Arland render-target and viewport/scissor correction;
 - old-Arland game-side 1440p/4K render-target and raster correction;
 - signature-gated launcher mode injection and an optional INI resolution override;
-- optional MSAA, optional high-resolution shadow-map twins (`ShadowMultiplier`), and optional anisotropic filtering;
+- optional high-resolution shadow-map twins (`ShadowMultiplier`) and anisotropic filtering;
 - SMAA anti-aliasing applied before UI composition (present-time full-frame on Totori);
 - high-resolution UI text rendered from bundled scalable fonts, on the English builds;
 - frame-rate-independent field movement in all three games and travel-map analog cursor movement in Totori and Meruru;
@@ -54,7 +54,7 @@ After making changes, run the relevant validation scripts, including `scripts/ch
 - Unknown executables must remain unmodified apart from normal system-D3D11 forwarding.
 - Cache only successful `.PSSG` validation results. Do not cache failures, parsed UI graphs, or mutable resource objects.
 - Keep atlas snapshots inside the verified synchronous queue-drain lifetime in Meruru. Rorona and Totori may retain verified text-renderer snapshots until the next `Present`; invalidate a texture on any unmatched real lock and never retain snapshots across frames. That invalidation underpins both lifetimes and must never be gated on either of them.
-- Internal D3D11 operations on game resources must call original entry points (`getContextProcs(ctx)->Fn(ctx, ...)`) and must not recurse through hooks; `gateHoldAtDraw` in `battle_shadows.cpp` is the reference example. The mod's own present-time post-process passes (`ssaaDownscale`, `smaaRun`) are the exception and issue through the hooked context on purpose: binding an SRV is what resolves an MSAA twin into its host before the pass samples it. Converting those to original entry points breaks MSAA with supersampling.
+- Internal D3D11 operations on game resources must call original entry points (`getContextProcs(ctx)->Fn(ctx, ...)`) and must not recurse through hooks; `gateHoldAtDraw` in `battle_shadows.cpp` is the reference example. The mod's own present-time post-process passes (`ssaaDownscale`, `smaaRun`) are the exception and issue through the hooked context. The reason on record for that was multisampling, which was removed in 0.14: binding an SRV was what resolved a multisample twin into its host before the pass sampled it. Leave the passes on the hooked context until someone establishes what it still contributes; that has not been measured since the removal.
 - Redirect staging shadows only on the immediate context. Flush before GPU consumers and before executing deferred command lists.
 - Preserve per-resource/per-subresource lifetime tracking and COM reference ownership.
 - Gate experimental behavior until it has passed clean-text, repeated-menu, and multiple-game validation.

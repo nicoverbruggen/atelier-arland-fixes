@@ -152,8 +152,8 @@ bool perfLogEnabled() {
   return enabled;
 }
 
-// Present must be hooked whenever the transition trace, MSAA safety resolve,
-// SMAA, supersampling downscale, borderless mode or frame-time log needs it.
+// Present must be hooked whenever the transition trace, SMAA, the
+// supersampling downscale, borderless mode or the frame-time log needs it.
 bool presentHookNeeded() {
   return menuTransitionTraceEnabled() ||
     atfix::smaaEnabled() ||

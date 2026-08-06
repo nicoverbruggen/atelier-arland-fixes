@@ -493,8 +493,8 @@ void ssaaDownscale(IDXGISwapChain* swapChain) {
   context->PSSetShader(g_ps, nullptr, 0);
   context->PSSetConstantBuffers(0, 1, &g_cb);
   context->PSSetSamplers(0, 1, &g_sampler);
-  // The hook behind this bind runs resolveIfMSAA on g_color, which is how the
-  // MSAA twin reaches the host we sample. Not a getContextProcs call.
+  // Deliberately the hooked context, not a getContextProcs call. See the
+  // post-process exception in AGENTS.md before changing it.
   context->PSSetShaderResources(0, 1, &g_colorSRV);
   context->Draw(3, 0);
 

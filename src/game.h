@@ -51,7 +51,7 @@ Support featureSupport(Feature f);
 
 // Resolved on/off for the current game. Precedence: environment override, then
 // the ini key, then the matrix default. Unsupported is a hard off that neither
-// env nor ini can turn on. Valued knobs (MSAA, ShadowMultiplier) are read by
+// env nor ini can turn on. Valued knobs (ShadowMultiplier) are read by
 // their dedicated readers, not through this; here they only carry a matrix cell
 // for the documentation table.
 bool featureEnabled(Feature f);

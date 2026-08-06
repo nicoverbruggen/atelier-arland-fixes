@@ -17,8 +17,8 @@ namespace atfix {
 // every render-target view the game asks for over the backbuffer is created
 // over a mod-owned render-resolution texture instead. Because the redirect
 // happens when the view is created, everything downstream (binds, clears, the
-// MSAA twin, the pre-UI SMAA injection) follows without further interception,
-// and the real backbuffer is touched only by the downscale below.
+// pre-UI SMAA injection) follows without further interception, and the real
+// backbuffer is touched only by the downscale below.
 
 // Whether the configuration asks for supersampling: a render resolution that
 // exceeds the display resolution. Known before any device exists, so the

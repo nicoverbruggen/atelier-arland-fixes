@@ -77,7 +77,7 @@ The complete source code and the steps GitHub uses to build each release are pub
 2. Copy `d3d11.dll`, `arland-fix-launcher.exe`, `msimg32.dll` and `arland-fix.ini` into that directory, beside the game executables and `ArlandDXEnv.exe`. If you are updating an existing install, keep the `arland-fix.ini` you already have — the bundled one is only the defaults.
 3. Launch the game normally through Steam.
 
-All performance and text-correctness fixes are enabled automatically. No additional configuration is required, but it's recommended that you adjust the graphics settings according to your hardware configuration. Presets are included.
+All performance and text-correctness fixes are enabled automatically. No additional configuration is required, but it's recommended that you adjust the graphics settings according to your hardware configuration. The launcher explains what each one costs.
 
 ### Wine and Proton
 

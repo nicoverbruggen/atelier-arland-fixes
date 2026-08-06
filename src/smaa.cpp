@@ -2,9 +2,9 @@
 //
 // SMAA (Enhanced Subpixel Morphological Anti-Aliasing, Jimenez et al.) as a
 // post-process over the finished 3D scene before the games draw their UI.
-// Unlike MSAA, SMAA works on the finished image, so it smooths edges MSAA
-// cannot — including texture-interior and alpha-test edges — as well as
-// ordinary silhouettes. It runs the standard three
+// SMAA works on the finished image, so it smooths edges that multisampling
+// cannot — texture-interior and alpha-test edges — as well as ordinary
+// silhouettes. It runs the standard three
 // passes (edge detection -> blending-weight calculation -> neighborhood
 // blending) with the reference shader and its two precomputed lookup textures.
 //
@@ -105,17 +105,6 @@ float4 BlendPS(float4 position : SV_POSITION,
                float2 texcoord : TEXCOORD0,
                float4 offset : TEXCOORD1) : SV_TARGET {
   return SMAANeighborhoodBlendingPS(texcoord, offset, colorTex, blendTex);
-}
-
-// Write the antialiased scene back out through the ordinary fullscreen quad.
-// Used to push the finished image into a multisample twin: every sample in a
-// pixel receives the same colour, which is correct because the image has
-// already been resolved and carries no subsample information to preserve.
-// Shares EdgeVS, so it also receives the unused edge offsets.
-float4 CopyPS(float4 position : SV_POSITION,
-              float2 texcoord : TEXCOORD0,
-              float4 offset[3] : TEXCOORD1) : SV_TARGET {
-  return colorTex.Sample(LinearSampler, texcoord);
 }
 
 // Debug: flat tint over the scene target, drawn at the injection point. If the
@@ -233,14 +222,12 @@ bool initShared(ID3D11Device* dev) {
 
   ID3DBlob* evs = nullptr; ID3DBlob* wvs = nullptr; ID3DBlob* bvs = nullptr;
   ID3DBlob* eps = nullptr; ID3DBlob* wps = nullptr; ID3DBlob* bps = nullptr;
-  ID3DBlob* cps = nullptr;
   bool ok = compile(D3DCompile, "EdgeVS", "vs_4_1", &evs) &&
     compile(D3DCompile, "WeightVS", "vs_4_1", &wvs) &&
     compile(D3DCompile, "BlendVS", "vs_4_1", &bvs) &&
     compile(D3DCompile, "EdgePS", "ps_4_1", &eps) &&
     compile(D3DCompile, "WeightPS", "ps_4_1", &wps) &&
-    compile(D3DCompile, "BlendPS", "ps_4_1", &bps) &&
-    compile(D3DCompile, "CopyPS", "ps_4_1", &cps);
+    compile(D3DCompile, "BlendPS", "ps_4_1", &bps);
   if (ok && debugSceneTargetHighlight()) {
     ID3DBlob* hps = nullptr;
     if (compile(D3DCompile, "HighlightPS", "ps_4_1", &hps))
@@ -297,7 +284,7 @@ bool initShared(ID3D11Device* dev) {
       evs->GetBufferSize(), &g_layout));
   }
   release(evs); release(wvs); release(bvs);
-  release(eps); release(wps); release(bps); release(cps);
+  release(eps); release(wps); release(bps);
   if (!ok) { log("SMAA: shader/layout init failed"); return false; }
 
   const float quad[] = {
@@ -666,11 +653,9 @@ bool smaaPreUI() {
     const char* v = std::getenv("ARLAND_SMAA_PREUI");
     if (v)
       return v[0] != '0';   // explicit override wins in both directions
-    // Pre-UI injection is independent of MSAA and supersampling: the boundary
-    // is a depth-state change in the game's own draw sequence, and where the
-    // pixels live at that point is handled by the twin resolve/write-back in
-    // smaaRunPasses. SMAA and MSAA are complementary — MSAA only antialiases
-    // polygon silhouettes — so enabling one must never silently drop the other.
+    // Pre-UI injection is independent of supersampling: the boundary is a
+    // depth-state change in the game's own draw sequence, which happens at
+    // whatever resolution the scene target was created at.
     return true;
   }();
   return on;

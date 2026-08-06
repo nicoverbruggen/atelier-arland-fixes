@@ -11,8 +11,7 @@
 //
 // The fix rescales that step by min(dt * 60, 1), preserving the original
 // behavior at 60 fps and below while making higher refresh rates cover the same
-// distance per second. ARLAND_WORLDMAP_FIX=0 disables it for comparison;
-// ARLAND_WORLDMAP_PROBE=1 logs the first call and every non-zero step.
+// distance per second. ARLAND_WORLDMAP_FIX=0 disables it for comparison.
 //
 // Totori and Meruru are runtime-confirmed at both 144 and 60 fps. Rorona's
 // travel map is different: the stick steps between discrete locations, and

@@ -1,6 +1,6 @@
 # Advanced configuration
 
-The mod works as a drop-in with no configuration, and most of its settings live in `arland-fix-launcher.exe`, which opens when you start the game. A few are file-only and are marked as such below. That is the place to change things: it writes both `arland-fix.ini` and the game's own `ArlandDX_Settings.ini`, explains each option beside it, and ships four quality presets.
+The mod works as a drop-in with no configuration, and most of its settings live in `arland-fix-launcher.exe`, which opens when you start the game. A few are file-only and are marked as such below. That is the place to change things: it writes both `arland-fix.ini` and the game's own `ArlandDX_Settings.ini`, and explains each option beside it.
 
 This document is the reference for `arland-fix.ini`: every key, what it accepts, and what it defaults to. For installation and the default feature set see [README.md](README.md); for the environment switches, the log files and the debug views see [TECHNICAL.md](TECHNICAL.md#diagnostics).
 

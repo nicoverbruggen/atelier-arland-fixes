@@ -27,7 +27,7 @@ namespace atfix {
 
 // ============================================================================
 // sync_fix.cpp: the D3D11 proxy layer. It proxies the device/context vtables and
-// implements the CPU shadow-copy sync fix, the resolution / MSAA / shadow-map-twin
+// implements the CPU shadow-copy sync fix, the resolution and shadow-map-twin
 // scaling, and the resource interception those and the cut-in features hook into.
 // The pieces that remain here share per-frame proxy state (the constant-buffer
 // snapshot cache, the immediate-context pointer, the DeviceProcs/ContextProcs
@@ -43,7 +43,7 @@ namespace atfix {
 //   2. Constant-buffer write interception (captureCbMap / captureCbUnmap)
 //      feeding the cut-in patches (battle_shadows.cpp) and the
 //      shadow-map-clear callback.
-//   3. Resolution override + MSAA resolve + viewport/scissor correction.
+//   3. Resolution override + viewport/scissor correction.
 //   4. The D3D11 device/context hook implementations that call into 1-3 and the
 //      battle_shadows.cpp cut-in entry points.
 //   5. hookDevice / hookContext installation.
@@ -443,9 +443,6 @@ struct RasterState {
 static RasterState g_immRasterState;
 static RasterState g_defRasterState;
 
-// MSAA design adapted from TellowKrinkle's atelier-sync-fix rendering fork.
-// The game continues to own single-sample resources; matching multisample
-// render targets are attached as private data and resolved before every read.
 // What a render target IS, recorded when the mod resizes it, so nothing has to
 // work it out again from its dimensions later.
 //
@@ -551,9 +548,9 @@ bool applyResolutionOverride(DXGI_SWAP_CHAIN_DESC* pDesc) {
   //
   // The flip model lets the compositor take the buffer directly (an independent
   // flip), with no copy and no half-rate lock. It requires a non-multisampled
-  // backbuffer and at least two buffers, both set here; the game's own MSAA
-  // goes through the mod's separate multisampled twins, never the swap chain,
-  // so forcing a single sample here takes nothing away.
+  // backbuffer and at least two buffers, both set here. Nothing in these games
+  // asks for a multisampled swap chain, so forcing a single sample here takes
+  // nothing away.
   //
   // The catch that makes this safe: a flip-model backbuffer is unbound from the
   // pipeline after every present, so anything that binds it once and assumes it
@@ -795,8 +792,7 @@ bool smaaIsSceneTarget(ID3D11RenderTargetView* rtv, ID3D11Texture2D** outTex) {
   return match;
 }
 
-// Main-size single-sample test for a resource rather than a view: under MSAA
-// the bound view is the twin, and the context records which host it stands in.
+// Main-size single-sample test for a resource rather than a view.
 bool smaaMainSizeHostResource(ID3D11Resource* res) {
   ID3D11Texture2D* tex = nullptr;
   if (!res || FAILED(res->QueryInterface(IID_PPV_ARGS(&tex))) || !tex)
@@ -828,10 +824,7 @@ bool smaaIsSceneTargetResource(ID3D11Resource* res) {
 // matching AGT's injection point, so the HUD/menus stay crisp. The boundary is
 // the frame's first bind of the main-size colour target WITHOUT depth (the UI
 // draws to the main render target with depth testing off; the scene rendered
-// to it with depth). Under MSAA the scene lives in the twin and is resolved to
-// this host by resolveBoundMSAA just before we get here, so either way the
-// host holds the finished single-sample scene. Once per frame; the latch is
-// reset at Present.
+// to it with depth). Once per frame; the latch is reset at Present.
 std::atomic<bool> g_smaaDoneThisFrame{false};
 std::atomic<bool> g_smaaSceneSeen{false};
 
@@ -1072,23 +1065,6 @@ void largestViewportSeen(unsigned int* width, unsigned int* height) {
 
 std::atomic<void*> g_traceBackbuffer{nullptr};
 
-// Land the finished frame's MSAA twin in its host before the frame is shown.
-//
-// resolveIfMSAA only runs when something reads the host: a render-target
-// rebind, a copy that sources it, an SRV bind, or FinishCommandList. Rorona
-// and Meruru end the frame by blitting their offscreen scene target into the
-// backbuffer, which is one of those. Totori does not: it leaves colour and
-// depth attached and only turns depth testing off for the UI, so it can reach
-// Present with the twin still bound and nothing having read the host. DXGI
-// then shows the host, which still holds whatever was last resolved into it --
-// a frame from seconds ago.
-//
-// The bound-host marker is context-local. Frames are recorded on a deferred
-// context, so consulting the immediate context here cannot discover what was
-// bound during recording. Resolve the known finished-frame resource directly:
-// the render-resolution stand-in under supersampling/borderless, or swap-chain
-// buffer 0 otherwise. A no-op when MSAA is off, the resource has no twin, or
-// the frame already resolved.
 // One-pixel GPU readback from the centre of a single-sample texture, through
 // original entry points so it stays invisible to the hooks and the trace.
 // Diagnostic-only: the copy-then-map is a pipeline sync on every call, which
@@ -1096,11 +1072,10 @@ std::atomic<void*> g_traceBackbuffer{nullptr};
 // texture is cached per format and intentionally never released.
 // Per-Present content marker for the trace. The wiring log proved the
 // conversation backdrop is captured by a fullscreen draw FROM the swap-chain
-// backbuffer, whose only writer under borderless is the mod's own blit, and
-// everything about that chain is identical between MSAA on and off. What
-// differs must be the CONTENT the backbuffer holds when the capture executes,
-// which no event line can carry. Called at the top of the Present hook,
-// before the resolve and the blit, so back_px is what this frame's deferred
+// backbuffer, whose only writer under borderless is the mod's own blit. The
+// wiring being right leaves the CONTENT the backbuffer holds when the capture
+// executes, which no event line can carry. Called at the top of the Present
+// hook, before the blit, so back_px is what this frame's deferred
 // execution could still have sampled; host_px separates "the stand-in went
 // black" from "the blit stopped carrying it".
 void notePresentBackbuffer(IDXGISwapChain* swapChain) {
@@ -1209,8 +1184,8 @@ void smaaSceneBoundary(ID3D11DeviceContext* context, UINT rtvCount,
     if (verboseLogging() && !logged.exchange(true, std::memory_order_relaxed))
       log("SMAA: pre-UI target-bind boundary active");
     g_smaaDoneThisFrame.store(true, std::memory_order_relaxed);
-    // No twin to feed: the substitution only happens on depth-bound binds, and
-    // resolveBoundMSAA already landed the scene in this host on the way in.
+    // The scene latch has been spent; clear it so nothing re-enters before
+    // Present resets the frame.
     g_smaaSceneSeen.store(false, std::memory_order_relaxed);
     atfix::smaaApplySceneColor(context, scene);
     scene->Release();
@@ -1989,8 +1964,9 @@ HRESULT STDMETHODCALLTYPE ID3D11Device_CreateTexture2D(
     UINT mainHeight = g_mainRtHeight.load(std::memory_order_relaxed);
     if (!mainWidth && (desc.BindFlags & D3D11_BIND_DEPTH_STENCIL)) {
       // The trilogy creates its main depth target before the hard-coded
-      // 1920x1080 auxiliary targets. Record 1080p too so MSAA can identify
-      // the main scene, but only resize later targets for higher resolutions.
+      // 1920x1080 auxiliary targets. Record 1080p too so the main scene can
+      // still be identified, but only resize later targets for higher
+      // resolutions.
       // This is the RENDER resolution, not the display one: everything the
       // engine draws follows the main target, and supersampling downscales the
       // finished frame into the (smaller) backbuffer at Present. With no render
@@ -2080,8 +2056,9 @@ HRESULT STDMETHODCALLTYPE ID3D11Device_CreateTexture2D(
     // valid. Eligible hosts get a separate mod-owned enlarged twin created
     // below (after the host), and the caster DSV / receiver SRV / A->B copy
     // are redirected onto the twins. Anything ambiguous (initial data,
-    // staging/CPU-accessible, mips, arrays, MSAA, misc flags) DECLINES the
-    // twin and is logged; that host simply keeps the vanilla 1024 path.
+    // staging/CPU-accessible, mips, arrays, multisampled, misc flags)
+    // DECLINES the twin and is logged; that host simply keeps the vanilla
+    // 1024 path.
     if (shadowMapResolution() > 1024 &&
         originalDesc.Width == 1024 && originalDesc.Height == 1024 &&
         originalDesc.Format == DXGI_FORMAT_R24G8_TYPELESS) {
@@ -2103,7 +2080,6 @@ HRESULT STDMETHODCALLTYPE ID3D11Device_CreateTexture2D(
             " samples=", originalDesc.SampleDesc.Count);
     }
 
-    // MSAA content probe: a hard-coded dialogue surface the resize did NOT
     if (changed)
       pDesc = &desc;
   }
@@ -2152,9 +2128,9 @@ HRESULT STDMETHODCALLTYPE ID3D11Device_CreateTexture2D(
 // Supersampling: these games bind the swap-chain backbuffer itself as their
 // colour render target, so a view the engine asks for over the backbuffer is
 // created over the mod's render-resolution target instead. Redirecting at view
-// creation rather than at bind time means the binds, the clears, the MSAA twin
-// and the pre-UI SMAA boundary all follow with no further interception, and the
-// real backbuffer is touched only by the downscale at Present.
+// creation rather than at bind time means the binds, the clears and the pre-UI
+// SMAA boundary all follow with no further interception, and the real
+// backbuffer is touched only by the downscale at Present.
 //
 // A view desc naming a different format than the backbuffer's is declined
 // rather than guessed at: the frame then renders into the backbuffer as it does
