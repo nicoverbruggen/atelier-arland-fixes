@@ -42,7 +42,7 @@ enum : uint8_t {
 // the multilingual build (Japanese and both Chinese locales). They are separate
 // compiles with distinct RVAs; the multilingual entries were located by static
 // homologue matching against the English build and every hooked prologue
-// byte-verified in the multilingual binary (REPORT §31). Hooks whose RVAs are
+// byte-verified in the multilingual binary. Hooks whose RVAs are
 // only known for the English build stay gated on BuildEnglish.
 enum : uint8_t {
   BuildEnglish,

@@ -135,7 +135,7 @@ size_t shadowLayerCount(uintptr_t helper, size_t offset);
 // only dereferenced for the opt-in dispatch if it still carries one of these,
 // which rejects freed/reused objects left over from an earlier battle.
 // Same class order in both builds; multilingual values homologue-matched and
-// slot-verified (REPORT §31).
+// slot-verified.
 const uintptr_t kBtlCharaVtableRvasEn[] = {
   0x76e080,  // BtlChara
   0x76e2c0,  // BtlCharaEffect
@@ -329,7 +329,7 @@ const BattleBuildAddrs* g_battleAddrs = nullptr;
 // state's Update (vtable slot 1) is what runs each frame; recognizing the state
 // object lets us log exactly when the attack cut-in (ExecCommand) and victory
 // (ResultStart) are active without needing manual F8 marks. Same state order in
-// both builds; multilingual values homologue-matched (REPORT §31).
+// both builds; multilingual values homologue-matched.
 struct BattleStateEntry { uintptr_t rva; const char* name; };
 const BattleStateEntry kBattleStatesEn[] = {
   {0x76d9a0, "Enter"}, {0x76dd60, "StartWait"}, {0x76da40, "SelectCommand"},

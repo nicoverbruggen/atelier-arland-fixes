@@ -359,8 +359,8 @@ struct Preset {
 // want more than the shader gives, and the default spends nothing on it.
 const Preset kPresets[] = {
   //                        SS  MSAA  SMAA  shadow
-  { L"Balanced (default)",   0,   0,  true,      0 },
-  { L"Medium",               0,   2,  true,      0 },
+  { L"Balanced (default)",   0,   0,  true,      1 },
+  { L"Medium",               0,   2,  true,      1 },
   { L"High",                 2,   0,  true,      1 },
   { L"Maximum",              3,   0,  true,      2 },
   { L"Custom",              -1,  -1,  true,     -1 },
@@ -447,6 +447,20 @@ bool iniBool(const char* section, const char* key, bool def) {
     return def;
   return value[0] == 't' || value[0] == 'T' || value[0] == '1' ||
          value[0] == 'y' || value[0] == 'Y';
+}
+
+// Read a resolution dimension from [Rendering], falling back to a legacy key
+// when one is given. Zero means absent, unreadable, or larger than packRes can
+// carry: that helper packs a width and a height into sixteen bits each, so a
+// hand-edited 65536 would wrap into the other half and come back as an entirely
+// different resolution. Zero is already how the rest of this file spells "not
+// set", and the launcher shows Auto for it.
+unsigned iniDimension(const char* key, const char* legacyKey) {
+  char raw[16] = {};
+  if (!iniString("Rendering", key, raw, sizeof(raw)) && legacyKey)
+    iniString("Rendering", legacyKey, raw, sizeof(raw));
+  const unsigned long value = std::strtoul(raw, nullptr, 10);
+  return value <= 0xffff ? (unsigned)value : 0u;
 }
 
 // Every INI write is checked. WritePrivateProfileStringA caches, so a failure
@@ -865,13 +879,8 @@ void loadFromIni() {
   // are absent, which migrates a file written by an earlier version onto the
   // current keys on the next save. Blank => Auto. A concrete value that is not
   // one of the listed presets is added as its own item so it round-trips.
-  char w[16] = {}, h[16] = {};
-  if (!iniString("Rendering", "DisplayWidth", w, sizeof(w)))
-    iniString("Rendering", "Width", w, sizeof(w));
-  if (!iniString("Rendering", "DisplayHeight", h, sizeof(h)))
-    iniString("Rendering", "Height", h, sizeof(h));
-  unsigned dispW = (unsigned)std::strtoul(w, nullptr, 10);
-  unsigned dispH = (unsigned)std::strtoul(h, nullptr, 10);
+  unsigned dispW = iniDimension("DisplayWidth", "Width");
+  unsigned dispH = iniDimension("DisplayHeight", "Height");
   int baseSel = 0;   // Auto by default (index 0)
   if (dispW && dispH) {
     // Match on what the combo actually holds rather than on a kBaseItems index.
@@ -909,9 +918,7 @@ void loadFromIni() {
   // the desktop resolution, the same base it was saved against; without that a
   // saved Auto + multiplier would read back as Off and the next save would
   // clear the render keys, silently discarding the setting.
-  char rw[16] = {};
-  iniString("Rendering", "RenderWidth", rw, sizeof(rw));
-  unsigned rendW = (unsigned)std::strtoul(rw, nullptr, 10);
+  unsigned rendW = iniDimension("RenderWidth", nullptr);
   unsigned ssBaseW = dispW;
   if (!ssBaseW) {
     unsigned curW = 0, curH = 0;
@@ -1209,7 +1216,7 @@ void reportSaveFailure(HWND owner, SaveOutcome outcome) {
 struct UiState {
   int font, base, ss, msaa, shadow, winMode, lang;
   int smaa, outline, cutIn, skipLauncher, verbose;
-  int skipLogos, skipMovie;
+  int skipLogos, skipMovie, debugView;
 };
 UiState g_savedState;
 
@@ -1229,6 +1236,11 @@ UiState currentState() {
   s.skipMovie = isChecked(g_hSkipMovie);
   s.skipLauncher = isChecked(g_hSkipLauncher);
   s.verbose = isChecked(g_hVerbose);
+  // saveToIni writes [Debug] View, so a change to it is an unsaved change like
+  // any other. It is only reachable with verbose logging on, which is why it
+  // was missed: the control exists on every launch, hidden or not, and reads
+  // the same either way.
+  s.debugView = (int)SendMessageW(g_hDebugView, CB_GETCURSEL, 0, 0);
   return s;
 }
 

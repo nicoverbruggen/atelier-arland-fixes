@@ -228,9 +228,9 @@ struct ItemGuardAddrs {
 // are per build rather than shared. The actual-load boundary was identified by
 // a runtime stack comparison: save-list previews reach the common deserializer
 // through the 0x286190/0x4a3080 tail-call path, while a selected save calls it
-// directly from 0x2891d0/0x4a60c0. atre.py homolog confirmed the multilingual
-// routine bidirectionally, and callsites found exactly those two deserializer
-// callers in each build. The preview record builder and row-label formatter
+// directly from 0x2891d0/0x4a60c0. A homologue match confirmed the multilingual
+// routine bidirectionally, and a call-site scan found exactly those two
+// deserializer callers in each build. The preview record builder and row-label formatter
 // were then traced from the English save-list builder at 0x2aa10. Its
 // multilingual homologue is 0x246da0; the corresponding direct calls identify
 // 0x2498f0 and 0x249b00 independently of the weaker whole-function match.
