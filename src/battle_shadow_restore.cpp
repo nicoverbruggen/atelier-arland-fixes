@@ -224,6 +224,18 @@ struct BattleBuildAddrs {
   // never publish a battle helper, since there is nothing to put back.
   uintptr_t fmCoreUpdateRva;
   uintptr_t fmCoreVtable;
+  // The battle state machine, a member of the game mode rather than a pointer
+  // to one, so this is a literal displacement in the mode constructor: each
+  // build's `lea rcx, [mode + offset]` immediately before the call to the state
+  // machine's constructor. Read off the disassembly, cross-checked by the call
+  // site lying inside that build's own battleModeCtorRva.
+  //
+  // The machine keeps its states as an MSVC std::deque<State*> at +0x10 with
+  // the count at +0x30, and the current state is its back. The game's own mode
+  // update reaches it the same way: `cmp qword ptr [machine+0x30], 0` then the
+  // deque accessor. That makes the current state five guarded reads away from
+  // the game mode, with no search.
+  uintptr_t battleStateMachineOffset;
 };
 
 constexpr BattleBuildAddrs kRoronaAddrsEn = {
@@ -232,6 +244,7 @@ constexpr BattleBuildAddrs kRoronaAddrsEn = {
   0x9d0, 0x68, 0x658, 0x2d0, 0x10c2c0, 0x10c270, 0xc5f80,
   0x80, 0x8f, 0x90, true,
   0xfde20, 0xfe120, 0x76d248, 0x2d5fd0, 0x9be9b0,
+  0x180,
 };
 constexpr BattleBuildAddrs kRoronaAddrsMulti = {
   kBtlCharaVtableRvasMulti, std::size(kBtlCharaVtableRvasMulti),
@@ -239,6 +252,7 @@ constexpr BattleBuildAddrs kRoronaAddrsMulti = {
   0x9d0, 0x68, 0x658, 0x2d0, 0x1143c0, 0x114370, 0xce020,
   0x80, 0x8f, 0x90, true,
   0x105ec0, 0x1061c0, 0x78ae48, 0x2eac20, 0x9b2298,
+  0x180,
 };
 // Meruru: managerSlot/helperSlotOffset read straight from the caster-group
 // build's prologue (EN 0x396f80: mov rax,[rip+...]=0xfe0b30; mov r10,[rax+0x960];
@@ -253,6 +267,7 @@ constexpr BattleBuildAddrs kMeruruAddrsEn = {
   0x960, 0x68, 0x648, 0x2c0, 0x1369b0, 0x136940, 0x102cd0,
   0x80, 0x8f, 0x90, false,
   0x118780, 0x119070, 0x66df50, 0, 0,
+  0x180,
 };
 constexpr BattleBuildAddrs kMeruruAddrsMulti = {
   kBtlCharaVtableRvasMeruruMulti, std::size(kBtlCharaVtableRvasMeruruMulti),
@@ -260,6 +275,7 @@ constexpr BattleBuildAddrs kMeruruAddrsMulti = {
   0x960, 0x68, 0x648, 0x2c0, 0x124080, 0x124010, 0xf0070,
   0x80, 0x8f, 0x90, false,
   0x105bc0, 0x1064b0, 0x669f20, 0, 0,
+  0x180,
 };
 // Totori (EN): static investigation + runtime probe 2026-07-23. Structural
 // outlier: the battle helper is EMBEDDED at gameMode+0x60 (not +0x68), there
@@ -297,6 +313,7 @@ constexpr BattleBuildAddrs kTotoriAddrsEn = {
   0, 0x60, 0x5f8, 0, 0x170cb0, 0x170c30, 0x133880,
   0x90, 0xa2, 0xa4, false,
   0x14d0e0, 0x14f790, 0x6d9620, 0, 0,
+  0xc0,
 };
 
 // Totori multilingual. Every vtable here is RTTI-located and every function
@@ -319,6 +336,7 @@ constexpr BattleBuildAddrs kTotoriAddrsMulti = {
   0, 0x60, 0x5f8, 0, 0x38db20, 0x38daa0, 0x3506e0,
   0x90, 0xa2, 0xa4, false,
   0x369f40, 0x36c5f0, 0x97b7f0, 0, 0,
+  0xc0,
 };
 
 // Null until a battle-capable build is recognized; battle-shadow code paths
@@ -1515,8 +1533,67 @@ const char* battleStateName(uintptr_t vtable) {
   return nullptr;
 }
 
+// The current battle state, read straight out of the engine's own structure.
+//
+// The state machine is a member of the game mode at battleStateMachineOffset,
+// and holds its states as an MSVC std::deque<State*> at +0x10 with the element
+// count at +0x30. The active state is the deque's back. This is the same route
+// the game's own mode update takes, so it costs five guarded reads and no
+// search. Returns 0 when there is no battle state, or when any read fails --
+// the caller then falls back to the walk below.
+//
+// _Map, _Mapsize and _Mysize were each read off the disassembly. _Myoff is the
+// standard MSVC placement between the last two; the fallback exists so that
+// being wrong about it costs performance rather than the feature.
+// Empty and Unusable are different answers and must not be conflated. An empty
+// state stack is a normal transient -- the engine's own update tests for it
+// before doing anything -- and means "no state right now", so the caller stops.
+// Unusable means the layout did not hold and the caller should fall back to the
+// search. Returning 0 for both would run the full walk during every transient.
+enum class StateLookup { Found, Empty, Unusable };
+
+StateLookup currentBattleStateFromDeque(uintptr_t gameMode, uintptr_t* out) {
+  if (out)
+    *out = 0;
+  if (!gameMode || !g_battleAddrs || !g_battleAddrs->battleStateMachineOffset)
+    return StateLookup::Unusable;
+  const uintptr_t machine = gameMode + g_battleAddrs->battleStateMachineOffset;
+  uint64_t size = 0;
+  if (!tryRead(machine + 0x30, size))
+    return StateLookup::Unusable;
+  if (!size)
+    return StateLookup::Empty;
+  const uintptr_t deque = machine + 0x10;
+  uintptr_t map = 0;
+  uint64_t mapSize = 0, offset = 0;
+  if (!tryRead(deque + 0x08, map) || !map ||
+      !tryRead(deque + 0x10, mapSize) || !mapSize || (mapSize & (mapSize - 1)) ||
+      !tryRead(deque + 0x18, offset))
+    return StateLookup::Unusable;
+  // Two 8-byte elements per 16-byte block, which is what the engine's own
+  // indexing does: (off >> 1) & (mapSize - 1) picks the block, off & 1 the slot.
+  const uint64_t back = offset + size - 1;
+  uintptr_t block = 0;
+  if (!tryRead(map + ((back >> 1) & (mapSize - 1)) * 8, block) || !block)
+    return StateLookup::Unusable;
+  uintptr_t state = 0;
+  if (!tryRead(block + (back & 1) * 8, state) || !state)
+    return StateLookup::Unusable;
+  // Rejects a layout that does not hold at all, because a nonsense index reads
+  // a pointer that is not one of the known state vtables. It does NOT catch an
+  // off-by-one: every pointer in this deque is a valid state, so landing one
+  // slot over passes this check. That is what the cross-check below is for.
+  uintptr_t vtable = 0;
+  if (!tryRead(state, vtable) || !battleStateName(vtable))
+    return StateLookup::Unusable;
+  if (out)
+    *out = state;
+  return StateLookup::Found;
+}
+
 // Find the game-mode field currently pointing at a battle-state object, so we
-// can re-read it cheaply each frame. Read-only, VirtualQuery-guarded.
+// can re-read it cheaply each frame. Read-only, VirtualQuery-guarded. Fallback
+// only: currentBattleStateFromDeque above answers this without searching.
 uintptr_t findBattleStateSlot(uintptr_t obj, size_t window, int depth,
                               std::unordered_set<uintptr_t>& seen,
                               size_t& budget) {
@@ -1540,10 +1617,42 @@ uintptr_t findBattleStateSlot(uintptr_t obj, size_t window, int depth,
   return 0;
 }
 
+// Publish a newly observed battle-state vtable. Shared by both routes to the
+// state object, so they report identically.
+void noteBattleStateVtable(uintptr_t vt, uintptr_t stateObj) {
+  if (!vt || vt == g_lastBattleStateVt.load(std::memory_order_acquire))
+    return;
+  g_lastBattleStateVt.store(vt, std::memory_order_release);
+  const char* name = battleStateName(vt);
+  // The RVA travels with the name, and an unrecognized vtable prints as
+  // <unknown> rather than as a null const char*: streaming null sets badbit and
+  // would take the rest of the log with it, turning "this state is not in the
+  // table" into "logging stopped". The RVA is what identifies the missing entry.
+  if (sceneTraceEnabled())
+    atfix::log("BATTLE_STATE ms=", GetTickCount64(), " state=",
+      name ? name : "<unknown>", " vt_rva=0x", std::hex,
+      gameBase ? vt - reinterpret_cast<uintptr_t>(gameBase) : vt, std::dec,
+      " obj=", reinterpret_cast<void*>(stateObj));
+}
+
 void trackBattleStateTick() {
   if (!battleShadowRestoreEnabled() ||
       !g_battleActive.load(std::memory_order_acquire))
     return;
+  const uintptr_t gameMode = g_battleGameMode.load(std::memory_order_acquire);
+  // The engine's own route first: five guarded reads, no search. Everything
+  // below is the fallback for a build whose layout does not match.
+  uintptr_t stateObj = 0;
+  const StateLookup lookup = currentBattleStateFromDeque(gameMode, &stateObj);
+  if (lookup == StateLookup::Empty)
+    return;   // no state right now; not a reason to search
+  if (lookup == StateLookup::Found) {
+    uintptr_t vt = 0;
+    if (!tryRead(stateObj, vt))
+      return;
+    noteBattleStateVtable(vt, stateObj);
+    return;
+  }
   uintptr_t slot = g_battleStateSlot.load(std::memory_order_acquire);
   if (slot) {
     // Re-validate the cached slot every frame: on a battle->field return the
@@ -1561,7 +1670,6 @@ void trackBattleStateTick() {
     }
   }
   if (!slot) {
-    const uintptr_t gameMode = g_battleGameMode.load(std::memory_order_acquire);
     if (!gameMode)
       return;
     std::unordered_set<uintptr_t> seen;
@@ -1571,22 +1679,11 @@ void trackBattleStateTick() {
       return;
     g_battleStateSlot.store(slot, std::memory_order_release);
   }
-  uintptr_t stateObj = 0, vt = 0;
-  if (!tryRead(slot, stateObj) || !stateObj || !tryRead(stateObj, vt))
+  uintptr_t fallbackState = 0, vt = 0;
+  if (!tryRead(slot, fallbackState) || !fallbackState ||
+      !tryRead(fallbackState, vt))
     return;
-  if (vt == g_lastBattleStateVt.load(std::memory_order_acquire))
-    return;
-  g_lastBattleStateVt.store(vt, std::memory_order_release);
-  const char* name = battleStateName(vt);
-  // The RVA travels with the name, and an unrecognized vtable prints as
-  // <unknown> rather than as a null const char*: streaming null sets badbit and
-  // would take the rest of the log with it, turning "this state is not in the
-  // table" into "logging stopped". The RVA is what identifies the missing entry.
-  if (sceneTraceEnabled())
-    atfix::log("BATTLE_STATE ms=", GetTickCount64(), " state=",
-      name ? name : "<unknown>", " vt_rva=0x", std::hex,
-      gameBase ? vt - reinterpret_cast<uintptr_t>(gameBase) : vt, std::dec,
-      " obj=", reinterpret_cast<void*>(stateObj));
+  noteBattleStateVtable(vt, fallbackState);
 }
 
 // The current battle state name, or nullptr outside battle.
