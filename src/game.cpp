@@ -72,10 +72,14 @@ constexpr Support O = Support::OptIn;
 constexpr Support X = Support::OnByDefault;
 
 // The capability matrix. Rows are Rorona / Totori / Meruru, columns follow the
-// Feature enum. KEEP IN SYNC with the "Feature support by game" table in
-// README.md, for the cells it lists: being user-facing, it has no row for the
-// internal cache lifetimes (AtlasCache, FrameAtlasCache).
-// Notes: FrameAtlasCache is OnByDefault on Rorona and Totori, OptIn on Meruru,
+// Feature enum. KEEP IN SYNC with the fix and graphics-enhancement tables in
+// README.md, for the cells they list: being user-facing, they have no row for
+// the internal cache lifetimes (AtlasCache, FrameAtlasCache).
+// Notes: ShadowMultiplier is OnByDefault on all three. It is a valued knob
+// rather than a switch, read by its own reader, so this cell is documentation
+// only and nothing resolves behaviour through it; it says OnByDefault because
+// the shipped [Rendering] ShadowMultiplier is 2, not 1.
+// FrameAtlasCache is OnByDefault on Rorona and Totori, OptIn on Meruru,
 // where it measurably buys nothing: its queue drain already serves all but three
 // of the reads, so a longer snapshot lifetime would be exposure without a win.
 // BattleShadows (mod-side caster restoration) is OnByDefault only on Rorona;
@@ -135,9 +139,9 @@ constexpr Support X = Support::OnByDefault;
 // there at all, so that concern is withdrawn.
 constexpr Support kMatrix[3][static_cast<int>(Feature::Count)] = {
   //           Sync Menu Atls Frme Res  ShMl Bat  CutS CutD Logo Movi Card Snap Pull Save
-  /* Rorona */ { X,   X,   X,   X,   X,   O,   X,   O,   O,   O,   O,   X,   X,   X,   X },
-  /* Totori */ { X,   X,   X,   X,   X,   O,   U,   O,   O,   O,   O,   X,   X,   X,   X },
-  /* Meruru */ { X,   X,   X,   O,   X,   O,   U,   O,   O,   O,   O,   X,   X,   X,   X },
+  /* Rorona */ { X,   X,   X,   X,   X,   X,   X,   O,   O,   O,   O,   X,   X,   X,   X },
+  /* Totori */ { X,   X,   X,   X,   X,   X,   U,   O,   O,   O,   O,   X,   X,   X,   X },
+  /* Meruru */ { X,   X,   X,   O,   X,   X,   U,   O,   O,   O,   O,   X,   X,   X,   X },
 };
 
 int titleRow(Title t) {

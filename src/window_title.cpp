@@ -127,6 +127,12 @@ void setTitleA(HWND window, const char* text) {
 bool applyAsciiTitle(HWND window, const char* text) {
   if (!window || !isNonAscii(text))
     return false;
+  // Top-level windows only. SetWindowTextA sets the text of any window it is
+  // given, child controls included, and the match above is nothing narrower
+  // than "holds a byte >= 0x80" -- so without this a control's caption could be
+  // replaced by the game's title. The game's own window has no parent.
+  if (GetParent(window))
+    return false;
   const char* ascii = asciiTitleForGame();
   if (!ascii)
     return false;

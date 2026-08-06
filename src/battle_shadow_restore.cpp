@@ -62,8 +62,21 @@ struct PendingBattleShadow {
   uintptr_t character = 0;
 };
 
+// Which (helper, character) pairs have already had an actor init observed in
+// the current battle. Feeds the deferred= field of the BATTLE_ACTOR_INIT trace.
+//
+// Cleared at battle end. The key includes the helper, which is embedded in the
+// battle game mode and so is a fresh address every battle, meaning an entry from
+// an earlier battle can never match again. Keeping them would grow the vector
+// for the whole session and lengthen the scan this takes under a mutex on every
+// actor init, in exchange for nothing.
 std::mutex pendingBattleShadowMutex;
 std::vector<PendingBattleShadow> pendingBattleShadows;
+
+void clearPendingBattleShadows() {
+  std::lock_guard<std::mutex> lock(pendingBattleShadowMutex);
+  pendingBattleShadows.clear();
+}
 
 // Battle-shadow reconstruction, enabled by default on the recognized Rorona
 // executable (ARLAND_BATTLE_SHADOWS=0 disables). BtlChara-family instances are
@@ -683,7 +696,7 @@ void registerBattleCharaShadows() {
         g_savedGlobalHelper.load(std::memory_order_acquire)));
 }
 
-// Cut-in probe (§30m): during WaitAction the engine clears bit 0x10000 at
+// Cut-in probe: during WaitAction the engine clears bit 0x10000 at
 // +0xc0 of selected registered shadow nodes — its per-node caster kill-switch
 // for the action camera. Re-set the bit on our registered battle casters so
 // the engine itself rebuilds their caster state. Runs on the game's render
@@ -696,7 +709,7 @@ void restoreBattleSnodeFlags(const char* site) {
   const uintptr_t re = *reinterpret_cast<const uintptr_t*>(battleHelper + 0x50);
   if (!rb || re <= rb || (re - rb) > 0x200 || !readableRange(rb, re - rb))
     return;
-  // §33p: the disable wrapper (0x552aa0) clears BOTH byte +0xC2 (the caster
+  // The disable wrapper (0x552aa0) clears BOTH byte +0xC2 (the caster
   // flag) and byte +0xBC (low byte of the per-pass stamp dword). Restore both:
   // flag set, stamp copied from the healthiest sibling in the same registry.
   uint32_t restored = 0, nodes = 0, stamped = 0;
@@ -712,7 +725,7 @@ void restoreBattleSnodeFlags(const char* site) {
   }
   for (uintptr_t p = rb; p < re; p += sizeof(uintptr_t)) {
     const uintptr_t snode = *reinterpret_cast<const uintptr_t*>(p);
-    if (!snode || !readableRange(snode, 0xc4))
+    if (!snode || !writableRange(snode, 0xc4))
       continue;
     ++nodes;
     auto* flag = reinterpret_cast<uint32_t*>(snode + 0xc0);
@@ -773,7 +786,7 @@ void clearBattleSnodeFlags(const char* site) {
   uint32_t cleared = 0, nodes = 0;
   for (uintptr_t p = rb; p < re; p += sizeof(uintptr_t)) {
     const uintptr_t snode = *reinterpret_cast<const uintptr_t*>(p);
-    if (!snode || !readableRange(snode, 0xc4))
+    if (!snode || !writableRange(snode, 0xc4))
       continue;
     ++nodes;
     auto* flag = reinterpret_cast<uint32_t*>(snode + 0xc0);
@@ -840,7 +853,7 @@ uintptr_t tracedDeferredHideArm(uintptr_t obj, uintptr_t target,
       inActionCutin() &&
       pendingOffset && durationOffset &&
       readableRange(obj + pendingOffset, 1) &&
-      readableRange(obj + durationOffset, sizeof(float)) &&
+      writableRange(obj + durationOffset, sizeof(float)) &&
       *reinterpret_cast<const uint8_t*>(obj + pendingOffset) == 1) {
     *reinterpret_cast<float*>(obj + durationOffset) = 0.0f;
     // Report the first real force-expiry, not just that the hook installed.
@@ -892,7 +905,7 @@ uintptr_t tracedShadowHelperInit(uintptr_t helper, uintptr_t id,
     ? caller - uintptr_t(gameBase) : 0;
   const uintptr_t result = originalShadowHelperInit(
     helper, id, resource, config);
-  // §33u: any shadow-helper init is a scene (re)build — field re-entry OR
+  // Any shadow-helper init is a scene (re)build — field re-entry OR
   // battle setup. Bump the generation so the D3D layer drops cross-scene
   // caches (light-VP, proxy pairings, recordings) that reference freed
   // geometry from the previous scene.
@@ -1298,6 +1311,7 @@ uintptr_t tracedBattleModeDtor(uintptr_t self) {
     g_battleRegistered.store(false, std::memory_order_release);
     g_battleDeadFrames.store(0, std::memory_order_release);
     g_snodeRestoreDeadlineMs.store(0, std::memory_order_release);
+    clearPendingBattleShadows();
     if (sceneTraceEnabled())
       atfix::log("==== BATTLE_END ms=", GetTickCount64(),
         " mode=", reinterpret_cast<void*>(self), " (mode dtor) ====");
@@ -1850,6 +1864,7 @@ void battleShadowFrameTick() {
       g_battleRegistered.store(false, std::memory_order_release);
       g_battleDeadFrames.store(0, std::memory_order_release);
       g_snodeRestoreDeadlineMs.store(0, std::memory_order_release);
+      clearPendingBattleShadows();
       return;
     }
   }

@@ -244,18 +244,39 @@ uint8_t STDMETHODCALLTYPE repairedUpdate(uintptr_t self) {
     }
   }
 
+  // The previous-state array is the engine's, shared by everything that asks
+  // for an edge this frame, so the forced values are put back once the view has
+  // read them. Without that, a carried button loses its press and release edges
+  // for every consumer that runs after this Update, not just for the query this
+  // repair is aimed at.
+  uint8_t forced[kButtonCount] = {};
+  uint8_t saved[kButtonCount] = {};
+  uint32_t doctored = 0;
+
   for (size_t i = 0; i < kButtonCount; ++i) {
     const uint32_t bit = 1u << i;
     if (!(carried & bit))
       continue;
     // Order matters. Writing previous before testing means the release frame
     // writes a zero, which is what stops the release edge the view acts on.
-    previousState[i] = heldState[i];
+    saved[i] = previousState[i];
+    forced[i] = heldState[i];
+    previousState[i] = forced[i];
+    doctored |= bit;
     if (!heldState[i])
       carried &= ~bit;
   }
 
-  return originalUpdate(self);
+  const uint8_t result = originalUpdate(self);
+
+  // Only bytes still holding what was written are restored. If the engine
+  // re-polled the pad during Update, its value is newer than the saved one and
+  // putting the old byte back would undo a real input.
+  for (size_t i = 0; i < kButtonCount; ++i) {
+    if ((doctored & (1u << i)) && previousState[i] == forced[i])
+      previousState[i] = saved[i];
+  }
+  return result;
 }
 
 bool installCarriedPressRepair(BYTE* base, const Game& game) {

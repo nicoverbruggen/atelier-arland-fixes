@@ -99,6 +99,20 @@ struct DownscaleParams {
 
 template <typename T> void release(T*& p) { if (p) { p->Release(); p = nullptr; } }
 
+// True once the pass has built its resources, and never cleared afterwards.
+// releaseAll below runs only when setup fails, where this was never set. So
+// there is no teardown for a device loss or a swap-chain resize, and g_backRTV
+// holds a view over the backbuffer for the process lifetime, which would make a
+// ResizeBuffers call fail if one were ever made.
+//
+// Left that way on purpose. ResizeBuffers was traced in all three games and is
+// never called: the mod forces a windowed flip-model chain sized once at
+// creation, and nothing in these games resizes it after that. A stand-down path
+// would be new code releasing COM references during a teardown that does not
+// happen, which is a worse trade than the gap it closes.
+//
+// If a change ever introduces a resize, or a device-loss path, this is the
+// assumption it breaks and the first place that has to be handled.
 std::atomic<bool> g_active{false};
 
 // Identity only, never dereferenced: the backbuffer outlives the swap chain we

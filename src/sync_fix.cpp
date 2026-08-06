@@ -2050,8 +2050,8 @@ HRESULT STDMETHODCALLTYPE ID3D11Device_CreateTexture2D(
     }
 
     // Opt-in shadow-map upscale, twin-allocation flavour: the engine's two
-    // 1024x1024 R24G8 shadow maps (caster A and receiver B, §8 two-map
-    // architecture; §33a probe: exactly two such textures exist) are left
+    // 1024x1024 R24G8 shadow maps (caster A and receiver B; a probe
+    // established that exactly two such textures exist) are left
     // COMPLETELY untouched so every engine-side size/memory assumption stays
     // valid. Eligible hosts get a separate mod-owned enlarged twin created
     // below (after the host), and the caster DSV / receiver SRV / A->B copy
@@ -2336,7 +2336,7 @@ void updateViewportScissor(ID3D11DeviceContext* pContext) {
       scissor.bottom == LONG(gameHeight / 2)));
   // The engine sizes the shadow caster pass viewport from its own texture
   // metadata (still 1024 when the map is enlarged D3D-side). MinDepth/MaxDepth
-  // (the caster's 0.5..1.0 depth remap, §8) are preserved by only rewriting
+  // (the caster's 0.5..1.0 depth remap) are preserved by only rewriting
   // Width/Height.
   const UINT shadowRes = shadowMapResolution();
   const bool shadowSizeViewport = shadowRes > 1024 && viewportCount == 1 &&
@@ -2978,8 +2978,8 @@ void STDMETHODCALLTYPE ID3D11DeviceContext_OMSetRenderTargets(
 
   // Shadow-res twin: redirect the depth-only caster pass onto the enlarged
   // twin DSV so casters render at high resolution. Only depth-only binds are
-  // redirected — if a color RTV is bound alongside (never observed, §33b E
-  // events) the sizes could not match, so we fail safe to the engine's own
+  // redirected — if a color RTV is bound alongside (never observed) the
+  // sizes could not match, so we fail safe to the engine's own
   // 1024 pass and log it.
   ID3D11DepthStencilView* shadowTwinDsv = nullptr;
   if (shadowMapResolution() > 1024 && pDSV) {

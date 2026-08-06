@@ -54,7 +54,7 @@ const char* arlandBattleStateName();
 /* lives in battle_shadow_restore.cpp: increments on every field/battle scene (re)build. */
 uint32_t arlandSceneGeneration();
 
-/* lives in battle_shadow_restore.cpp: §30m snode caster-flag restore, driven from the
+/* lives in battle_shadow_restore.cpp: snode caster-flag restore, driven from the
    D3D-side 1024x1024 shadow-map clear (per-battle-frame render-thread hook). */
 void arlandCutinShadowMapCleared();
 

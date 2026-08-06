@@ -84,7 +84,13 @@ bool STDMETHODCALLTYPE correctedShopGoodsUpdate(uintptr_t self,
   const bool result = originalShopGoodsUpdate(self, elapsed);
 
   if (invalidPreviousRow) {
-    *reinterpret_cast<int32_t*>(self + kInputStateOffset) = inputState;
+    // Put the commit state back only if the original left it as it was set
+    // above, so the shop retries the commit next frame. If the original
+    // advanced its own state machine during the call, that value is newer than
+    // the one saved here and overwriting it would rewind the shop.
+    int32_t after = 0;
+    if (tryRead(self + kInputStateOffset, after) && after == 0)
+      *reinterpret_cast<int32_t*>(self + kInputStateOffset) = inputState;
     const uintptr_t target = begin +
       uintptr_t(intptr_t(previousRow) * intptr_t(kRowStride)) +
       kRowValueOffset;
