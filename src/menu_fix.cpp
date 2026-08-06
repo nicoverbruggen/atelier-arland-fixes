@@ -221,9 +221,6 @@ struct RenderTextBitmap {
   // auto-size widgets lay the string out at fraction * doubled = twice its size.
   int32_t restoreWidth = 0;
   int32_t restoreHeight = 0;
-  // The pixel buffer these bytes were captured from. A replay into the same
-  // buffer already has the capacity for them, whatever the (restored) dims say.
-  uintptr_t pixels = 0;
   std::array<uint32_t, 4> metrics = {};
   uintptr_t result = 0;
   std::vector<uint8_t> bytes;
@@ -257,6 +254,27 @@ std::unordered_map<uintptr_t, std::shared_ptr<AtlasRead>> atlasReads;
 std::mutex renderBitmapMutex;
 std::unordered_map<RenderTextKey, RenderTextBitmap, RenderTextKeyHash>
   renderBitmapCache;
+
+// What the mod installed at an output object's pixel pointer, and how big it
+// really is.
+//
+// After a substitution the output object no longer describes its own buffer:
+// the consumer restores the pre-double dims and leaves the doubled buffer in
+// place, so width*height is a quarter of the allocation. The capacity is only
+// known where the allocation happens, so it is recorded there and read here
+// rather than inferred from an object that has stopped telling the truth.
+//
+// Rewritten after every real render (see cachedRenderText): a render is the one
+// thing that can change the buffer at output+8, whether the engine frees and
+// reallocates inside its own render or the substitution installs a new one. The
+// mod cannot observe the engine's free, but it does not need to -- it only needs
+// to know the record may be stale, and the render is that signal. A record
+// therefore describes the most recent render for that output, or is absent.
+struct InstalledTextBuffer {
+  uintptr_t pixels = 0;
+  uint64_t bytes = 0;
+};
+std::unordered_map<uintptr_t, InstalledTextBuffer> installedTextBuffers;
 std::unordered_map<RenderTextKey, RenderTextOutputSignature, RenderTextKeyHash>
   renderOutputSignatures;
 std::unordered_map<RenderTextKey, RenderTextKeyTiming, RenderTextKeyHash>
@@ -868,6 +886,7 @@ void cachedQueueDrain(void* manager) {
   if (outermost && textBitmapCacheEnabled() && !bucTextCacheActive()) {
     std::lock_guard lock(renderBitmapMutex);
     renderBitmapCache.clear();
+    installedTextBuffers.clear();
     renderBitmapCache.reserve(256);
   }
 
@@ -989,6 +1008,7 @@ void cachedQueueDrain(void* manager) {
     if (textBitmapCacheEnabled() && !bucTextCacheActive()) {
       std::lock_guard bitmapLock(renderBitmapMutex);
       renderBitmapCache.clear();
+      installedTextBuffers.clear();
     }
     const auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(
       std::chrono::steady_clock::now() - started).count();
@@ -1279,14 +1299,20 @@ uintptr_t cachedRenderText(uintptr_t a, uintptr_t b,
         ? uint64_t(uint32_t(currentWidth)) * uint32_t(currentHeight) : 0;
       const auto& bitmap = found->second;
       uint64_t available = capacity;
-      // The dims now read as the restored (pre-substitution) ones while the
-      // buffer is still the doubled one the substitution installed, so capacity
-      // computed from the dims understates it. When the buffer is the very one
-      // these bytes came from, it holds them by construction; without this every
-      // replay would take the reallocate path.
-      if (pixelsAddress && bitmap.pixels == pixelsAddress &&
-          available < bitmap.bytes.size())
-        available = bitmap.bytes.size();
+      // The dims read as the restored (pre-substitution) ones while the buffer
+      // is still the doubled one the substitution installed, so capacity
+      // computed from the dims understates it. Ask what the mod installed
+      // instead of inferring it: the record is rewritten on every real render
+      // for this output, so it describes the buffer that is there now or it is
+      // absent. Comparing the pointer as well means a record left by a render
+      // that the engine has since replaced cannot be mistaken for a live one.
+      if (pixelsAddress) {
+        const auto installed = installedTextBuffers.find(outputAddress);
+        if (installed != installedTextBuffers.end() &&
+            installed->second.pixels == pixelsAddress &&
+            installed->second.bytes > available)
+          available = installed->second.bytes;
+      }
       if (output && gameAlloc && gameFree &&
           (!pixelsAddress || available < bitmap.bytes.size()) &&
           !bitmap.bytes.empty()) {
@@ -1296,6 +1322,12 @@ uintptr_t cachedRenderText(uintptr_t a, uintptr_t b,
           pixelsAddress = reinterpret_cast<uintptr_t>(replacement);
           std::memcpy(output + 8, &pixelsAddress, sizeof(pixelsAddress));
           available = bitmap.bytes.size();
+          // This installs a buffer without a render, so it owns the record for
+          // it exactly as the substitution does. Without this the next replay
+          // would find a record for the buffer just freed and reallocate again
+          // every frame.
+          installedTextBuffers[outputAddress] =
+            InstalledTextBuffer{ pixelsAddress, bitmap.bytes.size() };
           deepMenu.renderBitmapReallocations.fetch_add(
             1, std::memory_order_relaxed);
         }
@@ -1337,6 +1369,31 @@ uintptr_t cachedRenderText(uintptr_t a, uintptr_t b,
     if (a && b)
       atfix::hiResTextRerender(a, reinterpret_cast<const char*>(b),
         gameAlloc, gameFree);
+    // A render is the one thing that can change the buffer at output+8: the
+    // engine frees and reallocates inside its own render whenever the string's
+    // pow2 dims change, and the substitution installs a new buffer over the top.
+    // The engine's free is invisible to the mod, so the record is rebuilt from
+    // scratch here rather than patched -- either the substitution just installed
+    // a buffer whose size it reported, or the mod owns nothing for this output
+    // and the record goes. Either way it can never outlive a render.
+    {
+      const auto* renderer = reinterpret_cast<const BYTE*>(a);
+      uintptr_t outputAddress = 0;
+      if (renderer)
+        std::memcpy(&outputAddress, renderer + 0x1a0, sizeof(outputAddress));
+      uintptr_t installedPixels = 0;
+      uint64_t installedBytes = 0;
+      const bool installed =
+        atfix::hiResTextTakeInstalledBuffer(&installedPixels, &installedBytes);
+      if (outputAddress) {
+        std::lock_guard lock(renderBitmapMutex);
+        if (installed)
+          installedTextBuffers[outputAddress] =
+            InstalledTextBuffer{ installedPixels, installedBytes };
+        else
+          installedTextBuffers.erase(outputAddress);
+      }
+    }
     const ActiveRenderTrace completedRenderTrace = activeRenderTrace;
     activeRenderTrace = previousRenderTrace;
 
@@ -1436,7 +1493,6 @@ uintptr_t cachedRenderText(uintptr_t a, uintptr_t b,
         bitmap.restoreWidth = bitmap.width;
         bitmap.restoreHeight = bitmap.height;
       }
-      bitmap.pixels = pixelsAddress;
       const uint64_t size = bitmap.width > 0 && bitmap.height > 0
         ? uint64_t(uint32_t(bitmap.width)) * uint32_t(bitmap.height) : 0;
       if (pixelsAddress && size && size <= 16 * 1024 * 1024) {
@@ -2028,6 +2084,7 @@ uintptr_t scopedBucBalloonDtor(uintptr_t a, uintptr_t b) {
           bucStatsMissesBase);
     std::lock_guard lock(renderBitmapMutex);
     renderBitmapCache.clear();
+    installedTextBuffers.clear();
   }
   return originalBucBalloonDtor(a, b);
 }

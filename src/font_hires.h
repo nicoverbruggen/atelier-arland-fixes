@@ -48,6 +48,18 @@ void hiResTextRestoreDims();
 // output object record the pre-substitution dims alongside the doubled ones.
 bool hiResTextPendingDims(int* width, int* height);
 
+// Take the buffer the most recent hiResTextRerender installed at output+8, and
+// the number of bytes it really holds. False when that call substituted nothing.
+// Reading it clears it, so one substitution is reported exactly once and a caller
+// can never mistake the previous string's buffer for this one's.
+//
+// This exists because the substitution leaves the output object unable to answer
+// the question. The consumer restores the pre-double dims and leaves the doubled
+// buffer in place, so width*height read back from the object is a quarter of the
+// allocation. Anything that needs the real capacity -- the text-bitmap replay
+// cache -- must be told, not left to infer it.
+bool hiResTextTakeInstalledBuffer(uintptr_t* pixels, uint64_t* bytes);
+
 // Arm the restore stash directly, for a caller that reproduces a previously
 // substituted output object without going through hiResTextRerender (the
 // text-bitmap replay cache). Such a replay writes back the doubled dims but
