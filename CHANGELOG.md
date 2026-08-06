@@ -4,7 +4,7 @@
 
 ### Fixed
 
-- **Various internal safety and performance fixes.** These touch the conversation text cache in Atelier Meruru DX, where a rare mismatch could have corrupted memory and crashed the game, and the synthesis animation. Nothing about how the mod is configured, or what it does, has changed.
+- **Various internal safety and correctness fixes.** These touch the conversation text cache in Atelier Meruru DX, where a rare mismatch could have corrupted memory and crashed the game, the battle state tracking, and the synthesis animation. Nothing about how the mod is configured, or what it does, has changed.
 
 ## v0.14
 

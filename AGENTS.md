@@ -50,6 +50,14 @@ After making changes, run the relevant validation scripts, including `scripts/ch
 
 ## Implementation rules
 
+Safety and stability decide anything these rules leave open. The mod exists to correct defects in these games, so fixing a real one is always worth doing. The constraints are that a change must not break what already works, and that how a fix is implemented matters as much as what it fixes.
+
+This mod injects into a running game and writes to engine-owned memory from the game's own render thread. The failures that matter are a hook installed against a build it does not match, a write through a pointer that is no longer valid, and engine state the mod changes and does not put back. Guard against all three every time, including on paths believed unreachable.
+
+Prefer evidence to belief, and prefer static evidence. An offset read out of a build's disassembly holds for every run of that build; a probe reports only the runs you took, and a run that looked fine is not proof that a case cannot occur. Get the static answer where one exists. Where it rests on something the disassembly does not settle, a runtime check against the behaviour being replaced is what closes the gap, and the two together are what a claim of stability should rest on.
+
+A refactor, or a performance idea with no measured problem behind it, is not a fix, and does not earn the risk of touching working code. Speculative machinery for a case that has been measured not to occur is the same trade. When ranking possible work, rank it by this.
+
 - Preserve exact executable-name, `.text`-size, and prologue gating for game-code hooks.
 - Unknown executables must remain unmodified apart from normal system-D3D11 forwarding.
 - Cache only successful `.PSSG` validation results. Do not cache failures, parsed UI graphs, or mutable resource objects.
@@ -71,6 +79,21 @@ After making changes, run the relevant validation scripts, including `scripts/ch
 Do not hard-wrap markdown. Write one line per paragraph and let the editor or viewer wrap it; the same applies to markdown embedded elsewhere, such as the release notes generated in `.github/workflows/build.yml`. Line breaks stay meaningful only where they already are: fenced code blocks, tables, list items (one line each), headings and blockquotes.
 
 Hard-wrapped prose makes diffs noisy — a reworded sentence reflows every line after it — and the wrap width never matches everyone's editor anyway. INI and source comments are the exception: keep wrapping those to the surrounding code width.
+
+## Comments in the source
+
+A comment earns its place by saying something the code cannot: an intent, a constraint, a fact about the game, an alternative that was tried and rejected. Restating the line below it is worse than useless, because it is one more thing that has to be kept true.
+
+Write one where a reader would otherwise be stuck, or would guess wrong:
+
+- What a file is for, at the top, where the filename does not already say it.
+- For a fix: what the game does wrong, and why the correction takes the form it does rather than the one a reader would reach for first.
+- Where an offset, signature, RVA or struct layout was derived from, so it can be checked instead of re-derived.
+- What a decision rests on. If that is a measurement, name it. If it is an assumption, say so, and say what would break it.
+
+Write in the present tense about what the code does now. Do not narrate the repository's history; git holds that, and a comment about what used to be there reads as current the moment someone skims it. The one exception is code deliberately removed that a reader would otherwise put back: say what went and why, once, at the place they would reintroduce it.
+
+When changing existing code, change the comments the change makes wrong and leave the rest alone. A fix is not an invitation to rewrite the commentary around it, and a diff that reworks neighbouring prose hides what actually changed.
 
 ## Attribution and documentation
 
