@@ -85,7 +85,11 @@ int titleRow(Title t) {
 }
 
 bool fixEnabled() {
-  return featureEnabled(Feature::SynthesisAnimationRate);
+  // Resolved once. This runs on the engine thread on every Card::Update, and
+  // hooks on that thread must not touch the ini or the environment; the rule
+  // is stated in logo_skip.cpp.
+  static const bool enabled = featureEnabled(Feature::SynthesisAnimationRate);
+  return enabled;
 }
 
 bool STDMETHODCALLTYPE correctedCardUpdate(uintptr_t self, float dt) {
@@ -115,7 +119,7 @@ bool STDMETHODCALLTYPE correctedCardUpdate(uintptr_t self, float dt) {
 
   // No tick this frame. Bank the elapsed time so it is not lost; the next frame
   // that crosses the threshold spends it.
-  if (readableRange(self + kAccumulator, sizeof(next))) {
+  if (writableRange(self + kAccumulator, sizeof(next))) {
     std::memcpy(reinterpret_cast<void*>(self + kAccumulator), &next,
                 sizeof(next));
   }

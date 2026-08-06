@@ -103,11 +103,11 @@ constexpr Support X = Support::OnByDefault;
 // ARLAND_SYNTH_RATE=0 is the A/B switch.
 // MonsterSnapFix spreads a monster's re-target correction over time instead of
 // applying it in one frame, and only touches charas the game lists as field
-// enemies. It covers Totori English plus both Rorona and both Meruru builds:
-// those two name the family properly in RTTI (nspFM::clsFM*) and expose the
-// chara manager's own update as a per-frame entry, so each game's container and
-// node offsets were read from its own disassembly rather than ported. Totori's
-// multilingual build is absent because its field tick was never mapped. It is
+// enemies. It covers all six executables: Rorona and Meruru name the family
+// properly in RTTI (nspFM::clsFM*) and expose the chara manager's own update as
+// a per-frame entry, Totori's two builds hook the field map's subsystem tick,
+// and every build's container and node offsets were read from its own
+// disassembly rather than ported.
 // It ships on in all three games and every language version: it corrects a
 // defect in how a monster's movement is delivered rather than expressing a
 // preference, and the correction only changes how quickly the monster covers
@@ -128,7 +128,7 @@ constexpr Support X = Support::OnByDefault;
 // view: 0.3 s then 0.5 s from the main menu, 1.5 s from inside the Atelier, and
 // 1.5 s again on the way out. None of the waits polls I/O or object readiness;
 // every condition is pure elapsed time, which is why the view was equally slow
-// on a rig where the storage calls are local file operations. Totori only for
+// on a rig where the storage calls are local file operations.
 // All three games, both builds each; Rorona and Meruru carry a fifth gate that
 // Totori lacks. Confirmed in play on Rorona and Totori English. Reading the code
 // suggested Rorona's title wait paced a real fade; playing it showed no fade

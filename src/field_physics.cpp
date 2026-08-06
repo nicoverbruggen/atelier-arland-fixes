@@ -7,9 +7,9 @@
 // it mean a speed instead of a per-frame distance, and a resting stabilizer that
 // holds the character still while it is genuinely at rest. The rescale alone
 // keeps ground contact but leaves a small sawtooth, because gravity goes on
-// integrating while resting; the stabilizer is what removes the motion. Both are
-// env-gated and inert by default, so they can be A/B'd against vanilla and
-// against each other at runtime.
+// integrating while resting; the stabilizer is what removes the motion. Both
+// are on by default, each behind its own env switch that turns it off, so they
+// can be A/B'd against vanilla and against each other at runtime.
 //
 // The probe (ARLAND_FIELD_TRACE=1) wraps the controller's per-frame update and,
 // on each ground-contact change, dumps the frames either side of it. That is how

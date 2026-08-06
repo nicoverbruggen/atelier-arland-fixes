@@ -36,6 +36,25 @@ inline bool readableRange(uintptr_t p, size_t n) {
   return p >= base && p + n <= base + mbi.RegionSize;
 }
 
+// True if [p, p+n) is committed, writable, non-guard memory. The pre-write
+// counterpart of readableRange, which accepts read-only pages and so proves
+// nothing about a store.
+inline bool writableRange(uintptr_t p, size_t n) {
+  if (!p)
+    return false;
+  MEMORY_BASIC_INFORMATION mbi = {};
+  if (!VirtualQuery(reinterpret_cast<void*>(p), &mbi, sizeof(mbi)))
+    return false;
+  if (mbi.State != MEM_COMMIT)
+    return false;
+  const DWORD writable = PAGE_READWRITE | PAGE_WRITECOPY |
+    PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY;
+  if (!(mbi.Protect & writable) || (mbi.Protect & PAGE_GUARD))
+    return false;
+  const uintptr_t base = reinterpret_cast<uintptr_t>(mbi.BaseAddress);
+  return p >= base && p + n <= base + mbi.RegionSize;
+}
+
 // Read a trivially-copyable T from `addr` into `out`, but only if the whole object
 // is mapped. Returns false and leaves `out` untouched otherwise. A guarded walk
 // then reads as a chain that cannot skip a guard, e.g. the two-level *(*(slot))

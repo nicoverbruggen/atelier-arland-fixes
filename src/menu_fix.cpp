@@ -222,6 +222,10 @@ struct RenderTextBitmap {
   int32_t restoreWidth = 0;
   int32_t restoreHeight = 0;
   std::array<uint32_t, 4> metrics = {};
+  // output+0x20 as the engine left it at store time. font_hires.cpp documents
+  // that field as the line count and deliberately does not touch it, so a
+  // replay restores what was captured rather than writing a constant.
+  uint32_t numLines = 1;
   uintptr_t result = 0;
   std::vector<uint8_t> bytes;
 };
@@ -883,11 +887,17 @@ void cachedQueueDrain(void* manager) {
     atlasReads.clear();
     atlasCacheActive.store(true, std::memory_order_release);
   }
-  if (outermost && textBitmapCacheEnabled() && !bucTextCacheActive()) {
+  if (outermost && !bucTextCacheActive()) {
     std::lock_guard lock(renderBitmapMutex);
-    renderBitmapCache.clear();
+    if (textBitmapCacheEnabled()) {
+      renderBitmapCache.clear();
+      renderBitmapCache.reserve(256);
+    }
+    // Not gated on the cache: the records are written by the hi-res text
+    // substitution, which runs whether or not the bitmap cache is on, so
+    // gating the clear the same way would let them accumulate for outputs
+    // that no longer exist.
     installedTextBuffers.clear();
-    renderBitmapCache.reserve(256);
   }
 
   const bool stats = outermost && menuStatsEnabled();
@@ -1005,9 +1015,10 @@ void cachedQueueDrain(void* manager) {
         atlasReads.clear();
       }
     }
-    if (textBitmapCacheEnabled() && !bucTextCacheActive()) {
+    if (!bucTextCacheActive()) {
       std::lock_guard bitmapLock(renderBitmapMutex);
-      renderBitmapCache.clear();
+      if (textBitmapCacheEnabled())
+        renderBitmapCache.clear();
       installedTextBuffers.clear();
     }
     const auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(
@@ -1340,8 +1351,7 @@ uintptr_t cachedRenderText(uintptr_t a, uintptr_t b,
         std::memcpy(output + 4, &bitmap.height, sizeof(bitmap.height));
         std::memcpy(output + 0x10, bitmap.metrics.data(),
           sizeof(bitmap.metrics));
-        const uint32_t ready = 1;
-        std::memcpy(output + 0x20, &ready, sizeof(ready));
+        std::memcpy(output + 0x20, &bitmap.numLines, sizeof(bitmap.numLines));
         atfix::hiResTextStashRestore(output, bitmap.restoreWidth,
           bitmap.restoreHeight);
         result = bitmap.result;
@@ -1481,6 +1491,7 @@ uintptr_t cachedRenderText(uintptr_t a, uintptr_t b,
         std::memcpy(&pixelsAddress, output + 8, sizeof(pixelsAddress));
         std::memcpy(bitmap.metrics.data(), output + 0x10,
           sizeof(bitmap.metrics));
+        std::memcpy(&bitmap.numLines, output + 0x20, sizeof(bitmap.numLines));
       }
       // What a restore would put back, captured before it runs. Absent a
       // substitution the cached dims are already the originals.

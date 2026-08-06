@@ -100,7 +100,6 @@ struct DownscaleParams {
 template <typename T> void release(T*& p) { if (p) { p->Release(); p = nullptr; } }
 
 std::atomic<bool> g_active{false};
-bool g_broken = false;
 
 // Identity only, never dereferenced: the backbuffer outlives the swap chain we
 // took it from, and holding a reference to it would pin the chain.
@@ -384,7 +383,7 @@ void ssaaNoteSwapChain(IDXGISwapChain* swapChain) {
 }
 
 void ssaaDownscale(IDXGISwapChain* swapChain) {
-  if (!ssaaActive() || g_broken || !swapChain)
+  if (!ssaaActive() || !swapChain)
     return;
 
   // One-shot verdict on the first presented frame: whether this build really

@@ -29,8 +29,6 @@ bool presentTraceEnabled();
    chain, after ssaaNoteSwapChain. */
 void noteSceneAnchor(IDXGISwapChain* swapChain);
 
-// target it downscales, which is otherwise invisible from that side.
-
 // The largest viewport any context has been given. Deferred contexts record the
 // frame, so this is the only reliable way to ask what size the engine actually
 // drew at; see the supersampling report.
@@ -40,23 +38,23 @@ void notePresentBackbuffer(IDXGISwapChain* swapChain);
 /* lives in main.cpp */
 extern Log log;
 
-/* lives in menu_fix.cpp: is a battle cinematic state (WaitAction/skill/result)
+/* lives in battle_shadow_restore.cpp: is a battle cinematic state (WaitAction/skill/result)
    currently active? Lets the D3D layer tag draws by cut-in vs overview. */
 bool arlandInCinematicBattle();
 
-/* lives in menu_fix.cpp: are the tactical-scene caster-clear hooks installed?
+/* lives in battle_shadow_restore.cpp: are the tactical-scene caster-clear hooks installed?
    When true, the mod front-runs the engine's late cut-in caster disable, so
    the D3D-layer dim/gate holds may engage immediately instead of waiting for
    the dim value to settle. */
 bool arlandCutinCasterClearActive();
 
-/* lives in menu_fix.cpp: current battle state name (null outside battle). */
+/* lives in battle_shadow_restore.cpp: current battle state name (null outside battle). */
 const char* arlandBattleStateName();
 
-/* lives in menu_fix.cpp: increments on every field/battle scene (re)build. */
+/* lives in battle_shadow_restore.cpp: increments on every field/battle scene (re)build. */
 uint32_t arlandSceneGeneration();
 
-/* lives in menu_fix.cpp: §30m snode caster-flag restore, driven from the
+/* lives in battle_shadow_restore.cpp: §30m snode caster-flag restore, driven from the
    D3D-side 1024x1024 shadow-map clear (per-battle-frame render-thread hook). */
 void arlandCutinShadowMapCleared();
 

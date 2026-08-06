@@ -73,18 +73,17 @@
 //
 // ---------------------------------------------------------------------------
 //
-// Scope differs between the two, because the defects sit at different levels.
+// Both cover all six Arland executables and both ship on by default in all
+// three games; the capability matrix in game.cpp is the source of truth.
 //
-// The rate limit is Totori English only: it needs the brain and enemy-list
-// addresses, and Rorona and Meruru rename the field character classes with
-// homologue matching WEAK on every candidate, so nothing ports by address.
+// The rate limit needs per-build tick, setter and container addresses, so each
+// build has its own row in kSnapBuilds below, read from its own disassembly
+// rather than ported.
 //
 // The separation clamp is PhyreEngine's own defect and is present in every
 // Arland build, and in Ayesha. The same instruction sequence with the same
 // register allocation occurs exactly once per executable, so one signature
-// covers all six and only the address differs. It ships on by default in Totori,
-// where it has been exercised in play, and opt-in in Rorona and Meruru until
-// someone has played them with it.
+// covers all six and only the address differs.
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 
@@ -431,6 +430,7 @@ bool installDepthClamp(BYTE* base, uintptr_t rva) {
   DWORD previous = 0;
   if (!VirtualProtect(site, kDepthClampExpected.size(),
                       PAGE_EXECUTE_READWRITE, &previous)) {
+    VirtualFree(tramp, 0, MEM_RELEASE);
     log("FIXES field_character_pull=protect_failed");
     return false;
   }

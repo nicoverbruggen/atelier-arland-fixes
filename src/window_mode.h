@@ -16,7 +16,8 @@ namespace atfix {
 // decorations removed, sized to fill the monitor it is on: it looks like
 // fullscreen, alt-tabs instantly, and leaves the display mode alone.
 //
-// Off by default; the game's own fullscreen setting is used as-is.
+// On by default; Borderless=false leaves the game's own fullscreen setting
+// to be used as-is.
 
 // Force the swap chain to be created windowed and remember its window. Called
 // with the description before the swap chain is created, on both creation

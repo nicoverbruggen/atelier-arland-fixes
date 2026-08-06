@@ -59,7 +59,7 @@ bool configuredResolution(unsigned int* width, unsigned int* height);
 // Borderless windowed mode: [Rendering] Borderless. Runs the game as an
 // undecorated window filling its monitor instead of taking exclusive control of
 // the display -- instant alt-tab, and friendlier to compositors and multi-
-// monitor setups under Wine and Proton. Off by default.
+// monitor setups under Wine and Proton. On by default.
 bool borderlessWindow();
 
 // Whether extra diagnostic logging is enabled: [Diagnostics] VerboseLogging
@@ -77,7 +77,7 @@ bool modDisabled();
 void logConfiguration();
 
 // How UI text is rendered: [Rendering] Font. "replaced" (the DEFAULT: re-render
-// each string from the embedded scalable font (National Park), multi-line and
+// each string from the embedded scalable font, one face per game, multi-line and
 // glyph-atlas-cached, falling back to upscaling for glyphs it can't resolve),
 // "upscaled" (filter-upscale the baked glyphs, preserving the engine's exact
 // layout), or "original" (the untouched baked bitmap font; "off" is accepted
