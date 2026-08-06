@@ -29,22 +29,13 @@ bool presentTraceEnabled();
    chain, after ssaaNoteSwapChain. */
 void noteSceneAnchor(IDXGISwapChain* swapChain);
 
-// Sample count of the MSAA twin attached to a resource, or 0 when it has none.
-// Lets the supersampling trace report whether MSAA is stacked on the render
 // target it downscales, which is otherwise invisible from that side.
-unsigned int msaaTwinSamples(ID3D11Resource* host);
 
 // The largest viewport any context has been given. Deferred contexts record the
 // frame, so this is the only reliable way to ask what size the engine actually
 // drew at; see the supersampling report.
 void largestViewportSeen(unsigned int* width, unsigned int* height);
 void notePresentBackbuffer(IDXGISwapChain* swapChain);
-
-// Resolve a still-bound MSAA twin into its host before Present. Must run before
-// anything that reads the backbuffer or the scene target (SMAA's present-time
-// path, the supersampling downscale), since those would otherwise sample the
-// unresolved host.
-void resolveMsaaBeforePresent(IDXGISwapChain* swapChain);
 
 /* lives in main.cpp */
 extern Log log;

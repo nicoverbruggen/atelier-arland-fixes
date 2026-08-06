@@ -53,7 +53,6 @@ const Descriptor& descriptor(Feature f) {
     /* AtlasCache         */ { "ARLAND_ATLAS_CACHE", nullptr, nullptr, false },
     /* FrameAtlasCache    */ { "ARLAND_FRAME_ATLAS_CACHE", nullptr, nullptr, false },
     /* ResolutionOverride */ { nullptr, nullptr, nullptr, false },
-    /* Msaa               */ { nullptr, nullptr, nullptr, false },
     /* ShadowMultiplier   */ { nullptr, nullptr, nullptr, false },
     /* BattleShadows      */ { "ARLAND_BATTLE_SHADOWS", nullptr, nullptr, false },
     /* CutInShadows       */ { "ARLAND_CUTIN_SHADOWS", "Battle", "BattleCutInShadows", false },
@@ -135,10 +134,10 @@ constexpr Support X = Support::OnByDefault;
 // suggested Rorona's title wait paced a real fade; playing it showed no fade
 // there at all, so that concern is withdrawn.
 constexpr Support kMatrix[3][static_cast<int>(Feature::Count)] = {
-  //           Sync Menu Atls Frme Res  MSAA ShMl Bat  CutS CutD Logo Movi Card Snap Pull Save
-  /* Rorona */ { X,   X,   X,   X,   X,   O,   O,   X,   O,   O,   O,   O,   X,   X,   X,   X },
-  /* Totori */ { X,   X,   X,   X,   X,   O,   O,   U,   O,   O,   O,   O,   X,   X,   X,   X },
-  /* Meruru */ { X,   X,   X,   O,   X,   O,   O,   U,   O,   O,   O,   O,   X,   X,   X,   X },
+  //           Sync Menu Atls Frme Res  ShMl Bat  CutS CutD Logo Movi Card Snap Pull Save
+  /* Rorona */ { X,   X,   X,   X,   X,   O,   X,   O,   O,   O,   O,   X,   X,   X,   X },
+  /* Totori */ { X,   X,   X,   X,   X,   O,   U,   O,   O,   O,   O,   X,   X,   X,   X },
+  /* Meruru */ { X,   X,   X,   O,   X,   O,   U,   O,   O,   O,   O,   X,   X,   X,   X },
 };
 
 int titleRow(Title t) {

@@ -41,7 +41,6 @@ const char* configPath() {
 
     if (result[0] &&
         GetFileAttributesA(result.data()) == INVALID_FILE_ATTRIBUTES) {
-      WritePrivateProfileStringA("Rendering", "MSAA", "1", result.data());
       // Display = backbuffer / panel resolution (blank keeps whatever the
       // game's own settings selected). Render = internal render target (blank
       // equals Display). A Render larger than Display supersamples the whole
@@ -454,8 +453,7 @@ void logConfiguration() {
   else
     log("CONFIG using render (same as display, no supersampling)");
   const UIFontMode font = uiFontMode();
-  log("CONFIG using msaa=", std::dec, msaaSamples(),
-      " shadowmap=", shadowMapResolution(),
+  log("CONFIG using shadowmap=", std::dec, shadowMapResolution(),
       " borderless=", borderlessWindow() ? 1 : 0,
       " font=", font == UIFontMode::Original ? "original"
               : font == UIFontMode::Upscaled ? "upscaled" : "replaced",
@@ -471,30 +469,6 @@ bool borderlessWindow() {
     return arlandConfigBool("Rendering", "Borderless", true);
   }();
   return enabled;
-}
-
-UINT msaaSamples() {
-  static const UINT samples = [] {
-    const char* path = configPath();
-
-    char value[16] = { };
-    const DWORD length = GetEnvironmentVariableA("ARLAND_MSAA", value, sizeof(value));
-    unsigned long requested = 1;
-    if (length) {
-      requested = std::strtoul(value, nullptr, 10);
-    } else if (path) {
-      requested = GetPrivateProfileIntA(
-        "Rendering", "MSAA", 1, path);
-    }
-    if (requested < 2)
-      return 1u;
-    if (requested >= 8)
-      return 8u;
-    if (requested >= 4)
-      return 4u;
-    return 2u;
-  }();
-  return samples;
 }
 
 }  // namespace atfix

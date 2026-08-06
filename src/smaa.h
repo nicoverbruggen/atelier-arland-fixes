@@ -23,14 +23,11 @@ void smaaApply(IDXGISwapChain* swapChain);
 
 // Run the SMAA passes over a scene colour target in place, before the UI is
 // composited onto it. `color` is the finished (resolved, single-sample) scene
-// render target. `msaaTwinRTV` is the multisample twin if one is still bound at
-// the boundary — the antialiased result is written back into it so the game's
-// own final resolve preserves it — or null when there is no twin to feed.
+// render target.
 // No-op unless enabled and pre-UI is selected. Snapshots and restores every
 // pipeline binding the passes touch so the pending game operation inherits
 // exactly the state the game prepared. Returns true only if the three passes
 // actually executed.
-bool smaaApplySceneColor(ID3D11DeviceContext* ctx, ID3D11Texture2D* color,
-                         ID3D11RenderTargetView* msaaTwinRTV);
+bool smaaApplySceneColor(ID3D11DeviceContext* ctx, ID3D11Texture2D* color);
 
 }  // namespace atfix

@@ -442,7 +442,6 @@ void ssaaDownscale(IDXGISwapChain* swapChain) {
           " display=", g_displayWidth, "x", g_displayHeight,
           " ratio=", ratio,
           " samples/axis=", int(downscaleSamples()),
-          " msaa=", msaaTwinSamples(g_color),
           " largest_viewport=", drawnWidth, "x", drawnHeight);
     if (drawnWidth && (drawnWidth < g_renderWidth ||
                        drawnHeight < g_renderHeight))

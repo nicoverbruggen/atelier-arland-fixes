@@ -47,7 +47,6 @@ enum : int {
   IDC_BASE,     // base (display) resolution dropdown
   IDC_SS,       // supersampling multiplier dropdown
   IDC_RENDLBL,  // read-only computed render-resolution label
-  IDC_MSAA,
   IDC_SHADOW,
   IDC_SMAA,
   IDC_PRESET,
@@ -129,7 +128,7 @@ HWND g_hRepoLink = nullptr;    // SysLink on the About page
 const wchar_t* const kRepositoryUrl =
   L"https://github.com/nicoverbruggen/atelier-arland-fixes";
 HWND g_hPreset, g_hWinMode, g_hLang, g_hBCutIn,
-     g_hFont, g_hBase, g_hSS, g_hRendLbl, g_hMsaa, g_hShadow,
+     g_hFont, g_hBase, g_hSS, g_hRendLbl, g_hShadow,
      g_hSmaa, g_hOutline,
      g_hSkipLogos, g_hSkipMovie, g_hSkipLauncher, g_hVerbose;
 
@@ -237,14 +236,10 @@ const ComboItem kFontItems[] = {
   { L"Original upscaled",                   "upscaled" },
   { L"Original",                            "original" },
 };
-// MSAA / ShadowMultiplier share the same 1/2/4/8 scale (1 = off). The labels
-// name what the number means, since the group labels above them are written in
-// plain language and a bare "8" would say nothing on its own. The second column
-// is the exact string written to the ini and must not change.
-const ComboItem kMsaaItems[] = {
-  { L"Off",                  "1" }, { L"2x samples",  "2" },
-  { L"4x samples",           "4" }, { L"8x samples",  "8" },
-};
+// ShadowMultiplier's 1/2/4/8 scale (1 = off). The labels name what the number
+// means, since the group labels above them are written in plain language and a
+// bare "8" would say nothing on its own. The second column is the exact string
+// written to the ini and must not change.
 const ComboItem kShadowItems[] = {
   { L"Normal (1024 map)",    "1" }, { L"2x (2048 map)", "2" },
   { L"4x (4096 map)",        "4" }, { L"8x (8192 map)", "8" },
@@ -335,7 +330,6 @@ const unsigned kMaxRenderHeight = 4320;
 struct Preset {
   const wchar_t* label;
   int supersampling;   // index into kSSItems
-  int msaa;            // index into kMsaaItems
   bool smaa;
   int shadow;          // index into kShadowItems
 };
@@ -353,17 +347,15 @@ struct Preset {
 // src/), so a fresh install opens on a named preset rather than on Custom, and
 // the launcher and the drop-in DLL agree about what "default" means.
 //
-// It leans on SMAA rather than MSAA for anti-aliasing: SMAA is on at every tier
-// and costs one cheap full-frame pass, where multisampling costs memory and
-// bandwidth on every render target. So MSAA starts at Medium, for people who
-// want more than the shader gives, and the default spends nothing on it.
+// Anti-aliasing is SMAA at every tier, one cheap full-frame pass, and the rungs
+// above Balanced buy detail with supersampling rather than with more passes.
 const Preset kPresets[] = {
-  //                        SS  MSAA  SMAA  shadow
-  { L"Balanced (default)",   0,   0,  true,      1 },
-  { L"Medium",               0,   2,  true,      1 },
-  { L"High",                 2,   0,  true,      1 },
-  { L"Maximum",              3,   0,  true,      2 },
-  { L"Custom",              -1,  -1,  true,     -1 },
+  //                        SS  SMAA  shadow
+  { L"Balanced (default)",   0,  true,      1 },
+  { L"Medium",               1,  true,      1 },
+  { L"High",                 2,  true,      1 },
+  { L"Maximum",              3,  true,      2 },
+  { L"Custom",              -1,  true,     -1 },
 };
 const int kPresetCount = 5;
 const int kPresetCustom = 4;
@@ -817,7 +809,6 @@ void applyPreset(int index) {
   // also make detectPreset report Custom, so picking Maximum would visibly
   // refuse to stay picked.
   setSsIndexReducing(preset.supersampling);
-  SendMessageW(g_hMsaa, CB_SETCURSEL, preset.msaa, 0);
   SendMessageW(g_hShadow, CB_SETCURSEL, preset.shadow, 0);
   SendMessageW(g_hSmaa, BM_SETCHECK,
     preset.smaa ? BST_CHECKED : BST_UNCHECKED, 0);
@@ -828,7 +819,6 @@ int detectPreset() {
   for (int i = 0; i < kPresetCustom; ++i) {
     const Preset& preset = kPresets[i];
     if (ssIndex() == preset.supersampling &&
-        (int)SendMessageW(g_hMsaa, CB_GETCURSEL, 0, 0) == preset.msaa &&
         (int)SendMessageW(g_hShadow, CB_GETCURSEL, 0, 0) == preset.shadow &&
         (SendMessageW(g_hSmaa, BM_GETCHECK, 0, 0) == BST_CHECKED) == preset.smaa)
       return i;
@@ -945,14 +935,11 @@ void loadFromIni() {
   updateRenderResolution();
 
   // An absent key falls back to what the DLL would do with it, not to the first
-  // combo entry. MSAA is off unless asked for, so its fallback is "1".
   // ShadowMultiplier ships at "2", so falling back to "1" here would show
   // Normal for a default install and then persist that on the next save,
   // quietly turning the feature off for anyone who opened the launcher.
   // Anisotropic filtering is not read here at all any more: it ships on at 16x
   // and this window no longer offers it.
-  iniString("Rendering", "MSAA", buf, sizeof(buf));
-  comboSelectByValue(g_hMsaa, kMsaaItems, 4, buf[0] ? buf : "1", 0);
   iniString("Rendering", "ShadowMultiplier", buf, sizeof(buf));
   comboSelectByValue(g_hShadow, kShadowItems, 4, buf[0] ? buf : "2", 1);
 
@@ -1040,7 +1027,6 @@ void resetToDefaults() {
 
   SendMessageW(g_hFont, CB_SETCURSEL, 0, 0);      // replaced
   setSsIndex(0);                                  // supersampling off
-  SendMessageW(g_hMsaa, CB_SETCURSEL, 0, 0);      // 1x
   SendMessageW(g_hShadow, CB_SETCURSEL, 1, 0);    // 2048 map, the shipped default
   SendMessageW(g_hSmaa, BM_SETCHECK, BST_CHECKED, 0);
   SendMessageW(g_hOutline, BM_SETCHECK, BST_CHECKED, 0);   // on as it shipped
@@ -1104,8 +1090,6 @@ SaveOutcome saveToIni() {
     iniWrite("Rendering", "RenderHeight", "", g_iniPath);
   }
 
-  iniWrite("Rendering", "MSAA",
-    comboValue(g_hMsaa, kMsaaItems, 4), g_iniPath);
   // Normalised, not offered. The control is gone and the value is meant to be
   // 16 for everyone, but an ini written before that change still says 8 and
   // nothing else would ever raise it. Saving once migrates it; hand-editing
@@ -1214,7 +1198,7 @@ void reportSaveFailure(HWND owner, SaveOutcome outcome) {
 // what saveToIni reads and compares on close: no control can be missed, and
 // changing a setting back to its old value correctly counts as unchanged.
 struct UiState {
-  int font, base, ss, msaa, shadow, winMode, lang;
+  int font, base, ss, shadow, winMode, lang;
   int smaa, outline, cutIn, skipLauncher, verbose;
   int skipLogos, skipMovie, debugView;
 };
@@ -1225,7 +1209,6 @@ UiState currentState() {
   s.font = (int)SendMessageW(g_hFont, CB_GETCURSEL, 0, 0);
   s.base = (int)SendMessageW(g_hBase, CB_GETCURSEL, 0, 0);
   s.ss = ssIndex();
-  s.msaa = (int)SendMessageW(g_hMsaa, CB_GETCURSEL, 0, 0);
   s.shadow = (int)SendMessageW(g_hShadow, CB_GETCURSEL, 0, 0);
   s.winMode = (int)SendMessageW(g_hWinMode, CB_GETCURSEL, 0, 0);
   s.lang = (int)SendMessageW(g_hLang, CB_GETCURSEL, 0, 0);
@@ -1266,9 +1249,8 @@ bool hasUnsavedChanges() {
 bool seedIniDefaults() {
   if (!g_iniPath[0])
     return false;
-  if (!WritePrivateProfileStringA("Rendering", "MSAA", "1", g_iniPath))
+  if (!WritePrivateProfileStringA("Rendering", "DisplayWidth", "", g_iniPath))
     return false;
-  WritePrivateProfileStringA("Rendering", "DisplayWidth", "", g_iniPath);
   WritePrivateProfileStringA("Rendering", "DisplayHeight", "", g_iniPath);
   WritePrivateProfileStringA("Rendering", "RenderWidth", "", g_iniPath);
   WritePrivateProfileStringA("Rendering", "RenderHeight", "", g_iniPath);
@@ -2215,7 +2197,7 @@ void createControls(HWND w) {
     g_hPreset = mkCombo(w, 0, 0, 10, IDC_PRESET);
     for (int i = 0; i < kPresetCount; ++i)
       SendMessageW(g_hPreset, CB_ADDSTRING, 0, (LPARAM)kPresets[i].label);
-    page.row(L"Preset:", g_hPreset, L"Sets the four options below.");
+    page.row(L"Preset:", g_hPreset, L"Sets the three options below.");
 
     g_hSS = mkCombo(w, 0, 0, 10, IDC_SS);
     refillSupersampling();
@@ -2231,11 +2213,6 @@ void createControls(HWND w) {
     if (g_descCount < 32)
       g_hDesc[g_descCount++] = g_hRendLbl;
     page.under(g_hRendLbl);
-
-    g_hMsaa = mkCombo(w, 0, 0, 10, IDC_MSAA);
-    comboFill(g_hMsaa, kMsaaItems, 4);
-    page.row(L"Anti-aliasing (MSAA):", g_hMsaa,
-      L"Smooths the edges of 3D models. Supersampling usually does more.");
 
     g_hShadow = mkCombo(w, 0, 0, 10, IDC_SHADOW);
     comboFill(g_hShadow, kShadowItems, 4);
@@ -2555,7 +2532,7 @@ LRESULT CALLBACK WndProc(HWND w, UINT msg, WPARAM wp, LPARAM lp) {
       // Any hand-edited quality setting means the preset no longer describes
       // what is selected, so the box drops to Custom rather than lying.
       if ((HIWORD(wp) == CBN_SELCHANGE &&
-           (LOWORD(wp) == IDC_SS || LOWORD(wp) == IDC_MSAA ||
+           (LOWORD(wp) == IDC_SS ||
             LOWORD(wp) == IDC_SHADOW)) ||
           (HIWORD(wp) == BN_CLICKED && LOWORD(wp) == IDC_SMAA)) {
         refreshPreset();

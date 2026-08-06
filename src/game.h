@@ -26,7 +26,6 @@ enum class Feature : uint8_t {
   AtlasCache,          // atlas read caching
   FrameAtlasCache,     // Rorona-only frame-scoped atlas snapshot cache
   ResolutionOverride,  // direct 1440p/2160p rendering
-  Msaa,                // optional multisample AA (valued: sample count)
   ShadowMultiplier,    // higher-resolution shadow map (valued: 1/2/4/8)
   BattleShadows,       // restored ordinary-battle caster shadows
   CutInShadows,        // reopen the reception gate during attack cut-ins

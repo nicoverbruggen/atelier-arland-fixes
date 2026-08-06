@@ -41,7 +41,6 @@ If the game crashes, the mod appends a report to `arland-fix.log` that helps pin
 | Enhancement                                  | Rorona | Totori | Meruru |
 | -------------------------------------------- | :----: | :----: | :----: |
 | Supersampling (internal render resolution)   | ✓      | ✓      | ✓      |
-| MSAA                                         | ✓      | ✓      | ✓      |
 | Anisotropic filtering                        | ✓      | ✓      | ✓      |
 | Shadow multiplier                            | ✓      | ✓      | ✓      |
 | Battle cut-in shadows and brightness         | ✓      | ✓      | ✓      |
