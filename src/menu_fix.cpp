@@ -2201,10 +2201,6 @@ bool frameAtlasCacheEnabled() {
 
 void traceMenuPresent(uint64_t durationMicros, uint64_t intervalMicros) {
   atfix::battleFrameTick();
-  // Self-throttled and self-gated on ARLAND_MIXCARD_PROBE, so it costs an
-  // atomic-free early return in a normal session.
-  atfix::mixCardReport();
-
   // ARLAND_MENU_STATS heartbeat: every 120 Presents, log how much time went
   // into renderText and how the bitmap cache behaved, plus the mod's per-frame
   // state flags. Localizes per-frame text-render cost outside menu drains

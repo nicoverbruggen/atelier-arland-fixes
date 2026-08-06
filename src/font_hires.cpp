@@ -230,68 +230,6 @@ uint64_t upscaleKey(const char* utf8, uint32_t a, uint32_t b,
   return k;
 }
 
-// Build a path to `filename` in the directory containing this DLL.
-bool moduleFilePath(const char* filename, char* out) {
-  HMODULE self = nullptr;
-  if (!GetModuleHandleExA(
-        GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
-        GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-        reinterpret_cast<LPCSTR>(&moduleFilePath), &self))
-    return false;
-  const DWORD n = GetModuleFileNameA(self, out, MAX_PATH);
-  if (!n || n >= MAX_PATH)
-    return false;
-  char* back = std::strrchr(out, '\\');
-  char* forward = std::strrchr(out, '/');
-  char* sep = back > forward ? back : forward;
-  if (!sep)
-    return false;
-  std::strcpy(sep + 1, filename);
-  return true;
-}
-
-// Write an 8bpp buffer beside the DLL as a binary PGM, for offline inspection of
-// the original baked bitmap vs the upscaled one (ARLAND_HIRES_DUMP only).
-void writePgm(const char* filename, const unsigned char* data, int w, int h) {
-  char path[MAX_PATH] = { };
-  if (w <= 0 || h <= 0 || !data || !moduleFilePath(filename, path))
-    return;
-  HANDLE file = CreateFileA(path, GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
-    FILE_ATTRIBUTE_NORMAL, nullptr);
-  if (file == INVALID_HANDLE_VALUE)
-    return;
-  char header[64] = { };
-  const int headerLen = wsprintfA(header, "P5\n%d %d\n255\n", w, h);
-  DWORD written = 0;
-  WriteFile(file, header, DWORD(headerLen), &written, nullptr);
-  WriteFile(file, data, DWORD(w) * DWORD(h), &written, nullptr);
-  CloseHandle(file);
-}
-
-// One-shot dump of the original + upscaled bitmap for the first string matching
-// ARLAND_HIRES_DUMP (its value is a case-insensitive substring; "1" ⇒ "totori").
-std::atomic<bool> g_dumped = { false };
-void maybeDump(const char* utf8, const unsigned char* orig, int ow, int oh,
-               const unsigned char* hires, int hw, int hh) {
-  const char* want = std::getenv("ARLAND_HIRES_DUMP");
-  if (!want || want[0] == '0')
-    return;
-  const char* target = (want[0] == '1' && want[1] == '\0') ? "totori" : want;
-  char needle[64] = { };
-  char hay[256] = { };
-  for (size_t i = 0; target[i] && i + 1 < sizeof(needle); ++i)
-    needle[i] = (target[i] >= 'A' && target[i] <= 'Z') ? char(target[i] + 32)
-                                                       : target[i];
-  for (size_t i = 0; utf8[i] && i + 1 < sizeof(hay); ++i)
-    hay[i] = (utf8[i] >= 'A' && utf8[i] <= 'Z') ? char(utf8[i] + 32) : utf8[i];
-  if (!std::strstr(hay, needle) || g_dumped.exchange(true))
-    return;
-  writePgm("arland-hires-orig.pgm", orig, ow, oh);
-  writePgm("arland-hires-hi.pgm", hires, hw, hh);
-  log("HiResText: dumped comparison for \"", utf8, "\" orig=", std::dec, ow,
-    "x", oh, " hi=", hw, "x", hh);
-}
-
 // ---- "replaced" mode: re-render each string from a bundled scalable font -----
 
 std::once_flag g_fontInit;
@@ -602,8 +540,6 @@ bool renderReplaced(BYTE* output, const char* utf8, uintptr_t pixels,
   if (renderedW > newW) renderedW = newW;
   if (renderedW < 1) renderedW = 1;
 
-  maybeDump(utf8, reinterpret_cast<const unsigned char*>(pixels), width, height,
-    dst, newW, newH);
   free(reinterpret_cast<void*>(pixels));
   const uintptr_t newPixels = reinterpret_cast<uintptr_t>(buffer);
   std::memcpy(output + 8, &newPixels, sizeof(newPixels));
@@ -670,7 +606,6 @@ bool renderUpscaled(BYTE* output, const char* utf8, uintptr_t pixels,
       g_upscaleCache.clear();
     g_upscaleCache.emplace(key, std::vector<unsigned char>(out, out + bytes));
   }
-  maybeDump(utf8, src, width, height, out, newW, newH);
 
   free(reinterpret_cast<void*>(pixels));
   const uintptr_t newPixels = reinterpret_cast<uintptr_t>(buffer);

@@ -41,16 +41,6 @@ extern Log log;  // main.cpp
 
 namespace {
 
-bool envEnabled(const char* name) {
-  const char* value = std::getenv(name);
-  return value && value[0] != '0';
-}
-
-bool probeEnabled() {
-  static const bool enabled = envEnabled("ARLAND_WORLDMAP_PROBE");
-  return enabled;
-}
-
 bool fixEnabled() {
   static const bool enabled = [] {
     const char* value = std::getenv("ARLAND_WORLDMAP_FIX");
@@ -128,9 +118,6 @@ const WorldMapAddrs* g_addrs = nullptr;
 // the call chain instead of sharing it across threads.
 thread_local float g_updateDt = 0.0f;
 
-std::atomic<uint32_t> g_moveCalls{0};
-std::atomic<uint32_t> g_lines{0};
-constexpr uint32_t kMaxLines = 600;
 
 float distance3(const Vec4& a, const Vec4& b) {
   const float x = b[0] - a[0];
@@ -158,7 +145,6 @@ bool STDMETHODCALLTYPE tracedMove(uintptr_t self) {
   const bool haveAfter = tryRead(self + 0x30, after);
   const float rawStep = (haveBefore && haveAfter)
     ? distance3(before, after) : 0.0f;
-  float appliedStep = rawStep;
   float factor = 1.0f;
 
   if (fixEnabled() && haveBefore && haveAfter && rawStep > 0.0f &&
@@ -177,27 +163,6 @@ bool STDMETHODCALLTYPE tracedMove(uintptr_t self) {
     if (tryRead(self + 0x28, target) && target && publishPosition)
       publishPosition(target, &corrected);
     after = corrected;
-    appliedStep = distance3(before, after);
-  }
-
-  if (probeEnabled()) {
-    const uint32_t call =
-      g_moveCalls.fetch_add(1, std::memory_order_relaxed) + 1;
-    if (call == 1) {
-      log("WMPROBE mover FIRED rva=0x", std::hex,
-          g_addrs ? g_addrs->move : 0, std::dec, " self=",
-          reinterpret_cast<void*>(self), " dt=", dt,
-          " fix=", fixEnabled());
-    }
-    if (rawStep > 1e-6f &&
-        g_lines.fetch_add(1, std::memory_order_relaxed) < kMaxLines) {
-      log("WMPROBE move n=", call, " dt=", dt,
-          " raw_step=", rawStep, " factor=", factor,
-          " applied_step=", appliedStep,
-          " raw_per_s=", (dt > 0.0f) ? rawStep / dt : 0.0f,
-          " applied_per_s=", (dt > 0.0f) ? appliedStep / dt : 0.0f,
-          " pos=", after[0], ",", after[1], ",", after[2]);
-    }
   }
   return result;
 }
@@ -205,12 +170,11 @@ bool STDMETHODCALLTYPE tracedMove(uintptr_t self) {
 }  // namespace
 
 bool installWorldMapFix(BYTE* base, const Game& game) {
-  const bool diagnostic = probeEnabled();
   if (game.atlasVariant == AtlasRorona) {
     log("FIXES world_map=not_applicable");
     return false;
   }
-  if (!fixEnabled() && !diagnostic) {
+  if (!fixEnabled()) {
     log("FIXES world_map=off");
     return false;
   }

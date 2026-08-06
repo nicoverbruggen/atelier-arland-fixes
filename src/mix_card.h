@@ -32,8 +32,4 @@ namespace atfix {
 // Hook Card::Update for the running executable. Returns true when live.
 bool installMixCardFix(BYTE* base, const Game& game);
 
-// Called every Present; no-ops unless ARLAND_MIXCARD_PROBE is set, and then
-// reports ticked-versus-skipped counts periodically.
-void mixCardReport();
-
 }  // namespace atfix

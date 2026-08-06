@@ -88,11 +88,6 @@ bool fixEnabled() {
   return featureEnabled(Feature::SynthesisAnimationRate);
 }
 
-bool probeEnabled() {
-  const char* value = std::getenv("ARLAND_MIXCARD_PROBE");
-  return value && value[0] != '0';
-}
-
 bool STDMETHODCALLTYPE correctedCardUpdate(uintptr_t self, float dt) {
   if (!fixEnabled() || !self)
     return originalCardUpdate(self, dt);
@@ -160,30 +155,8 @@ bool installMixCardFix(BYTE* base, const Game& game) {
     reinterpret_cast<void**>(&originalCardUpdate));
 
   log("FIXES synthesis_rate=", ok ? "active" : "failed",
-      " update_rva=0x", std::hex, rva, std::dec,
-      " probe=", probeEnabled() ? 1 : 0);
+      " update_rva=0x", std::hex, rva, std::dec);
   return ok;
-}
-
-// Reported from the frame tick so a run can be judged without a debugger. The
-// whole measurement is ticks-per-second against frames-per-second: the first
-// should stay near 59.9 -- or 119.9 while the synthesis state is running, since
-// the container is pumped twice per frame there -- and the second should scale
-// with refresh rate.
-void mixCardReport() {
-  if (!probeEnabled())
-    return;
-  static uint32_t frames = 0;
-  if (++frames < 120)
-    return;
-  frames = 0;
-  const uint64_t calls = g_calls.load(std::memory_order_relaxed);
-  if (!calls)
-    return;
-  log("MIXCARD calls=", std::dec, calls,
-      " ticked=", g_ticked.load(std::memory_order_relaxed),
-      " skipped=", g_skipped.load(std::memory_order_relaxed),
-      " drift_heals=", g_healed.load(std::memory_order_relaxed));
 }
 
 }  // namespace atfix
