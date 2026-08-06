@@ -41,7 +41,7 @@ The launcher has no control for `AnisotropicFiltering` and rewrites it to `16` e
 | `BattleCutInShadows` | `true` restores ground shadows during the close-up attack cameras. | `false` |
 | `BattleCutInDimming` | `true` keeps the original close-up dimming; `false` holds it at full brightness. | `true` |
 
-Both cut-in keys are off as shipped, which leaves the close-ups as the game renders them. Set them from the launcher's "Attack cut-ins" list rather than by hand. Rorona's missing ordinary-battle shadows are restored without a setting, because that is a fix rather than a preference; Meruru and Totori cast them natively and are unaffected.
+Both cut-in keys are off as shipped, which leaves the close-ups as the game renders them. They store one choice between them and the launcher writes them together, so set them from the "Attack cut-ins" list rather than by hand. Setting them by hand is honoured, with one exception: on Atelier Totori DX, `BattleCutInShadows` on its own does nothing, because that game's cut-in shadows are carried by the same value the brightness hold writes. Use Enhanced there, or the pair `BattleCutInShadows=true` and `BattleCutInDimming=false`. Rorona's missing ordinary-battle shadows are restored without a setting, because that is a fix rather than a preference; Meruru and Totori cast them natively and are unaffected.
 
 | `[Field]` | Values | Default |
 | --- | --- | --- |

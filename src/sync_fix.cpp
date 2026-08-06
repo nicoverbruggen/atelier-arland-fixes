@@ -978,6 +978,12 @@ void noteSceneAnchor(IDXGISwapChain* swapChain) {
   if (!found)
     return;
   if (g_sceneAnchor.exchange(found, std::memory_order_relaxed) != found) {
+    // The reference is the point, not the pointer: the anchor is compared by
+    // ADDRESS below, so holding one stops a freed texture's address being
+    // recycled and faking a match. It would also make ResizeBuffers fail while
+    // outstanding, so that was measured: a probe on the swap chain's
+    // ResizeBuffers saw no call in any of the three games, with borderless and
+    // supersampling off, which is the only case that pins the backbuffer.
     ID3D11Texture2D* tex = static_cast<ID3D11Texture2D*>(found);
     tex->AddRef();
     if (ID3D11Texture2D* prev =
