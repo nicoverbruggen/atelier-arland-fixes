@@ -165,13 +165,18 @@ constexpr DimHoldField kDimFieldsClassic[] = {
 //               close a matrix row gets.
 //   {16,0} {32,0} {48,32} {80,0} {144,0} {160,16} {160,144} {224,208}
 //
-// 320 is rejected outright at both offsets: the rival at 272 is `Kd`, the Phong
-// diffuse reflectance, which is a diffuse colour by definition.
+// 320 is the one deliberate risk here. `diffuse` sits at 272 in some shaders
+// and at 288 in others, and where it is at 288 the field at 272 is `Kd`, a
+// diffuse colour by definition, so no value predicate can tell a grey Kd from
+// the fade. Both offsets are covered anyway: leaving them out keeps water and
+// sky dark through a cut-in in BF_S_SEA and BF_BOSS, and a wrong match only
+// makes one material too bright for the length of one cut-in. An entry matches
+// a buffer of exactly its size, so neither offset can leave the buffer.
 constexpr DimHoldField kDimFieldsTotori[] = {
   {16, 0, 4}, {32, 0, 4}, {48, 32, 4}, {80, 0, 4}, {96, 80, 4},
   {112, 96, 3}, {144, 0, 4}, {160, 16, 4}, {160, 144, 4}, {224, 208, 4},
-  {304, 16, 4}, {304, 272, 4}, {416, 336, 4},
-  {12960, 12944, 4}, {13024, 13008, 4},
+  {304, 16, 4}, {304, 272, 4}, {320, 272, 4}, {320, 288, 4},
+  {416, 336, 4}, {12960, 12944, 4}, {13024, 13008, 4},
 };
 
 // The dim-field table for the running game, cached.
