@@ -252,8 +252,21 @@ bool initPass(ID3D11Device* device) {
 // while covering less is aliasing. Clamped at 8, which no supported ratio
 // reaches (the render resolution is capped at 8K), so the pass cannot become
 // arbitrarily expensive if that ever changes.
+// How much the frame is shrunk to fit inside the backbuffer, preserving its
+// shape. One number for both axes by construction, and the source of both the
+// viewport below and the per-pixel footprint the shader averages over.
+float downscaleFit() {
+  const float fit = std::min(
+    float(g_displayWidth) / float(g_renderWidth),
+    float(g_displayHeight) / float(g_renderHeight));
+  return fit > 0.0f ? fit : 1.0f;
+}
+
 float downscaleSamples() {
-  const float scale = float(g_renderHeight) / float(g_displayHeight);
+  // Derived from the fit, not from the height ratio alone: when the width is
+  // the constraining axis the height ratio is the smaller number, and taking
+  // the tap count from it undersamples on both axes at once.
+  const float scale = 1.0f / downscaleFit();
   float samples = std::ceil(scale);
   if (samples < 1.0f) samples = 1.0f;
   if (samples > 8.0f) samples = 8.0f;
@@ -485,11 +498,19 @@ void ssaaDownscale(IDXGISwapChain* swapChain) {
           " that part rather than supersampling it.");
   }
 
+  // The pass draws into the fitted rectangle, not the whole backbuffer, so an
+  // output pixel covers render-size-over-FITTED-size source texels. The fit
+  // preserves the frame's shape, so that is one number for both axes. Measuring
+  // against the display size instead understates whichever axis the fit is not
+  // constrained by and narrows the filter kernel there; the two agree exactly
+  // when the render and display aspects match, which is the ordinary case.
+  const float fit = downscaleFit();
+
   DownscaleParams params;
   params.texel[0] = 1.0f / float(g_renderWidth);
   params.texel[1] = 1.0f / float(g_renderHeight);
-  params.ratio[0] = float(g_renderWidth) / float(g_displayWidth);
-  params.ratio[1] = float(g_renderHeight) / float(g_displayHeight);
+  params.ratio[0] = 1.0f / fit;
+  params.ratio[1] = 1.0f / fit;
   params.samples = downscaleSamples();
   D3D11_MAPPED_SUBRESOURCE mapped = {};
   if (SUCCEEDED(context->Map(g_cb, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped))) {
@@ -517,9 +538,7 @@ void ssaaDownscale(IDXGISwapChain* swapChain) {
     // used and the remainder becomes bars. When the shapes match this is the
     // whole backbuffer and the clear costs one fill of pixels nothing else
     // writes.
-    const float scale = std::min(
-      float(g_displayWidth) / float(g_renderWidth),
-      float(g_displayHeight) / float(g_renderHeight));
+    const float scale = downscaleFit();
     const float fittedWidth = float(g_renderWidth) * scale;
     const float fittedHeight = float(g_renderHeight) * scale;
     const D3D11_VIEWPORT viewport = {
