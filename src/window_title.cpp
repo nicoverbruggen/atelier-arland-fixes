@@ -28,6 +28,7 @@
 #include "game.h"       // atfix::currentTitle / Title
 #include "hook_util.h"  // atfix::installMinHookDetour
 #include "log.h"
+#include "path_util.h"
 #include "window_title.h"
 
 namespace atfix {
@@ -89,16 +90,8 @@ bool gameLanguageIsJapanese() {
   HMODULE module = GetModuleHandleW(nullptr);
   if (!module || !GetModuleFileNameA(module, path, sizeof(path)))
     return false;
-  char* back = std::strrchr(path, '\\');
-  char* forward = std::strrchr(path, '/');
-  char* sep = back > forward ? back : forward;
-  if (!sep)
+  if (!replaceFileName(path, sizeof(path), "ArlandDX_Settings.ini"))
     return false;
-  const char* settings = "ArlandDX_Settings.ini";
-  if (static_cast<size_t>(sep + 1 - path) + std::strlen(settings) + 1 >
-      sizeof(path))
-    return false;
-  std::strcpy(sep + 1, settings);
   return GetPrivateProfileIntA("Lang", "Language", 0, path) == 1;
 }
 

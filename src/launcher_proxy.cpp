@@ -22,6 +22,8 @@
 #include <cstdint>
 #include <cstring>
 
+#include "path_util.h"
+
 namespace {
 
 void launcherLog(const char* message) {
@@ -30,12 +32,8 @@ void launcherLog(const char* message) {
   const DWORD length = GetModuleFileNameA(nullptr, path.data(), path.size());
   if (!length || length == path.size())
     return;
-  char* name = path.data();
-  for (char* cursor = path.data(); *cursor; cursor++) {
-    if (*cursor == '\\' || *cursor == '/')
-      name = cursor + 1;
-  }
-  std::memcpy(name, "arland-launcher.log", sizeof("arland-launcher.log"));
+  if (!atfix::replaceFileName(path.data(), path.size(), "arland-launcher.log"))
+    return;
   HANDLE file = CreateFileA(path.data(), FILE_APPEND_DATA,
     FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_ALWAYS,
     FILE_ATTRIBUTE_NORMAL, nullptr);

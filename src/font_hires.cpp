@@ -43,6 +43,7 @@
 #include "font_hires.h"
 #include "game.h"
 #include "log.h"
+#include "path_util.h"
 
 namespace atfix {
 
@@ -262,12 +263,8 @@ bool loadFontFile() {
   const DWORD n = GetModuleFileNameA(self, path, MAX_PATH);
   if (!n || n >= MAX_PATH)
     return false;
-  char* back = std::strrchr(path, '\\');
-  char* forward = std::strrchr(path, '/');
-  char* sep = back > forward ? back : forward;
-  if (!sep)
+  if (!replaceFileName(path, sizeof(path), "arland-hires-font.ttf"))
     return false;
-  std::strcpy(sep + 1, "arland-hires-font.ttf");
   HANDLE file = CreateFileA(path, GENERIC_READ, FILE_SHARE_READ, nullptr,
     OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
   if (file == INVALID_HANDLE_VALUE)

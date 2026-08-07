@@ -1231,14 +1231,19 @@ uint32_t getFormatPixelSize(
     uint32_t FormatSize;
   };
 
-  static const std::array<FormatRange, 7> s_ranges = {{
-    { DXGI_FORMAT_R32G32B32A32_TYPELESS,  DXGI_FORMAT_R32G32B32A32_SINT,    16u },
-    { DXGI_FORMAT_R32G32B32_TYPELESS,     DXGI_FORMAT_R32G32B32_SINT,       12u },
-    { DXGI_FORMAT_R16G16B16A16_TYPELESS,  DXGI_FORMAT_R32G32_SINT,          8u  },
-    { DXGI_FORMAT_R10G10B10A2_TYPELESS,   DXGI_FORMAT_R32_SINT,             4u  },
-    { DXGI_FORMAT_B8G8R8A8_UNORM,         DXGI_FORMAT_B8G8R8X8_UNORM_SRGB,  4u  },
-    { DXGI_FORMAT_R8G8_TYPELESS,          DXGI_FORMAT_R16_SINT,             2u  },
-    { DXGI_FORMAT_R8_TYPELESS,            DXGI_FORMAT_A8_UNORM,             1u  },
+  static const std::array<FormatRange, 12> s_ranges = {{
+    { DXGI_FORMAT_R32G32B32A32_TYPELESS,  DXGI_FORMAT_R32G32B32A32_SINT,       16u },
+    { DXGI_FORMAT_R32G32B32_TYPELESS,     DXGI_FORMAT_R32G32B32_SINT,          12u },
+    { DXGI_FORMAT_R16G16B16A16_TYPELESS,  DXGI_FORMAT_R32G32_SINT,             8u  },
+    { DXGI_FORMAT_R32G8X24_TYPELESS,      DXGI_FORMAT_X32_TYPELESS_G8X24_UINT, 8u  },
+    { DXGI_FORMAT_R10G10B10A2_TYPELESS,   DXGI_FORMAT_R32_SINT,                4u  },
+    { DXGI_FORMAT_R24G8_TYPELESS,         DXGI_FORMAT_X24_TYPELESS_G8_UINT,    4u  },
+    { DXGI_FORMAT_R9G9B9E5_SHAREDEXP,     DXGI_FORMAT_R9G9B9E5_SHAREDEXP,      4u  },
+    { DXGI_FORMAT_B8G8R8A8_UNORM,         DXGI_FORMAT_B8G8R8X8_UNORM_SRGB,     4u  },
+    { DXGI_FORMAT_R8G8_TYPELESS,          DXGI_FORMAT_R16_SINT,                2u  },
+    { DXGI_FORMAT_B5G6R5_UNORM,           DXGI_FORMAT_B5G5R5A1_UNORM,          2u  },
+    { DXGI_FORMAT_B4G4R4A4_UNORM,         DXGI_FORMAT_B4G4R4A4_UNORM,          2u  },
+    { DXGI_FORMAT_R8_TYPELESS,            DXGI_FORMAT_A8_UNORM,                1u  },
   }};
 
   // Buffers report DXGI_FORMAT_UNKNOWN and measure their box in bytes rather
@@ -1256,9 +1261,10 @@ uint32_t getFormatPixelSize(
 
   // A genuine miss, worth reporting, but once per format: the callers are copy
   // and byte-estimate paths that run per resource per frame. Block-compressed
-  // formats land here and 1 is wrong for them (BC1 is half a byte per texel,
-  // BC2/BC3 one byte, and their rows are counted in 4x4 blocks), so the log
-  // line is the useful part -- the number is a fallback, not an answer.
+  // formats land here and have no per-texel size at all: BC1 is half a byte
+  // per texel, BC2/BC3 one byte, and their rows are counted in 4x4 blocks.
+  // Zero is a refusal rather than a wrong answer. The copy paths stand down on
+  // it and take the real GPU copy; the byte estimators count nothing.
   // Static storage zero-initializes, so every slot starts false.
   static std::array<std::atomic<bool>, 256> s_logged;
   const size_t slot = size_t(Format);
@@ -1266,7 +1272,7 @@ uint32_t getFormatPixelSize(
       !s_logged[slot].exchange(true, std::memory_order_relaxed))
     log("Unhandled format ", Format);
 
-  return 1u;
+  return 0u;
 }
 
 bool getResourceInfo(
@@ -2528,6 +2534,15 @@ HRESULT tryCpuCopy(
   ATFIX_RESOURCE_INFO srcInfo = { };
   getResourceInfo(pSrcResource, &srcInfo);
 
+  /* A format the size table cannot answer for (block-compressed, or a gap in
+   * the table) would run the texel loop below at the wrong row size and the
+   * wrong row count. Fail before either resource is mapped and before a shadow
+   * is created: both callers fall back to the original GPU copy, which stalls
+   * but is correct for every format. Buffers report DXGI_FORMAT_UNKNOWN and
+   * measure their box in bytes, so they pass. */
+  if (!getFormatPixelSize(dstInfo.Format) || !getFormatPixelSize(srcInfo.Format))
+    return E_NOTIMPL;
+
   D3D11_BOX srcBox = getResourceBox(&srcInfo, SrcSubresource);
   D3D11_BOX dstBox = getResourceBox(&dstInfo, DstSubresource);
 
@@ -3165,7 +3180,14 @@ void flushDirtyShadows(ID3D11DeviceContext* pContext) {
 
     ID3D11Resource* shadow = getShadowResource(resource);
     ATFIX_RESOURCE_INFO info = { };
-    if (!shadow || !getResourceInfo(resource, &info)) {
+    /* tryCpuCopy rejects an unsized format before a shadow can be created, so
+     * the format test here cannot fire. It stays because copyMappedSubresource
+     * below has no safe answer for one: by the time it runs both subresources
+     * are mapped, the destination map has discarded its contents, and a GPU
+     * copy is illegal for a DYNAMIC destination. */
+    if (!shadow || !getResourceInfo(resource, &info) ||
+        (info.Dim != D3D11_RESOURCE_DIMENSION_BUFFER &&
+         !getFormatPixelSize(info.Format))) {
       if (shadow)
         shadow->Release();
       resource->Release();

@@ -12,6 +12,7 @@
 #include "config.h"
 #include "game.h"
 #include "log.h"
+#include "path_util.h"
 
 namespace atfix {
 
@@ -27,16 +28,8 @@ const char* configPath() {
     // the ini name has to fit as well. Failing either, the buffer is cleared so
     // this returns nullptr: keeping the exe path would write every setting to a
     // file nothing reads, which fails silently rather than visibly.
-    char* slash = nullptr;
-    if (pathLength && pathLength < MAX_PATH) {
-      char* back = std::strrchr(result.data(), '\\');
-      char* forward = std::strrchr(result.data(), '/');
-      slash = !back || (forward && forward > back) ? forward : back;
-    }
-    const size_t used = slash ? size_t(slash + 1 - result.data()) : 0;
-    if (slash && used + sizeof("arland-fix.ini") <= result.size())
-      std::memcpy(slash + 1, "arland-fix.ini", sizeof("arland-fix.ini"));
-    else
+    if (!pathLength || pathLength >= MAX_PATH ||
+        !replaceFileName(result.data(), result.size(), "arland-fix.ini"))
       result[0] = '\0';
 
     if (result[0] &&
