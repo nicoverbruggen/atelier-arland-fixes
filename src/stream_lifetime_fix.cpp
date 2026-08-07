@@ -188,6 +188,15 @@ bool enabled() {
   return !value || value[0] != '0';
 }
 
+// Neither store below takes the writableRange guard mem.h asks of walked
+// pointers, and the liveness proof is the same kind mem.h accepts for detour
+// arguments. At pin time the engine is using the wrapper in the same producer
+// call: the original this detour calls serializes that same pointer into the
+// command stream. At release time the pinned refcount itself is the proof:
+// the engine frees a wrapper only when this count reaches zero, so an object
+// whose count the mod still holds cannot have been freed. A VirtualQuery per
+// stream-binding change on the render thread would add cost without adding a
+// fact either argument lacks.
 void pinWrapper(uintptr_t wrapper) {
   ++*reinterpret_cast<int32_t*>(wrapper + kRefcountOffset);
 }
