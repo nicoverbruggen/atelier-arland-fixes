@@ -337,6 +337,20 @@ void captureCbUnmap(ID3D11DeviceContext* ctx, ID3D11Resource* resource,
 
 std::atomic<ID3D11DeviceContext*> g_immCtx{nullptr};
 
+// One context does not mean one thread. A Rorona session traced with the
+// CTX_THREAD line in smaaDrawBoundary showed the immediate context driven from
+// four threads in turn (604, 768, 856, back to 604) while the single deferred
+// context stayed on one. So "the recording thread" is not a stable identity,
+// and nothing here may assume that state written during one draw is read back
+// on the same thread.
+//
+// It is safe, and the reason is the engine's rather than ours: D3D11 requires
+// the application to guarantee one thread at a time per context, so the game
+// already synchronises the handoff, and whatever it uses to do that publishes
+// our globals along with its own. What this does rule out is reasoning of the
+// form "only one thread records, so this needs no synchronisation" -- that was
+// assumed in several places before it was measured, and it was wrong.
+
 // A shadow-map clear opens a battle frame's shadow pass, which is where the
 // cut-in holds need this frame's battle state. The callback is in
 // battle_shadow_restore.cpp.
@@ -692,6 +706,8 @@ constexpr uint32_t kSceneDrawThreshold = 24;
 // gone -- the counter it self-limits on is only cleared once the passes return.
 // Thread-local because the recursion is always on the recording thread, and a
 // global flag would let one thread suppress another's legitimate injection.
+// Safe against the context migration below because a pass runs start to finish
+// inside one call, so the thread cannot change underneath the guard.
 thread_local bool t_inSmaaPasses = false;
 
 struct SmaaReentryGuard {

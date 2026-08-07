@@ -4,6 +4,7 @@
 #include "config.h"
 #include "crash_log.h"
 #include "menu_fix.h"
+#include "path_util.h"
 #include "smaa.h"
 #include "supersample.h"
 #include "sync_fix.h"
@@ -32,7 +33,22 @@
 
 namespace atfix {
 
-Log log("arland-fix.log");
+// Beside the game executable, the same anchor the ini uses, rather than the
+// working directory a launcher happens to leave us in. Built here rather than
+// inside Log because this global is constructed before anything else in the
+// DLL and the path has to exist by then; GetModuleFileNameA and string work are
+// both safe that early. Falls back to the working directory if the module path
+// cannot be read, which is the behaviour this replaces.
+const char* logPath() {
+  static char path[MAX_PATH] = { };
+  const DWORD n = GetModuleFileNameA(nullptr, path, MAX_PATH);
+  if (!n || n >= MAX_PATH ||
+      !replaceFileName(path, sizeof(path), "arland-fix.log"))
+    return "arland-fix.log";
+  return path;
+}
+
+Log log(logPath());
 
 /** Load system D3D11 DLL and return entry points */
 using PFN_D3D11CreateDevice = HRESULT (__stdcall *) (

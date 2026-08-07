@@ -24,7 +24,7 @@
 #include "../vendor/minhook/include/MinHook.h"
 #include "config.h"        // verboseLogging
 #include "game.h"          // featureEnabled, Feature, currentTitle, Title
-#include "hook_util.h"     // Game, matches, installDetour, installMinHookDetour
+#include "hook_util.h"     // Game, matches, installMinHookDetour
 #include "log.h"
 #include "mem.h"           // readableRange, tryRead
 #include "util.h"          // arlandReturnAddress

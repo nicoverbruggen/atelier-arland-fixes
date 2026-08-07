@@ -13,6 +13,13 @@ import sys
 from pathlib import Path
 
 
+# The ordinals are pinned so this check is exact, not because anything imports
+# by ordinal. They were taken from DXVK's own d3d11.def and match what Windows
+# 10 ships; the import library programs link against resolves all nine of its
+# functions by name. The community does not agree on them either: ENB renumbers
+# its whole table, 3Dmigoto pins the older Windows 7 values. So a future
+# mismatch with the real system DLL is a cosmetic difference rather than a
+# compatibility break, and this check failing on one is not an emergency.
 EXPECTED = {
     "d3d11.dll": {
         "D3D11CreateDevice": 22,

@@ -79,6 +79,8 @@ The complete source code and the steps GitHub uses to build each release are pub
 
 All performance and text-correctness fixes are enabled automatically. No additional configuration is required, but it's recommended that you adjust the graphics settings according to your hardware configuration. The launcher explains what each one costs.
 
+Use it on its own. It is meant to be the only graphics mod in the folder: copy the four files in as listed above and nothing else. Do not rename `d3d11.dll` to anything else, and do not place a second copy of it under another name. Other tools that install themselves as `d3d11.dll` cannot be used at the same time, because only one of them can have that name.
+
 ### Wine and Proton
 
 Copy the files in exactly as above, then add this to the game's Steam Launch Options (Properties → General → Launch Options):

@@ -32,7 +32,7 @@
 #include "game.h"
 #include "log.h"
 #include "mem.h"   // readableRange + tryRead (guarded game-memory reads)
-#include "hook_util.h"   // Game, atlas/build enums, matches, installDetour
+#include "hook_util.h"   // Game, atlas/build enums, matches, installMinHookDetour
 #include "menu_internal.h"   // gameBase, supportedGame, battle entry points
 
 namespace atfix {
@@ -119,8 +119,6 @@ using atfix::AtlasLaterArland;
 using atfix::BuildEnglish;
 using atfix::BuildMultilingual;
 using atfix::matches;
-using atfix::writeAbsoluteJump;
-using atfix::installDetour;
 using atfix::installMinHookDetour;
 
 // The atlas-unlock RVA is the real unlock function, never the thunk that sits
@@ -1708,8 +1706,8 @@ uintptr_t cachedAtlasUnlock(uintptr_t texture, uintptr_t a,
   return originalAtlasUnlock(texture, a, b, c);
 }
 
-// writeAbsoluteJump / installDetour / matches / installMinHookDetour live in
-// hook_util.h/.cpp now (shared with battle_shadow_restore.cpp).
+// matches and installMinHookDetour live in hook_util.h/.cpp, shared with
+// battle_shadow_restore.cpp.
 
 bool installAtlasCache(BYTE* base, const Game& game) {
   if (!atlasCacheEnabled() || game.atlasVariant == AtlasNone)
@@ -2195,8 +2193,9 @@ void detectAndInstallGameHooks() {
     };
     bool pathInstalled = false;
     if (matches(target, expected))
-      pathInstalled = installDetour(target, reinterpret_cast<void*>(&cachedPathCheck),
-        expected.size(), reinterpret_cast<void**>(&originalPathCheck));
+      pathInstalled = installMinHookDetour(target,
+        reinterpret_cast<void*>(&cachedPathCheck),
+        reinterpret_cast<void**>(&originalPathCheck));
     const bool atlasInstalled = installAtlasCache(
       reinterpret_cast<BYTE*>(module), game);
     gameBase = reinterpret_cast<BYTE*>(module);

@@ -55,15 +55,6 @@ inline bool matches(const BYTE* target, const std::array<BYTE, N>& expected) {
   return !std::memcmp(target, expected.data(), expected.size());
 }
 
-// Write a 14-byte absolute jmp to `target` at `destination`.
-void writeAbsoluteJump(BYTE* destination, const void* target);
-
-// Byte-patch detour: copies the prologue to a trampoline and writes an absolute
-// jump over `target` (requires patchSize >= 14). Returns the trampoline in
-// `original`. False on failure.
-bool installDetour(BYTE* target, const void* replacement,
-                   size_t patchSize, void** original);
-
 // MinHook-based detour (MinHook owns the trampoline). False on failure.
 bool installMinHookDetour(BYTE* target, const void* replacement, void** original);
 
