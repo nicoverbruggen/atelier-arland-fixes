@@ -312,7 +312,7 @@ struct FontChoice {
 const FontChoice& gameFont() {
   static const FontChoice rorona{ "National Park SemiBold",
     kEmbeddedFontNationalParkSemiBold, kEmbeddedFontNationalParkSemiBoldSize,
-    0.95f, 0 };
+    0.93f, 0 };
   static const FontChoice totori{ "Nunito Regular",
     kEmbeddedFontNunito, kEmbeddedFontNunitoSize, 0.90f, 0 };
   static const FontChoice meruru{ "Cosmetica Medium",
