@@ -618,7 +618,15 @@ uintptr_t* globalActiveHelperSlot() {
     *reinterpret_cast<uintptr_t*>(gameBase + g_battleAddrs->managerSlot);
   if (!manager)
     return nullptr;
-  return reinterpret_cast<uintptr_t*>(manager + g_battleAddrs->helperSlotOffset);
+  // Every caller stores through this pointer, so prove the slot is writable
+  // rather than only that the manager is non-null. sceneIdentityTick guards its
+  // read of the same field the same way, and the snode stores in this file all
+  // use writableRange. Returning null is the outcome Totori already produces on
+  // every call, so no caller needs a new branch.
+  const uintptr_t slot = manager + g_battleAddrs->helperSlotOffset;
+  if (!writableRange(slot, sizeof(uintptr_t)))
+    return nullptr;
+  return reinterpret_cast<uintptr_t*>(slot);
 }
 
 // Register the located battle party as shadow casters. For each BtlChara in the
@@ -949,6 +957,11 @@ uintptr_t tracedShadowHelperInit(uintptr_t helper, uintptr_t id,
     // state (the tracker only runs while a battle is active).
     g_lastBattleStateVt.store(0, std::memory_order_release);
     // Undo a battle-helper publish so the field renders its own helper again.
+    // Unlike restorePublishedHelper, the save is dropped here whether or not it
+    // could be written back, and that is deliberate: this is the field scene
+    // setup path, so the helper being restored belongs to the scene that is
+    // being replaced. Holding it for a later retry would write a destroyed
+    // scene's helper into a freshly built one.
     const uintptr_t saved =
       g_savedGlobalHelper.exchange(0, std::memory_order_acq_rel);
     if (saved) {
@@ -1812,11 +1825,21 @@ bool battleGameModeLive(uintptr_t gameMode) {
 
 // Restore the field helper we displaced when publishing the battle helper.
 void restorePublishedHelper(const char* reason) {
+  if (!g_savedGlobalHelper.load(std::memory_order_acquire))
+    return;
+  // Resolve the slot before taking the value. Taking it first loses the saved
+  // field helper when the lookup fails, and losing it also disarms the field
+  // tick, which is keyed on this atomic being non-zero. Left set, the tick
+  // retries until the slot is reachable. The exchange stays because the battle
+  // mode's destructor and the watchdog can both run this, and exactly one of
+  // them must perform the restore.
+  uintptr_t* slot = globalActiveHelperSlot();
+  if (!slot)
+    return;
   const uintptr_t saved =
     g_savedGlobalHelper.exchange(0, std::memory_order_acq_rel);
   if (saved) {
-    if (uintptr_t* slot = globalActiveHelperSlot())
-      *slot = saved;
+    *slot = saved;
     if (sceneTraceEnabled())
       atfix::log("BATTLE_SHADOW_RESTORE reason=", reason,
         " restored=", reinterpret_cast<void*>(saved));
