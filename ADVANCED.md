@@ -25,7 +25,7 @@ The file sits beside the DLLs and is created on first launch. Close the game bef
 
 | `[Rendering]` | Values | Default |
 | --- | --- | --- |
-| `DisplayWidth` / `DisplayHeight` | Window and present size. Blank uses your desktop resolution. `DisplayWidth=game` keeps whatever the game's own settings selected. | blank |
+| `DisplayWidth` / `DisplayHeight` | Window and present size. Blank uses your desktop resolution. | blank |
 | `RenderWidth` / `RenderHeight` | Internal render size. Larger than the display size is supersampling. Blank matches the display size. | blank |
 | `Borderless` | `true` / `false` | `true` |
 | `SMAA` | `true` / `false` | `true` |
@@ -33,7 +33,7 @@ The file sits beside the DLLs and is created on first launch. Close the game bef
 | `ShadowMultiplier` | `1` (off), `2`, `4`, `8` | `2` |
 | `AnisotropicFiltering` | `1` (off), `2`, `4`, `8`, `16` | `16` |
 
-The launcher has no control for `AnisotropicFiltering` and rewrites it to `16` every time you save, so a hand-set lower value survives only until the next save from the launcher. The same applies to a hand-edited cut-in combination the launcher's two states cannot express: it is read as Enhanced and written back that way.
+The launcher has no control for `AnisotropicFiltering` and rewrites it to `16` every time you save, so a hand-set lower value survives only until the next save from the launcher. The same applies to a hand-edited cut-in combination the launcher's two states cannot express: it is read as Enhanced and written back that way. Two more rewrites affect the resolution keys. `RenderWidth`/`RenderHeight` are shown as a multiplier of the display size, snapped to the nearest of 1.25, 1.5, 2, 3 and 4, and saving writes the pair back as that multiple, so a hand-set 2560x1440 over a 1080p display comes back as 2400x1350. And a `DisplayWidth` larger than your monitor is shown as Auto, so saving replaces it with your desktop resolution.
 
 | `[Battle]` | Values | Default |
 | --- | --- | --- |

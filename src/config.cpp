@@ -194,26 +194,13 @@ static bool displayCurrent(UINT* width, UINT* height) {
   return true;
 }
 
-// DisplayWidth=game asks for the pre-0.12 behaviour: leave the swap chain at
-// whatever the game's own settings selected. Only the width key is consulted,
-// since the pair is all-or-nothing anyway.
-static bool followGameResolution() {
-  const char* path = configPath();
-  if (!path)
-    return false;
-  char value[16] = { };
-  GetPrivateProfileStringA("Rendering", "DisplayWidth", "", value,
-    sizeof(value), path);
-  return !_stricmp(value, "game");
-}
-
 bool displayResolution(UINT* width, UINT* height) {
   if (!readResPair("DisplayWidth", "DisplayHeight", width, height)) {
-    // Blank presents at the desktop resolution. The game's own default is 720p,
-    // so following it made a fresh install look far worse than the screen it is
-    // running on for anyone who never opened the launcher.
-    if (followGameResolution())
-      return false;
+    // Blank, half-filled or unparseable presents at the desktop resolution. The
+    // game's own default is 720p, so following it made a fresh install look far
+    // worse than the screen it is running on for anyone who never opened the
+    // launcher. Failing here means the desktop mode could not be read at all,
+    // and the caller leaves the game's own choice alone.
     return displayCurrent(width, height);
   }
 
