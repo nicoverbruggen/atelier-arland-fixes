@@ -10,9 +10,11 @@
 //     Nunito for Totori, Cosmetica Medium for Meruru; a loose
 //     arland-hires-font.ttf overrides them) via a
 //     glyph-atlas cache. renderReplaced() replicates the engine's layout (split on
-//     '\n', stack by lineHeight, left-aligned, fixed cap-box baseline). If the font
-//     lacks a glyph the string needs (e.g. the game's custom button-prompt icons),
-//     it falls back to the upscaled path so nothing is left as raw baked art.
+//     '\n', stack by lineHeight, left-aligned, fixed cap-box baseline). A glyph the
+//     face itself lacks comes from the bundled Arland Fallback face (arrows,
+//     shapes, music and the Greek tier markers); only when neither has it (the
+//     game's custom button-prompt icons) does the whole string fall back to the
+//     upscaled path, so nothing is left as raw baked art.
 //   "upscaled" — keep the engine's own baked glyphs but filter-upscale them
 //     (bilinear + SDF coverage-steepen by default; bilinear+unsharp or lanczos+
 //     unsharp via ARLAND_HIRES_FILTER). Preserves the engine's exact layout and
@@ -249,6 +251,9 @@ std::once_flag g_fontInit;
 bool g_ready = false;
 std::vector<unsigned char> g_ttf;
 stbtt_fontinfo g_font;
+// Second face, consulted per glyph when g_font has none. See loadFallbackFont.
+bool g_fallbackReady = false;
+stbtt_fontinfo g_fallbackFont;
 
 // Load arland-hires-font.ttf from the module directory (beside d3d11.dll) if the
 // user dropped one there to override the embedded font. Absent = normal (returns
@@ -332,10 +337,36 @@ bool loadFont() {
     " bytes=", std::dec, f.size);
   return true;
 }
+// The per-glyph fallback face (Arland Fallback, sixty-odd symbols cut from Inter
+// and Source Sans 3). None of the bundled faces is complete for the games' English
+// text: Totori's travel routes use ⇔, Meruru's tips use ♪ ※ △ ○ →, and its quest
+// tiers are Greek letters. Without a second face one such character sends the
+// whole string down the upscale path, so a line of otherwise crisp text renders
+// as the engine's baked art. Every one of them is a symbol, which is where a
+// face change is least visible, and that is what makes mixing acceptable here.
+// Failure to load is not fatal: the string-wide bail below is still there, so
+// the feature degrades to what it did before.
+bool loadFallbackFont() {
+  return stbtt_InitFont(&g_fallbackFont, kEmbeddedFontFallback,
+    stbtt_GetFontOffsetForIndex(kEmbeddedFontFallback, 0)) != 0;
+}
 void ensureInit() {
   std::call_once(g_fontInit, [] {
     g_ready = loadFont();
+    g_fallbackReady = g_ready && loadFallbackFont();
+    if (g_ready && !g_fallbackReady)
+      log("FIXES high_res_text_fallback=unavailable");
   });
+}
+
+// The face that carries `cp`, or nullptr if neither does. Space and newline are
+// layout, not ink, and never reach here.
+const stbtt_fontinfo* faceFor(int cp) {
+  if (stbtt_FindGlyphIndex(&g_font, cp))
+    return &g_font;
+  if (g_fallbackReady && stbtt_FindGlyphIndex(&g_fallbackFont, cp))
+    return &g_fallbackFont;
+  return nullptr;
 }
 
 // Decode UTF-8 to codepoints, KEEPING '\n' as a line break; CR/TAB -> space.
@@ -377,6 +408,12 @@ void decodeUtf8Lines(const char* s, std::vector<int>& out) {
     else if (cp == 0x3011 || cp == 0x300D || cp == 0x300F) cp = ']';  // 】」』
     else if (cp == 0x3001) cp = ',';                                  // 、
     else if (cp == 0x3002) cp = '.';                                  // 。
+    else if (cp == 0x30FB) cp = 0x2022;                               // ・ -> •
+    else if (cp == 0x301C) cp = '~';                                  // 〜
+    // Folding these to ASCII rather than leaning on the fallback face keeps them
+    // in the string's own typeface, which matters more for a hyphen sitting
+    // between two letters than it does for a symbol standing on its own.
+    else if (cp >= 0x2010 && cp <= 0x2013) cp = '-';                  // ‐‑‒–
     out.push_back(cp);
   }
 }
@@ -397,8 +434,13 @@ std::unordered_map<uint64_t, CachedGlyph> g_glyphCache;
 
 // Blit codepoint `cp` at pen (penX, baseline); returns its advance (px). Holds
 // the glyph lock (rasterizes on first use for that size, then it's a memcpy).
+// `face` is whichever font carries `cp` and `scale` is that face's own scale for
+// the line height, so a fallback glyph comes out the same size as its neighbours
+// even though the two faces have different units per em. `sizeKey` is the primary
+// face's scale either way, which is fine as a cache key: a codepoint resolves to
+// one face for the life of the process, so the two never collide.
 float drawGlyph(unsigned char* dst, int dw, int dh, int penX, int baseline,
-                int cp, float scale, int sizeKey) {
+                int cp, const stbtt_fontinfo* face, float scale, int sizeKey) {
   std::lock_guard<std::mutex> lock(g_glyphMutex);
   const uint64_t key =
     (static_cast<uint64_t>(static_cast<uint32_t>(cp)) << 32) |
@@ -407,11 +449,11 @@ float drawGlyph(unsigned char* dst, int dw, int dh, int penX, int baseline,
   if (it == g_glyphCache.end()) {
     CachedGlyph g;
     int adv = 0, lsb = 0;
-    stbtt_GetCodepointHMetrics(&g_font, cp, &adv, &lsb);
+    stbtt_GetCodepointHMetrics(face, cp, &adv, &lsb);
     g.advance = adv * scale;
     int w = 0, h = 0, xo = 0, yo = 0;
     unsigned char* bmp =
-      stbtt_GetCodepointBitmap(&g_font, scale, scale, cp, &w, &h, &xo, &yo);
+      stbtt_GetCodepointBitmap(face, scale, scale, cp, &w, &h, &xo, &yo);
     if (bmp) {
       g.w = w; g.h = h; g.xoff = xo; g.yoff = yo;
       g.bitmap.assign(bmp, bmp + static_cast<size_t>(w) * h);
@@ -481,14 +523,15 @@ bool renderReplaced(BYTE* output, const char* utf8, uintptr_t pixels,
   if (cps.empty())
     return false;
   for (const int cp : cps)
-    if (cp != '\n' && cp != ' ' && stbtt_FindGlyphIndex(&g_font, cp) == 0) {
-      // The bundled font has no glyph for this codepoint (e.g. the game's custom
-      // button-prompt icons). Bail so the caller upscales the baked bitmap of the
-      // whole string instead — the icon stays intact, the rest still smooths.
+    if (cp != '\n' && cp != ' ' && !faceFor(cp)) {
+      // Neither the bundled font nor the fallback face has this codepoint (the
+      // game's custom button-prompt icons, and the Japanese labels left in the
+      // English builds). Bail so the caller upscales the baked bitmap of the whole
+      // string instead — the icon stays intact, the rest still smooths.
       static std::atomic<uint32_t> missingGlyphLogs{0};
       if (verboseLogging() &&
           missingGlyphLogs.fetch_add(1, std::memory_order_relaxed) < 32)
-        log("HiResText: font lacks U+", std::hex, cp, std::dec,
+        log("HiResText: no face has U+", std::hex, cp, std::dec,
           " -> upscale \"", utf8, "\"");
       return false;
     }
@@ -506,6 +549,10 @@ bool renderReplaced(BYTE* output, const char* utf8, uintptr_t pixels,
   const float sizeH = static_cast<float>(usedH) / numLines;
   const float scale = stbtt_ScaleForPixelHeight(&g_font, sizeH) * userScale();
   const int sizeKey = static_cast<int>(scale * 8192.0f + 0.5f);
+  // Same pixel height through the fallback face's own metrics, so its glyphs
+  // match the rest of the line rather than the ratio of the two faces' em sizes.
+  const float fallbackScale = g_fallbackReady
+    ? stbtt_ScaleForPixelHeight(&g_fallbackFont, sizeH) * userScale() : scale;
 
   float pitch = sizeH;
   float topOff = 0.0f;
@@ -539,8 +586,13 @@ bool renderReplaced(BYTE* output, const char* utf8, uintptr_t pixels,
     const int baseline = lineTop + baseInLine + userVOff() * kScale;
     float penX = 0.0f;
     for (size_t g = i; g < j; ++g) {
+      const stbtt_fontinfo* face = cps[g] == ' ' ? &g_font : faceFor(cps[g]);
+      const bool primary = face == &g_font;
       penX += drawGlyph(dst, newW, newH, static_cast<int>(penX + 0.5f),
-        baseline, cps[g], scale, sizeKey);
+        baseline, cps[g], face, primary ? scale : fallbackScale, sizeKey);
+      // Kern from the primary face only. It returns 0 for a pair it has no glyph
+      // for, which is the right answer for a fallback glyph: the two faces have
+      // no kerning relationship to look up.
       if (g + 1 < j)
         penX += stbtt_GetCodepointKernAdvance(&g_font, cps[g], cps[g + 1]) *
           scale;

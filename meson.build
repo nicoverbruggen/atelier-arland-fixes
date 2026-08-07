@@ -73,6 +73,10 @@ else
     input : 'vendor/font/Cosmetica-Medium.ttf',
     output : 'embedded_font_mgopen.cpp',
     command : [py, embed_font, '@INPUT@', '@OUTPUT@', 'kEmbeddedFontMgOpenCosmetica'])
+  embedded_fallback = custom_target('embedded_font_fallback',
+    input : 'vendor/font/ArlandFallback.ttf',
+    output : 'embedded_font_fallback.cpp',
+    command : [py, embed_font, '@INPUT@', '@OUTPUT@', 'kEmbeddedFontFallback'])
 
   # DXGI interface GUIDs (IID_IDXGIFactory, IID_IDXGIDevice). MSVC needs
   # dxguid.lib explicitly; MinGW happens to resolve them elsewhere.
@@ -111,7 +115,8 @@ else
   )
 
   shared_library('d3d11',
-    [sources, embedded_np, embedded_nunito, embedded_mgopen, version_git_header,
+    [sources, embedded_np, embedded_nunito, embedded_mgopen, embedded_fallback,
+      version_git_header,
      windows.compile_resources(
        'src/d3d11.rc',
        depend_files : version_rc,

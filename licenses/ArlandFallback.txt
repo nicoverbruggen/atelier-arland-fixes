@@ -1,0 +1,20 @@
+Arland Fallback
+A face of 67 symbols, used by the high-resolution UI text feature for the few
+characters the per-game typefaces do not carry. It is not a general-purpose font
+and is not usable as one: it has no letters, no digits and no punctuation beyond
+a bullet and an ellipsis.
+
+The outlines were taken from two typefaces, each under the SIL Open Font License:
+
+  Inter, copyright 2016 The Inter Project Authors (https://rsms.me/inter/)
+    arrows, triangles, circles, squares, diamonds, stars, the bullet, the
+    ellipsis and the reference mark
+
+  Source Sans 3, copyright 2023 Adobe (https://github.com/adobe-fonts/source-sans)
+    the musical notes, the Greek letters and the card suits
+
+The result is renamed, as both licenses require: Source Sans reserves the name
+"Source", and "Inter" is a trademark of Rasmus Andersson.
+
+The OFL text applies to this face and is in OFL-1.1.txt in this directory. It is
+also available with a FAQ at https://scripts.sil.org/OFL
