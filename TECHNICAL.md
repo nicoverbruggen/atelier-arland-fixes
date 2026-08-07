@@ -799,6 +799,7 @@ Environment variables, not `arland-fix.ini` keys. Most only add logging. The one
 | `ARLAND_PERF_LOG=1` | Follows verbose logging unless set explicitly. Writes a `PERF` line every ten seconds: average frame rate, average frame time, and the worst single frame in that window. An average alone cannot tell a steady 60 from a steady 60 with a 90 ms hitch. |
 | `ARLAND_MENU_STATS=1` | Per-drain menu timings and cache hit rates. Follows verbose logging unless set explicitly. |
 | `ARLAND_MENU_TRANSITION_TRACE=1` | Traces menu transitions. Never enabled by verbose logging, because it alters the path it reports on. |
+| `ARLAND_MENU_DEEP_STATS=1` | Times the menu construction internals call by call: node init, layout building and each record type. English Rorona only, and it detours nineteen more engine functions to do it, so verbose logging never turns it on. |
 | `ARLAND_FIELD_TRACE=1` | Logs the field character's state around each loss of footing. |
 | `ARLAND_PRESENT_TRACE=1` | Reports how the finished frame reaches the screen. Needs a display resolution set. |
 | `ARLAND_SCENE_TRACE=1` | Traces scene-target selection. |
@@ -826,7 +827,7 @@ Environment variables, not `arland-fix.ini` keys. Most only add logging. The one
 | `ARLAND_BATTLE_MODE_GATE=0` | *(A/B)* Falls back to the watchdog alone for detecting the end of a battle. |
 | `ARLAND_ITEM_GUARD=0` | *(A/B)* Restores Totori's own unbounded item-effect lookups. |
 | `ARLAND_ITEM_SANITIZE=0` | *(A/B)* Disables the repair of damaged Totori save data on load and save. |
-| `ARLAND_STREAM_LIFETIME_FIX=0` | *(A/B)* Disables Totori's queued stream lifetime correction. |
+| `ARLAND_STREAM_LIFETIME_FIX=0` | *(A/B)* Disables Totori's queued stream lifetime correction. `ARLAND_INDEX_STREAM_FIX` names the same switch and is read only when this one is unset. |
 | `ARLAND_SYNTH_RATE=0` | *(A/B)* Restores the frame-tied synthesis card animation. |
 | `ARLAND_SKIP_LOGOS`, `ARLAND_SKIP_INTRO_MOVIE` | Override the two startup skips for one launch. |
 | `ARLAND_BORDERLESS`, `ARLAND_SMAA`, `ARLAND_ANISO`, `ARLAND_SHADOW_MULTIPLIER`, `ARLAND_UIFONT`, `ARLAND_UI_SCALE` | Override the matching `arland-fix.ini` keys for one launch. |
