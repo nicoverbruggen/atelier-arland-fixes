@@ -411,6 +411,12 @@ struct DeepMenuCounters {
 
 DeepMenuCounters deepMenu;
 
+// readableRange / tryRead are the shared guarded-read primitives from mem.h.
+// This TU's code lives in the global anonymous namespace, so pull them in for
+// unqualified use (they are declared in namespace atfix).
+using atfix::readableRange;
+using atfix::tryRead;
+
 const char* baseName(const char* path) {
   const char* back = std::strrchr(path, '\\');
   const char* forward = std::strrchr(path, '/');
@@ -428,27 +434,45 @@ DWORD textSectionSize(HMODULE module) {
     return 0;
   auto* section = IMAGE_FIRST_SECTION(nt);
   for (WORD i = 0; i < nt->FileHeader.NumberOfSections; i++, section++) {
-    if (!std::memcmp(section->Name, ".text", 5))
+    // The whole 8-byte name field, not a prefix of it: a section name is only
+    // NUL-padded when it is shorter than the field, so a 5-byte compare also
+    // accepts ".textbss" and would report the wrong size for it.
+    if (!std::memcmp(section->Name, ".text\0\0\0", 8))
       return section->Misc.VirtualSize;
   }
   return 0;
 }
 
+// The path argument the engine hands the validation helper is an MSVC
+// std::string: the 16-byte inline buffer at 0, the length at 0x10 and the
+// capacity at 0x18, with a capacity of 16 or more meaning the characters live
+// on the heap and the pointer to them sits at 0. Read that header guarded and
+// test the extension against the length it carries: this runs on every path
+// validation, and a strrchr over the characters would scan an unbounded
+// distance out of an object that is not the shape this expects. An unreadable
+// object returns null, which sends the caller to the game's own check.
 const char* pssgPath(const void* stringObject) {
+  struct EngineString {
+    const char* heap;
+    char inlineRest[8];
+    size_t length;
+    size_t capacity;
+  };
+  static_assert(sizeof(EngineString) == 0x20, "engine string header is 0x20");
+
   if (!stringObject)
     return nullptr;
-  const auto* bytes = static_cast<const BYTE*>(stringObject);
-  size_t capacity = 0;
-  std::memcpy(&capacity, bytes + 0x18, sizeof(capacity));
-  const char* path = nullptr;
-  if (capacity >= 0x10)
-    std::memcpy(&path, bytes, sizeof(path));
-  else
-    path = static_cast<const char*>(stringObject);
-  if (!path)
+  EngineString header = {};
+  if (!tryRead(reinterpret_cast<uintptr_t>(stringObject), header))
     return nullptr;
-  const char* extension = std::strrchr(path, '.');
-  return extension && !_stricmp(extension, ".PSSG") ? path : nullptr;
+  const char* path = header.capacity >= 0x10
+    ? header.heap : static_cast<const char*>(stringObject);
+  const size_t extensionLength = 5;  // ".PSSG"
+  if (!path || header.length < extensionLength ||
+      !readableRange(reinterpret_cast<uintptr_t>(path), header.length + 1))
+    return nullptr;
+  return !_strnicmp(path + header.length - extensionLength, ".PSSG",
+                    extensionLength) ? path : nullptr;
 }
 
 bool menuStatsEnabled();
@@ -461,12 +485,6 @@ bool deepMenuStatsEnabled() {
   return enabled;
 }
 
-// readableRange / tryRead are the shared guarded-read primitives from mem.h.
-// This TU's code lives in the global anonymous namespace, so pull them in for
-// unqualified use (they are declared in namespace atfix).
-using atfix::readableRange;
-using atfix::tryRead;
-
 void rememberTarget(std::atomic<uintptr_t>& destination, uintptr_t target) {
   uintptr_t empty = 0;
   destination.compare_exchange_strong(
@@ -475,14 +493,16 @@ void rememberTarget(std::atomic<uintptr_t>& destination, uintptr_t target) {
 
 uintptr_t timedNodeInit(uintptr_t node, uintptr_t owner,
                         uintptr_t record, uintptr_t id) {
-  if (node) {
-    const uintptr_t vtable = *reinterpret_cast<const uintptr_t*>(node);
-    if (vtable) {
-      rememberTarget(deepMenu.virtualF0Target,
-        *reinterpret_cast<const uintptr_t*>(vtable + 0xf0));
-      rememberTarget(deepMenu.virtualFinalTarget,
-        *reinterpret_cast<const uintptr_t*>(vtable + 0x38));
-    }
+  // Guarded like every other walk out of engine memory: this diagnostic is
+  // switched on to investigate a menu that is already misbehaving, so the node
+  // it reads is exactly the one that can be stale.
+  uintptr_t vtable = 0;
+  uintptr_t slot = 0;
+  if (node && tryRead(node, vtable) && vtable) {
+    if (tryRead(vtable + 0xf0, slot))
+      rememberTarget(deepMenu.virtualF0Target, slot);
+    if (tryRead(vtable + 0x38, slot))
+      rememberTarget(deepMenu.virtualFinalTarget, slot);
   }
   const auto started = std::chrono::steady_clock::now();
   ++nodeInitDepth;
@@ -599,31 +619,28 @@ uintptr_t timedLayoutApply(uintptr_t a1, uintptr_t a2, uintptr_t a3,
                            uintptr_t a4, uintptr_t a5) {
   if (!nodeInitDepth)
     return originalLayoutApply(a1, a2, a3, a4, a5);
-  if (a3) {
-    const uintptr_t vtable = *reinterpret_cast<const uintptr_t*>(a3);
-    if (vtable)
-      rememberTarget(deepMenu.layoutInputTarget,
-        *reinterpret_cast<const uintptr_t*>(vtable + 0x48));
-  }
+  uintptr_t inputVtable = 0;
+  uintptr_t input48 = 0;
+  if (a3 && tryRead(a3, inputVtable) && inputVtable &&
+      tryRead(inputVtable + 0x48, input48))
+    rememberTarget(deepMenu.layoutInputTarget, input48);
   const auto started = std::chrono::steady_clock::now();
   ++layoutApplyDepth;
   const uintptr_t result = originalLayoutApply(a1, a2, a3, a4, a5);
   --layoutApplyDepth;
   const auto elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(
     std::chrono::steady_clock::now() - started).count();
-  if (a1) {
-    const uintptr_t object = *reinterpret_cast<const uintptr_t*>(a1 + 0x38);
-    if (object) {
-      const uintptr_t vtable = *reinterpret_cast<const uintptr_t*>(object);
-      if (vtable) {
-        rememberTarget(deepMenu.layoutObjectE8Target,
-          *reinterpret_cast<const uintptr_t*>(vtable + 0xe8));
-        rememberTarget(deepMenu.layoutObjectF0Target,
-          *reinterpret_cast<const uintptr_t*>(vtable + 0xf0));
-        rememberTarget(deepMenu.layoutObjectC8Target,
-          *reinterpret_cast<const uintptr_t*>(vtable + 0xc8));
-      }
-    }
+  uintptr_t object = 0;
+  uintptr_t objectVtable = 0;
+  if (a1 && tryRead(a1 + 0x38, object) && object &&
+      tryRead(object, objectVtable) && objectVtable) {
+    uintptr_t slot = 0;
+    if (tryRead(objectVtable + 0xe8, slot))
+      rememberTarget(deepMenu.layoutObjectE8Target, slot);
+    if (tryRead(objectVtable + 0xf0, slot))
+      rememberTarget(deepMenu.layoutObjectF0Target, slot);
+    if (tryRead(objectVtable + 0xc8, slot))
+      rememberTarget(deepMenu.layoutObjectC8Target, slot);
   }
   deepMenu.layoutApplyCalls.fetch_add(1, std::memory_order_relaxed);
   deepMenu.layoutApplyNanos.fetch_add(uint64_t(elapsed), std::memory_order_relaxed);

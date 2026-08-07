@@ -13,6 +13,8 @@
 #include <cstdint>
 #include <cstring>
 
+#include "mem.h"
+
 namespace atfix {
 
 // Per-game hook descriptor: the executable identity (name, .text size, the
@@ -50,8 +52,17 @@ enum : uint8_t {
 };
 
 // True if `target`'s bytes match `expected`, a verified prologue window.
+//
+// The window is checked for being mapped before it is read. Callers pass
+// base + an RVA out of this repository's own tables, so a wrong entry aims the
+// compare at unmapped memory and would fault during install, before the gate
+// that exists to decline the install has had a chance to run. A mismatch and an
+// unreadable window mean the same thing here: this is not the build the row
+// describes, so do not hook it.
 template <size_t N>
 inline bool matches(const BYTE* target, const std::array<BYTE, N>& expected) {
+  if (!readableRange(reinterpret_cast<uintptr_t>(target), expected.size()))
+    return false;
   return !std::memcmp(target, expected.data(), expected.size());
 }
 

@@ -1333,16 +1333,28 @@ uint32_t getFormatPixelSize(
   // per texel, BC2/BC3 one byte, and their rows are counted in 4x4 blocks.
   // Zero is a refusal rather than a wrong answer. The copy paths stand down on
   // it and take the real GPU copy; the byte estimators count nothing.
-  // Static storage zero-initializes, so every slot starts false.
+  // Static storage zero-initializes, so every slot starts false. A value past
+  // the end of the table has no slot to mark and so needs its own flag:
+  // without one it reports on every call, which is the flood the per-slot flags
+  // exist to prevent.
   static std::array<std::atomic<bool>, 256> s_logged;
+  static std::atomic<bool> s_loggedOutOfRange;
   const size_t slot = size_t(Format);
-  if (slot >= s_logged.size() ||
-      !s_logged[slot].exchange(true, std::memory_order_relaxed))
+  const bool first = slot < s_logged.size()
+    ? !s_logged[slot].exchange(true, std::memory_order_relaxed)
+    : !s_loggedOutOfRange.exchange(true, std::memory_order_relaxed);
+  if (first)
     log("Unhandled format ", Format);
 
   return 0u;
 }
 
+// Fills pInfo from the resource, false if it cannot. The interface query in
+// each branch is checked: a resource that answered GetType is expected to
+// answer the matching QueryInterface, but a failure would hand the branch a
+// null interface and fault on GetDesc. Returning false instead is the answer
+// the callers already handle, and it keeps the failure inside the layer whose
+// job is to absorb it -- tryCpuCopy takes the real GPU copy on a false here.
 bool getResourceInfo(
         ID3D11Resource*           pResource,
         ATFIX_RESOURCE_INFO*      pInfo) {
@@ -1351,7 +1363,8 @@ bool getResourceInfo(
   switch (pInfo->Dim) {
     case D3D11_RESOURCE_DIMENSION_BUFFER: {
       ID3D11Buffer* buffer = nullptr;
-      pResource->QueryInterface(IID_PPV_ARGS(&buffer));
+      if (FAILED(pResource->QueryInterface(IID_PPV_ARGS(&buffer))) || !buffer)
+        return false;
 
       D3D11_BUFFER_DESC desc = { };
       buffer->GetDesc(&desc);
@@ -1371,7 +1384,8 @@ bool getResourceInfo(
 
     case D3D11_RESOURCE_DIMENSION_TEXTURE1D: {
       ID3D11Texture1D* texture = nullptr;
-      pResource->QueryInterface(IID_PPV_ARGS(&texture));
+      if (FAILED(pResource->QueryInterface(IID_PPV_ARGS(&texture))) || !texture)
+        return false;
 
       D3D11_TEXTURE1D_DESC desc = { };
       texture->GetDesc(&desc);
@@ -1391,7 +1405,8 @@ bool getResourceInfo(
 
     case D3D11_RESOURCE_DIMENSION_TEXTURE2D: {
       ID3D11Texture2D* texture = nullptr;
-      pResource->QueryInterface(IID_PPV_ARGS(&texture));
+      if (FAILED(pResource->QueryInterface(IID_PPV_ARGS(&texture))) || !texture)
+        return false;
 
       D3D11_TEXTURE2D_DESC desc = { };
       texture->GetDesc(&desc);
@@ -1411,7 +1426,8 @@ bool getResourceInfo(
 
     case D3D11_RESOURCE_DIMENSION_TEXTURE3D: {
       ID3D11Texture3D* texture = nullptr;
-      pResource->QueryInterface(IID_PPV_ARGS(&texture));
+      if (FAILED(pResource->QueryInterface(IID_PPV_ARGS(&texture))) || !texture)
+        return false;
 
       D3D11_TEXTURE3D_DESC desc = { };
       texture->GetDesc(&desc);
@@ -1467,9 +1483,8 @@ void recordTransitionMapDetail(ID3D11Resource* resource, UINT subresource,
 D3D11_BOX getResourceBox(
   const ATFIX_RESOURCE_INFO*      pInfo,
         UINT                      Subresource) {
-  // Mips is 0 only when getResourceInfo failed and the caller did not check,
-  // which tryCpuCopy does not for its source. A divide by zero is not a
-  // graceful way to find that out.
+  // Mips is 0 only when getResourceInfo failed and the caller did not check.
+  // A divide by zero is not a graceful way to find that out.
   uint32_t mip = pInfo->Mips ? Subresource % pInfo->Mips : 0;
 
   uint32_t w = std::max(pInfo->Width >> mip, 1u);
@@ -1516,8 +1531,14 @@ ID3D11Resource* createShadowResourceLocked(
 
   switch (resourceInfo.Dim) {
     case D3D11_RESOURCE_DIMENSION_BUFFER: {
+      // Same reason as getResourceInfo: an unanswered query would fault on
+      // GetDesc, and a failed HRESULT here is the path the caller handles.
       ID3D11Buffer* buffer = nullptr;
-      pBaseResource->QueryInterface(IID_PPV_ARGS(&buffer));
+      if (FAILED(pBaseResource->QueryInterface(IID_PPV_ARGS(&buffer))) ||
+          !buffer) {
+        hr = E_FAIL;
+        break;
+      }
 
       D3D11_BUFFER_DESC desc = { };
       buffer->GetDesc(&desc);
@@ -1537,7 +1558,11 @@ ID3D11Resource* createShadowResourceLocked(
 
     case D3D11_RESOURCE_DIMENSION_TEXTURE1D: {
       ID3D11Texture1D* texture = nullptr;
-      pBaseResource->QueryInterface(IID_PPV_ARGS(&texture));
+      if (FAILED(pBaseResource->QueryInterface(IID_PPV_ARGS(&texture))) ||
+          !texture) {
+        hr = E_FAIL;
+        break;
+      }
 
       D3D11_TEXTURE1D_DESC desc = { };
       texture->GetDesc(&desc);
@@ -1556,7 +1581,11 @@ ID3D11Resource* createShadowResourceLocked(
 
     case D3D11_RESOURCE_DIMENSION_TEXTURE2D: {
       ID3D11Texture2D* texture = nullptr;
-      pBaseResource->QueryInterface(IID_PPV_ARGS(&texture));
+      if (FAILED(pBaseResource->QueryInterface(IID_PPV_ARGS(&texture))) ||
+          !texture) {
+        hr = E_FAIL;
+        break;
+      }
 
       D3D11_TEXTURE2D_DESC desc = { };
       texture->GetDesc(&desc);
@@ -1575,7 +1604,11 @@ ID3D11Resource* createShadowResourceLocked(
 
     case D3D11_RESOURCE_DIMENSION_TEXTURE3D: {
       ID3D11Texture3D* texture = nullptr;
-      pBaseResource->QueryInterface(IID_PPV_ARGS(&texture));
+      if (FAILED(pBaseResource->QueryInterface(IID_PPV_ARGS(&texture))) ||
+          !texture) {
+        hr = E_FAIL;
+        break;
+      }
 
       D3D11_TEXTURE3D_DESC desc = { };
       texture->GetDesc(&desc);
@@ -2597,14 +2630,16 @@ HRESULT tryCpuCopy(
 
   auto procs = getContextProcs(pContext);
   ATFIX_RESOURCE_INFO dstInfo = { };
-  getResourceInfo(pDstResource, &dstInfo);
+  if (!getResourceInfo(pDstResource, &dstInfo))
+    return E_INVALIDARG;
 
   if (!isCpuWritableResource(&dstInfo))
     return E_INVALIDARG;
 
   /* Compute source region for the given copy */
   ATFIX_RESOURCE_INFO srcInfo = { };
-  getResourceInfo(pSrcResource, &srcInfo);
+  if (!getResourceInfo(pSrcResource, &srcInfo))
+    return E_INVALIDARG;
 
   /* A format the size table cannot answer for (block-compressed, or a gap in
    * the table) would run the texel loop below at the wrong row size and the
@@ -2615,20 +2650,27 @@ HRESULT tryCpuCopy(
   if (!getFormatPixelSize(dstInfo.Format) || !getFormatPixelSize(srcInfo.Format))
     return E_NOTIMPL;
 
-  D3D11_BOX srcBox = getResourceBox(&srcInfo, SrcSubresource);
+  const D3D11_BOX srcExtent = getResourceBox(&srcInfo, SrcSubresource);
+  D3D11_BOX srcBox = srcExtent;
   D3D11_BOX dstBox = getResourceBox(&dstInfo, DstSubresource);
 
   if (pSrcBox)
     srcBox = *pSrcBox;
 
   // D3D11 drops a copy whose destination origin lies outside the destination,
-  // and one with an inverted source box. The CPU path has to reject the same
-  // ones: the clamps below are unsigned, so an out-of-range origin wraps instead
-  // of clamping and the copy runs at full source width past the end of the
-  // mapping. Failing here falls back to the real GPU copy. DstX == dstBox.right
-  // is left to the zero-extent check below, which treats it as a no-op.
+  // one whose source box reaches outside the source, and one with an inverted
+  // source box. The CPU path has to reject the same ones: the clamps below are
+  // unsigned, so an out-of-range origin wraps instead of clamping and the copy
+  // runs at full source width past the end of the mapping. The source side
+  // needs the same treatment as the destination side, because only the extent
+  // is clamped below and the offset the loop reads from comes straight out of
+  // the caller's box. Failing here falls back to the real GPU copy. DstX ==
+  // dstBox.right is left to the zero-extent check below, which treats it as a
+  // no-op.
   if (srcBox.right < srcBox.left || srcBox.bottom < srcBox.top ||
       srcBox.back < srcBox.front ||
+      srcBox.right > srcExtent.right || srcBox.bottom > srcExtent.bottom ||
+      srcBox.back > srcExtent.back ||
       DstX > dstBox.right || DstY > dstBox.bottom || DstZ > dstBox.back)
     return E_INVALIDARG;
 
@@ -3030,11 +3072,15 @@ void STDMETHODCALLTYPE ID3D11DeviceContext_CopyStructureCount(
   ID3D11Buffer*   shadowBuffer   = nullptr;
 
   if (shadowResource) {
-    shadowResource->QueryInterface(IID_PPV_ARGS(&shadowBuffer));
+    const HRESULT hr = shadowResource->QueryInterface(IID_PPV_ARGS(&shadowBuffer));
     shadowResource->Release();
 
-    procs->CopyStructureCount(pContext, shadowBuffer, DstOffset, pSrcUav);
-    shadowBuffer->Release();
+    // The shadow of a buffer is a buffer, so the query answers; a failure would
+    // otherwise reach Release through a null pointer.
+    if (SUCCEEDED(hr) && shadowBuffer) {
+      procs->CopyStructureCount(pContext, shadowBuffer, DstOffset, pSrcUav);
+      shadowBuffer->Release();
+    }
   }
 }
 

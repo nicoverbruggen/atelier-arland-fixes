@@ -119,10 +119,17 @@ D3D11Proc loadSystemD3D11() {
   } else {
     std::array<char, MAX_PATH + 1> path = { };
 
-    if (!GetSystemDirectoryA(path.data(), MAX_PATH))
+    // strncat's third argument is how much it may append, not how much room is
+    // left, so it cannot express this bound. Measure instead: the returned
+    // length is what GetSystemDirectoryA wrote, and the append needs room for
+    // the separator, the name and the terminator.
+    const UINT length = GetSystemDirectoryA(path.data(), MAX_PATH);
+    const char suffix[] = "\\d3d11.dll";
+
+    if (!length || length + sizeof(suffix) > path.size())
       return D3D11Proc();
 
-    std::strncat(path.data(), "\\d3d11.dll", MAX_PATH);
+    std::memcpy(path.data() + length, suffix, sizeof(suffix));
     log("D3D11 forwarding: system d3d11.dll");
     if (atfix::verboseLogging())
       log("D3D11 system path: ", path.data());
