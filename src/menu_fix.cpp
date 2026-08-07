@@ -1530,14 +1530,20 @@ uintptr_t cachedRenderText(uintptr_t a, uintptr_t b,
         // total rather than capping it: an eviction policy here would drop an
         // entry a replay is about to consume, which is the re-render this cache
         // exists to avoid.
+        // Every sixteenth store, and on the last store before a clear. A whole
+        // conversation makes only tens of stores, because the typewriter reveal
+        // caches one partial string at a time, so a coarser interval reports
+        // the cache at its emptiest and answers nothing.
         if (atfix::verboseLogging()) {
           static uint32_t reported = 0;
-          if (reported++ % 256 == 0) {
+          const bool atLimit = renderBitmapCache.size() >= 511;
+          if (reported++ % 16 == 0 || atLimit) {
             size_t total = 0;
             for (const auto& entry : renderBitmapCache)
               total += entry.second.bytes.size();
             atfix::log("DIAGNOSTICS replay_cache entries=",
-              std::dec, renderBitmapCache.size(), " bytes=", total);
+              std::dec, renderBitmapCache.size(), " bytes=", total,
+              atLimit ? " (at the limit, clears next)" : "");
           }
         }
       }
