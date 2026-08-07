@@ -2,13 +2,9 @@
 
 ## v0.15
 
-### Removed
-
-- **`DisplayWidth=game`, which asked the mod to keep whatever resolution the game's own settings program had chosen.** The launcher could neither show it nor preserve it, so opening the launcher and saving replaced it without saying so. An `arland-fix.ini` that still holds it now presents at your desktop resolution, which is what a blank value does. To run at the games' own 1280x720, set `DisplayWidth` and `DisplayHeight` to those numbers.
-
 ### Fixed
 
-- **Various internal safety and correctness fixes.** These touch the conversation text cache in Atelier Meruru DX, where a rare mismatch could have corrupted memory and crashed the game, the battle state tracking, and the synthesis animation. Nothing about how the mod is configured, or what it does, has changed.
+- **Various internal safety and correctness fixes.**
 
 ## v0.14
 
