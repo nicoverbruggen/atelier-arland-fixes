@@ -24,7 +24,7 @@
 #include "stream_lifetime_fix.h"
 #include "shop_fix.h"
 #include "field_collision_fix.h"
-#include "save_menu_fix.h"
+#include "fast_save_menu.h"
 #include "logo_skip.h"
 #include "movie_skip.h"
 #include "mix_card.h"

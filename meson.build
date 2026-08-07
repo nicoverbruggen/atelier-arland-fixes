@@ -90,7 +90,7 @@ else
     'src/stream_lifetime_fix.cpp',
     'src/shop_fix.cpp',
     'src/field_collision_fix.cpp',
-    'src/save_menu_fix.cpp',
+    'src/fast_save_menu.cpp',
     'src/logo_skip.cpp',
     'src/movie_skip.cpp',
     'src/mix_card.cpp',

@@ -532,7 +532,14 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved) {
       break;
 
     case DLL_PROCESS_DETACH:
-      MH_Uninitialize();
+      // Only on dynamic unload, where the detours have to be removed before the
+      // code they jump into unmaps. On process exit lpvReserved is non-null, the
+      // other threads are already terminated, and MinHook's thread freeze
+      // (CreateToolhelp32Snapshot under the loader lock) can wait forever on a
+      // lock a killed thread still holds, which leaves the process unable to
+      // finish closing.
+      if (lpvReserved == nullptr)
+        MH_Uninitialize();
       break;
   }
 

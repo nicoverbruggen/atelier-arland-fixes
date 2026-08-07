@@ -71,7 +71,7 @@
 #include "game.h"
 #include "hook_util.h"
 #include "log.h"
-#include "save_menu_fix.h"
+#include "fast_save_menu.h"
 
 namespace atfix {
 
@@ -315,9 +315,10 @@ bool installCarriedPressRepair(BYTE* base, const Game& game) {
 // All or nothing. A half-applied set would leave the view reachable through one
 // path and gated through another, which is the worst thing to hand someone
 // trying to measure whether this helped.
-// Put back the original branch bytes for the first `count` gates. Used only to
-// unwind a patch loop that failed part way, so the executable is left as the
-// game shipped it rather than half patched.
+// Put back the original branch bytes for the first `count` gates. Used to unwind
+// a patch loop that failed part way, and to put every gate back when the
+// carried-press repair cannot install, so the executable is left as the game
+// shipped it rather than half patched.
 void restoreGates(BYTE* base, const Gate* gates, size_t count) {
   for (size_t i = 0; i < count; ++i) {
     BYTE* branch = base + gates[i].comissRva + gates[i].branchOffset;
@@ -392,9 +393,18 @@ bool installSaveMenuFix(BYTE* base, const Game& game) {
   }
   const bool ok = applyGates(base, gates, count);
   log("FIXES save_menu_gates=", ok ? "active" : "failed");
-  if (ok)
-    installCarriedPressRepair(base, game);
-  return ok;
+  if (!ok)
+    return false;
+  if (!installCarriedPressRepair(base, game)) {
+    // The gates must not outlive the repair. With the waits removed the view
+    // opens in time to catch the release of the press that opened it, which is
+    // the defect the repair exists for, so put the branches back and leave the
+    // game behaving as it shipped.
+    restoreGates(base, gates, count);
+    log("FIXES save_menu_gates=rolled_back");
+    return false;
+  }
+  return true;
 }
 
 }  // namespace atfix
