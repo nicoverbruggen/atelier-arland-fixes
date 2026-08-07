@@ -942,8 +942,11 @@ void loadFromIni() {
 // English because they wanted their graphics settings back would be a hostile
 // reading of "defaults". saveToIni writes it back unchanged from its control.
 //
-// The values here are the same ones default.ini ships and src/ parses, so a
-// reset and a fresh install land on the same configuration.
+// Apart from the resolution and window mode, the values here are the same ones
+// default.ini ships and src/ parses, so a reset otherwise lands on a fresh
+// install's configuration. Those two deliberately differ from a fresh install,
+// which leaves the display keys blank (desktop resolution) with Borderless on;
+// the confirmation dialog states the difference.
 void resetToDefaults() {
   // 720p windowed: the safe floor. It is the one resolution every display this
   // runs on can show, including a handheld, so a reset from a configuration

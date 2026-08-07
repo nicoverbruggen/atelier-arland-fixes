@@ -502,8 +502,12 @@ size_t dispatchBattleCharaShadows(uintptr_t helper, uintptr_t scene) {
         // The list is not cleared between battles, so an entry can name an
         // object the engine has already freed. readableRange first, exactly as
         // registerBattleCharaShadows does before the same dereference; the
-        // vtable test alone would happily pass on recycled bytes.
-        if (!readableRange(chara, 0x20))
+        // vtable test alone would happily pass on recycled bytes. The init flag
+        // sits far past the 0x20 header (0x2d0 on Rorona, the only build that
+        // reaches this loop), so it needs its own check: the header window
+        // proves nothing about a page boundary before the flag.
+        if (!readableRange(chara, 0x20) ||
+            !readableRange(chara + g_battleAddrs->initFlagOffset, 1))
           continue;
         const uintptr_t vtable = *reinterpret_cast<const uintptr_t*>(chara);
         if (!isBattleCharaVtable(vtable))
@@ -878,6 +882,15 @@ uintptr_t tracedDeferredHideArm(uintptr_t obj, uintptr_t target,
 uintptr_t tracedTacticalHideAll(uintptr_t a, uintptr_t b,
                                 uintptr_t c, uintptr_t d) {
   const uintptr_t result = originalTacticalHideAll(a, b, c, d);
+  // Every hideAll, whether or not the clear below runs. CUTIN_SNODE_CLEAR is not
+  // enough on its own: it is silent when the tactical hooks are off and when the
+  // walk bails on its range checks, and neither is distinguishable from a cut-in
+  // that never calls hideAll at all, which is the question this answers.
+  if (sceneTraceEnabled())
+    atfix::log("TACTICAL_HIDE_ALL state=",
+      currentBattleState() ? currentBattleState() : "?",
+      " active=", g_battleActive.load(std::memory_order_acquire),
+      " hooks=", g_tacticalHooksActive.load(std::memory_order_acquire));
   // Both halves of the pair or neither. Only tracedTacticalShowAll sets a
   // restore deadline, so clearing here with showAll missing would drop every
   // caster's shadow for the rest of the session with no path back. The
@@ -1121,10 +1134,14 @@ bool installRoronaBattleShadowRestore(BYTE* base, const Game& game) {
     return false;
   originalShadowCharacterBuild =
     reinterpret_cast<ShadowCharacterBuildProc>(character);
-  if (!installMinHookDetour(helperInit,
-      reinterpret_cast<void*>(&tracedShadowHelperInit),
-      reinterpret_cast<void**>(&originalShadowHelperInit)))
-    return false;
+  // Observers first, publisher last, the fan-out's usual ordering. The three
+  // detours below only record into mod-owned containers, and the helper/scene
+  // publish that writes engine state lives in tracedShadowHelperInit, so a
+  // failure part-way through this chain leaves detours that observe and never
+  // act: registerBattleCharaShadows returns before touching the global slot
+  // while g_battleHelper is still zero. With the publisher first, a later
+  // failure would leave the publish machinery live behind a log that says
+  // shadows=failed.
   if (!installMinHookDetour(battleActorInit,
       reinterpret_cast<void*>(&tracedBattleActorInit),
       reinterpret_cast<void**>(&originalBattleActorInit)))
@@ -1133,9 +1150,13 @@ bool installRoronaBattleShadowRestore(BYTE* base, const Game& game) {
       reinterpret_cast<void*>(&tracedBtlCharaPartyCtor),
       reinterpret_cast<void**>(&originalBtlCharaPartyCtor)))
     return false;
-  return installMinHookDetour(monsterCtor,
+  if (!installMinHookDetour(monsterCtor,
       reinterpret_cast<void*>(&tracedBtlCharaMonsterCtor),
-      reinterpret_cast<void**>(&originalBtlCharaMonsterCtor));
+      reinterpret_cast<void**>(&originalBtlCharaMonsterCtor)))
+    return false;
+  return installMinHookDetour(helperInit,
+      reinterpret_cast<void*>(&tracedShadowHelperInit),
+      reinterpret_cast<void**>(&originalShadowHelperInit));
 }
 
 // Meruru (A13V) battle wiring. Unlike Rorona, Meruru's engine revision already
@@ -1371,7 +1392,11 @@ uintptr_t tracedBattleModeDtor(uintptr_t self) {
 // identifies them is that each installs the GameModeBattle vtable: find the
 // `lea rax, [rip+disp32]` in the prologue and require its target to be that
 // vtable. That is the identity claim itself rather than a proxy for it, and it
-// re-derives per build from the pack's own numbers.
+// re-derives per build from the pack's own numbers. The residual it accepts: a
+// build revision that keeps the vtable install but changes the body would still
+// pass, where a byte window would decline. The detours only bracket the
+// original call with mod-side bookkeeping, so what that residual risks is
+// tracking quality, not a bad write into moved code.
 bool installsBattleModeVtable(BYTE* function, BYTE* base, uintptr_t vtableRva) {
   for (size_t offset = 0; offset + 7 <= 0x60; ++offset) {
     if (function[offset] != 0x48 || function[offset + 1] != 0x8d ||

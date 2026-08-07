@@ -6,7 +6,8 @@
 // the normalized used/pot metrics so the on-screen quad is unchanged in size and
 // position — only its texel density increases. Two modes, selected by
 // [Rendering] Font / ARLAND_UIFONT: "replaced" (the default) re-renders the string
-// from a bundled scalable font (Cuprum), falling back to "upscaled" for glyphs it
+// from a bundled scalable font (per game: National Park, Nunito, or Cosmetica
+// Medium), falling back to "upscaled" for glyphs it
 // can't resolve; "upscaled" filter-upscales the engine's own baked glyphs,
 // preserving its exact layout (multi-line/align/icons). Active on any recognized
 // Arland title, English builds only. Implementation in font_hires.cpp.

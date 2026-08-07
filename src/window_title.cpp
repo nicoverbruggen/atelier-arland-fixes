@@ -126,6 +126,16 @@ bool applyAsciiTitle(HWND window, const char* text) {
   // replaced by the game's title. The game's own window has no parent.
   if (GetParent(window))
     return false;
+  // And only windows the executable itself created: these detours are
+  // process-wide, so another injected DLL's top-level window with a non-ASCII
+  // caption would otherwise be renamed too. The game's window qualifies: all
+  // three multilingual builds pass their own image base as the instance to
+  // CreateWindowExA (lea rcx, [__ImageBase] at every call site into the
+  // window-create routine), the same value the window-background fix already
+  // matches at class registration.
+  if (reinterpret_cast<HINSTANCE>(GetWindowLongPtrW(window, GWLP_HINSTANCE)) !=
+      GetModuleHandleW(nullptr))
+    return false;
   const char* ascii = asciiTitleForGame();
   if (!ascii)
     return false;
@@ -172,9 +182,10 @@ void installWindowTitleFix() {
   if (!gameLanguageIsJapanese())
     return;
 
+  // user32 is a static import of this DLL, so the loader has mapped it before
+  // this runs and the lookup cannot fail. No LoadLibrary fallback: this is
+  // called from DllMain, where LoadLibrary is forbidden.
   HMODULE user32 = GetModuleHandleW(L"user32.dll");
-  if (!user32)
-    user32 = LoadLibraryW(L"user32.dll");
   if (!user32) {
     log("Window-title fix: user32.dll unavailable");
     return;

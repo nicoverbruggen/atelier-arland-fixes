@@ -71,6 +71,7 @@
 #include "game.h"
 #include "hook_util.h"
 #include "log.h"
+#include "mem.h"
 #include "fast_save_menu.h"
 
 namespace atfix {
@@ -296,6 +297,19 @@ bool installCarriedPressRepair(BYTE* base, const Game& game) {
   if (!matches(update, site->expected)) {
     log("FIXES save_menu_carried_press=signature_mismatch at 0x", std::hex,
         site->updateRva, std::dec);
+    return false;
+  }
+
+  // The pad block is a fixed image global the detour writes every frame the
+  // view is open, so it gets the install-time writableRange proof mem.h asks
+  // for. One range covers both arrays: previous sits 0x10 above current, so the
+  // block is 0x10 + kButtonCount bytes from the current-state base. The
+  // prologue match above proves the function; this proves the separate
+  // per-build array RVA on the same table row.
+  if (!writableRange(reinterpret_cast<uintptr_t>(base + site->heldStateRva),
+                     0x10 + kButtonCount)) {
+    log("FIXES save_menu_carried_press=state_unmapped at 0x", std::hex,
+        site->heldStateRva, std::dec);
     return false;
   }
 

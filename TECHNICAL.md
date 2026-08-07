@@ -31,6 +31,7 @@
 - [Opening-movie skip](#opening-movie-skip)
 - [Save data slots view pacing](#save-data-slots-view-pacing)
 - [Startup window background](#startup-window-background)
+- [Window title on Western locales](#window-title-on-western-locales)
 - [Diagnostics](#diagnostics)
 - [Runtime memory manipulation](#runtime-memory-manipulation)
 - [Hook boundaries](#hook-boundaries)
@@ -79,6 +80,8 @@ The fiddly part is the housekeeping around it. Code pages are not writable by de
 
 That last point is why the mod checks the exact bytes at the target before touching it. It knows which instructions it expects to find, and moving them correctly depends on that being true.
 
+Two detours (the window title and the startup background) are installed while Windows is still running the mod's own load, before the game's first instruction, because they must be in place before the game registers its window class. Installing a detour that early is normal practice for this kind of tool; what makes it sharp is the library doing the installing. MinHook's enable path suspends every other thread in the process and takes a spin lock with no timeout. At that moment the process has exactly one thread, which is why it is safe there, and why the same call would need more care anywhere else.
+
 ### Why the byte check is the whole safety story
 
 A function's address is only meaningful for one exact build of one executable. Recompile the game and everything moves. So an address on its own is a guess, and acting on a wrong guess means writing a jump into the middle of an instruction, or into a function that does something else entirely.
@@ -89,7 +92,7 @@ The mod therefore never treats an address as sufficient. Every target carries th
 
 Not everything needs a detour.
 
-Direct3D objects are COM objects, which means the game holds a pointer to a table of function pointers. Replacing an entry in that table redirects every call made through it, without patching any code at all. Most of the mod's graphics work is done this way.
+Direct3D objects are COM objects, which means the game holds a pointer to a table of function pointers. The mod reads a function's address out of that table and then detours the function itself, exactly as it does for game code; the table is never written. Most of the mod's graphics work is done this way. Two consequences follow. The detour catches every Direct3D device and context in the process, not only the game's, because it patches the implementation every one of them shares; the hooks therefore guard on state they own rather than assuming the game is the caller. And the game keeps the real Direct3D objects, so nothing that compares object identity can tell the mod is present. That is a deliberate choice over wrapping the objects in substitutes, which is the other established approach (ReShade wraps; Special K detours as the mod does): a wrapper must reimplement COM identity and unwrap itself for system code, which is a large amount of machinery for a mod that alters a bounded set of methods.
 
 And when the change is simply "do not take this branch", the branch instruction can be overwritten with instructions that do nothing. There is no jump, no trampoline, and no mod code in the path at run time. The waits in front of the save data slots view are removed exactly like this.
 
@@ -504,7 +507,7 @@ Supersampling renders the entire game at a higher resolution and then shrinks it
 
 ### Safety
 
-Only the game's own backbuffer views are redirected, and a view whose format the substitute cannot present is declined; that frame simply renders normally. Where the aspect ratios differ, the frame gets black bars; the picture is never stretched to fit. Those bars are cleared every frame, so nothing stale can show through. The render size is capped, with the aspect preserved, at a point well past where these 2010-era assets have any detail left to give. If a build ever failed to bind the backbuffer the way this depends on, the mod leaves the image alone and says so in the log, rather than quietly doing nothing.
+Only the game's own backbuffer views are redirected, and a view whose format the substitute cannot present is declined; that frame simply renders normally. The downscale pass saves and restores every piece of graphics state it binds, the same discipline the SMAA passes follow, so the context leaves Present exactly as the game left it. Where the aspect ratios differ, the frame gets black bars; the picture is never stretched to fit. Those bars are cleared every frame, so nothing stale can show through. The render size is capped, with the aspect preserved, at a point well past where these 2010-era assets have any detail left to give. If a build ever failed to bind the backbuffer the way this depends on, the mod leaves the image alone and says so in the log, rather than quietly doing nothing.
 
 ### Details
 
@@ -746,6 +749,24 @@ The mod intercepts the call that registers the class, copies the structure the g
 
 The interception is installed when the mod's DLL is loaded, which happens before the game's own startup code runs. That timing is the point: the class is registered once, early, and a change made after that would be too late to matter.
 
+## Window title on Western locales
+
+### TL;DR
+
+Running the multilingual build in Japanese on a Western system shows garbage in the title bar. Windows cannot show the real Japanese title there at all, so the mod substitutes a readable ASCII transliteration of it. Always on when that exact situation is detected, and inert everywhere else.
+
+### Safety
+
+The substitution installs only on the three multilingual executables, only when the game's language setting is Japanese, and only when the system codepage can render neither Japanese nor UTF-8; any other combination leaves the hooks uninstalled or inert. Within such a process it replaces a title only on a top-level window that the game executable itself created and whose title actually contains non-ASCII bytes, so child controls and windows belonging to other injected software are never touched.
+
+### Details
+
+The multilingual build passes its UTF-8 Japanese title to the ANSI window API. On a system whose ANSI codepage is not UTF-8, which is the normal case under Wine and Proton and on Western Windows, those bytes decode as the wrong characters and the title bar shows mojibake. The window cannot be given the correct Japanese text either: it is an ANSI-classed window, so even the Unicode API's text is converted through the system codepage on the way in, and the Japanese characters collapse to question marks. That was confirmed by writing the title through the Unicode API and reading back what was stored.
+
+Plain ASCII is what survives that conversion, so the mod substitutes a per-game ASCII transliteration of the Japanese title ("Rorona no Atelier ~Arland no Renkinjutsushi~ DX" and so on), hooking window creation and the title-setting call. Both hooks act only on a top-level window created by the game executable itself. The instance check is backed by the disassembly: all three multilingual builds pass their own module handle into both the window-class registration and the window creation call, so the game's window always qualifies and foreign windows never do.
+
+The hooks are installed at DLL load, before the game creates its window, for the same reason as the background fix above. On a Japanese system codepage, or a UTF-8 one, the real title renders and nothing installs.
+
 ## Diagnostics
 
 Every session log opens with the commit the binary was built from, as `build=<hash>`, with `-dirty` appended when the working tree carried uncommitted changes and `unknown` when the build had no git available. A version number cannot answer "which binary is this": a local build and a tagged release can both report the same version while differing by a shipped fix, and a crash report was once diagnosed against the wrong binary for exactly that reason. The stamp is generated by `vcs_tag`, so it is re-evaluated on every build rather than frozen when the build directory was configured.
@@ -829,7 +850,7 @@ No game file is ever modified. Every change lives in the running process's memor
 
 ### Details
 
-The 64-bit `d3d11.dll` is a proxy for the system D3D11 library. It exports the device-creation functions the game expects, then forwards them to `d3d11_proxy.dll` when one has been installed for chain-loading, or to the real `d3d11.dll` from the Windows system directory otherwise. This lets the mod observe device creation and install its rendering hooks without replacing the graphics implementation. The 32-bit `msimg32.dll` uses the same pattern for the stock launchers: it forwards `AlphaBlend` and `TransparentBlt` to the system MSIMG32 library while applying only the launcher-specific behavior described above.
+The 64-bit `d3d11.dll` is a proxy for the system D3D11 library. It exports the device-creation functions the game expects, then forwards them to `d3d11_proxy.dll` when one has been installed for chain-loading, or to the real `d3d11.dll` from the Windows system directory otherwise. This lets the mod observe device creation and install its rendering hooks without replacing the graphics implementation. Impersonating `d3d11.dll` rather than `dxgi.dll` is deliberate: system libraries, the real `d3d11.dll` among them, statically import functions from `dxgi.dll`, so a substitute `dxgi.dll` that misses one export stops the process from loading at all, while a `d3d11.dll` proxy only has to satisfy what the game itself asks for by name. The swap chain is intercepted through the device instead. The 32-bit `msimg32.dll` uses the same pattern for the stock launchers: it forwards `AlphaBlend` and `TransparentBlt` to the system MSIMG32 library while applying only the launcher-specific behavior described above.
 
 Most executable changes are detours. After verifying the target function, the mod temporarily makes its code page writable, places a jump to a mod function at the entry point, restores the page protection, and flushes the processor's instruction cache. A trampoline preserves the displaced instructions and jumps back to the original function, so the mod can do work before or after normal engine behavior without replacing the routine. MinHook provides this mechanism for most game and D3D11 functions; a small in-project equivalent handles the few targets that need a fixed-size absolute jump. The launcher proxy similarly patches the stock launcher's verified entry point in memory, never in the executable on disk.
 

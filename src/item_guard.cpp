@@ -1574,8 +1574,15 @@ bool installItemGuard(BYTE* base, const Game& game) {
         reinterpret_cast<void**>(&originalItemEffectBuild));
   }
   const bool installed = effectOk && traitOk && itemEffectBuildOk;
+  // "partial" rather than "failed" when some detours are live: each is
+  // behaviour-preserving on its own, but a status that reads as "the game is
+  // untouched" while detours run would be wrong in the worst way a log line
+  // can be.
+  const bool anyInstalled = effectOk || traitOk || itemEffectBuildOk;
   log("FIXES item_scan_guard=",
-      guardEnabled() ? (installed ? "active" : "failed") : "off",
+      guardEnabled()
+        ? (installed ? "active" : anyInstalled ? "partial" : "failed")
+        : "off",
       " effects=", g_effectTable.recordLimit,
       " traits=", g_traitTable.recordLimit);
   if (verboseLogging())

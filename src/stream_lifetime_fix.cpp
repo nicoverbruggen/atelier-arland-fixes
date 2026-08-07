@@ -25,6 +25,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include "config.h"
 #include "log.h"
 #include "stream_lifetime_fix.h"
 
@@ -119,6 +120,14 @@ constexpr StreamAddrs kTotoriMulti = {
 constexpr uintptr_t kRefcountOffset = 0x08;
 constexpr uintptr_t kIndexCurrentOffset = 0xc30;
 constexpr uintptr_t kIndexCacheOffset = 0x90;
+// The command stream is a bank of buffers, not one: +0x2b18 is the base of the
+// current buffer and +0x2b28 the write cursor, and the engine's check-and-
+// advance routine moves both to the next buffer in the bank mid-call (totori-en
+// 0x4af493, reached from 0x4acf1c and ten siblings; the same instruction pair is
+// at totori-ml 0x72ca93). Two cursors read either side of a producer call can
+// therefore sit in different allocations, so the base is read alongside the
+// cursor and the search between them only runs when it has not moved.
+constexpr uintptr_t kCommandBaseOffset = 0x2b18;
 constexpr uintptr_t kCommandEndOffset = 0x2b28;
 constexpr uintptr_t kVertexCacheOffset = 0x2b0;
 constexpr uintptr_t kVertexStrideCacheOffset = 0x3b0;
@@ -201,6 +210,16 @@ void drainDeferredReleases() {
   std::vector<PinnedCommand> ready;
   {
     std::lock_guard<std::mutex> lock(g_pinMutex);
+    // Neither container is ever cleared wholesale. Both reclaim implicitly: the
+    // command bank cycles, so a stale pin is displaced and released the next
+    // time its address carries a command, and the deferred queue is drained by
+    // the thread that produced. Report the sizes so the reclaim can be seen to
+    // work: flat over a session is the answer, rising names an event nobody has
+    // been able to name.
+    static uint32_t reported = 0;
+    if (verboseLogging() && reported++ % 3600 == 0)
+      log("STREAM LIFETIME pins=", g_pins.size(),
+          " deferred=", g_deferredReleases.size());
     for (size_t i = 0; i < g_deferredReleases.size();) {
       if (g_deferredReleases[i].producerThread != thread) {
         ++i;
@@ -332,6 +351,8 @@ uintptr_t STDMETHODCALLTYPE correctedIndexProducer(uintptr_t core) {
   if (!wrapper)
     return originalIndexProducer(core);
 
+  const uintptr_t beforeBase =
+    *reinterpret_cast<const uintptr_t*>(renderer + kCommandBaseOffset);
   const uintptr_t before =
     *reinterpret_cast<const uintptr_t*>(renderer + kCommandEndOffset);
   const PinnedCommand pin{
@@ -339,11 +360,14 @@ uintptr_t STDMETHODCALLTYPE correctedIndexProducer(uintptr_t core) {
   pinWrapper(wrapper);
   const uint64_t publication = beginPublication(pin);
   const uintptr_t result = originalIndexProducer(core);
+  const uintptr_t afterBase =
+    *reinterpret_cast<const uintptr_t*>(renderer + kCommandBaseOffset);
   const uintptr_t after =
     *reinterpret_cast<const uintptr_t*>(renderer + kCommandEndOffset);
-  const uintptr_t command = findQueuedCommand(
-    before, after, kIndexCommand, wrapper,
-    kIndexPointerOffset, kIndexCommandSize);
+  const uintptr_t command = beforeBase == afterBase
+    ? findQueuedCommand(before, after, kIndexCommand, wrapper,
+        kIndexPointerOffset, kIndexCommandSize)
+    : 0;
   const PublicationResult published =
     finishPublication(publication, command, pin);
   if (command)
@@ -380,6 +404,8 @@ void STDMETHODCALLTYPE correctedVertexProducer(
     return;
   }
 
+  const uintptr_t beforeBase =
+    *reinterpret_cast<const uintptr_t*>(renderer + kCommandBaseOffset);
   const uintptr_t before =
     *reinterpret_cast<const uintptr_t*>(renderer + kCommandEndOffset);
   const PinnedCommand pin{
@@ -387,11 +413,14 @@ void STDMETHODCALLTYPE correctedVertexProducer(
   pinWrapper(wrapper);
   const uint64_t publication = beginPublication(pin);
   originalVertexProducer(renderer, slot, wrapper, stride, offset);
+  const uintptr_t afterBase =
+    *reinterpret_cast<const uintptr_t*>(renderer + kCommandBaseOffset);
   const uintptr_t after =
     *reinterpret_cast<const uintptr_t*>(renderer + kCommandEndOffset);
-  const uintptr_t command = findQueuedCommand(
-    before, after, kVertexCommand, wrapper,
-    kVertexPointerOffset, kVertexCommandSize);
+  const uintptr_t command = beforeBase == afterBase
+    ? findQueuedCommand(before, after, kVertexCommand, wrapper,
+        kVertexPointerOffset, kVertexCommandSize)
+    : 0;
   const PublicationResult published =
     finishPublication(publication, command, pin);
   if (command)

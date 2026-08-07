@@ -211,14 +211,20 @@ bool resolveGameExecutable(std::array<wchar_t, 32768>& out) {
 // were not installed.
 void runOriginalEntryPoint() {
   DWORD oldProtect = 0;
-  if (VirtualProtect(g_entryPoint, g_entryOriginal.size(),
+  if (!VirtualProtect(g_entryPoint, g_entryOriginal.size(),
       PAGE_EXECUTE_READWRITE, &oldProtect)) {
-    std::memcpy(g_entryPoint, g_entryOriginal.data(), g_entryOriginal.size());
-    DWORD ignored = 0;
-    VirtualProtect(g_entryPoint, g_entryOriginal.size(), oldProtect, &ignored);
-    FlushInstructionCache(GetCurrentProcess(), g_entryPoint,
-      g_entryOriginal.size());
+    // The entry point still holds the redirect jump, so calling it would land
+    // back in redirectedEntryPoint, whose failure path is this function, and
+    // recurse until the stack runs out. With the restore refused there is no
+    // way left to run the stock launcher; exit instead.
+    launcherLog("could not restore the launcher entry point; exiting");
+    ExitProcess(1);
   }
+  std::memcpy(g_entryPoint, g_entryOriginal.data(), g_entryOriginal.size());
+  DWORD ignored = 0;
+  VirtualProtect(g_entryPoint, g_entryOriginal.size(), oldProtect, &ignored);
+  FlushInstructionCache(GetCurrentProcess(), g_entryPoint,
+    g_entryOriginal.size());
   reinterpret_cast<void (*)()>(g_entryPoint)();
 }
 

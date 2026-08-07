@@ -59,11 +59,14 @@ ATOM WINAPI hookedRegisterClassExA(const WNDCLASSEXA* wc) {
   if (!wc)
     return originalRegisterClassExA(wc);
 
-  // Three conditions have to hold together: our engine's class name, and the
-  // grey stock brush specifically. Stock-object handles are process-wide
-  // constants, so the comparison is exact. Anything else registers unchanged,
-  // which also means this quietly stands down if a build ever stops doing it.
-  if (!isEngineClass(wc) ||
+  // Three conditions have to hold together: the class comes from the executable
+  // itself rather than from an injected DLL, it carries our engine's class name,
+  // and its background is the grey stock brush specifically. Stock-object
+  // handles are process-wide constants, so that comparison is exact. Anything
+  // else registers unchanged, which also means this quietly stands down if a
+  // build ever stops doing it. ReShade gates the same API the same way on
+  // hInstance (source/windows/user32.cpp).
+  if (wc->hInstance != GetModuleHandleW(nullptr) || !isEngineClass(wc) ||
       wc->hbrBackground != static_cast<HBRUSH>(GetStockObject(GRAY_BRUSH)))
     return originalRegisterClassExA(wc);
 
@@ -86,9 +89,10 @@ void installWindowBackgroundFix() {
   if (currentTitle() == Title::Unknown)
     return;
 
+  // user32 is a static import of this DLL, so the loader has mapped it before
+  // this runs and the lookup cannot fail. No LoadLibrary fallback: this is
+  // called from DllMain, where LoadLibrary is forbidden.
   HMODULE user32 = GetModuleHandleW(L"user32.dll");
-  if (!user32)
-    user32 = LoadLibraryW(L"user32.dll");
   if (!user32) {
     log("Window-background fix: user32.dll unavailable");
     return;

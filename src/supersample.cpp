@@ -31,6 +31,7 @@
 
 #include "config.h"
 #include "log.h"
+#include "pipeline_state.h"
 #include "supersample.h"
 #include "sync_fix.h"
 
@@ -484,44 +485,57 @@ void ssaaDownscale(IDXGISwapChain* swapChain) {
     context->Unmap(g_cb, 0);
   }
 
-  // Bind the backbuffer first: that unbinds the render target the game left
-  // bound, which is the very texture we are about to sample.
-  context->OMSetRenderTargets(1, &g_backRTV, nullptr);
+  {
+    // Same state discipline as the SMAA passes: everything the downscale binds
+    // is captured here and put back when the scope closes (before the context
+    // reference is released below), so the context leaves Present exactly as
+    // the game left it. The engines record their frames on deferred contexts
+    // whose command lists carry their own state, so nothing is known to read
+    // the leaked bindings -- but that is the engine's property, not this
+    // function's to assume, and smaa.cpp already restores on the same Present
+    // path.
+    ScopedPipelineState savedState(context);
 
-  // Fit the rendered frame inside the backbuffer without changing its shape:
-  // the larger of the two scale factors would crop, so the smaller one is used
-  // and the remainder becomes bars. When the shapes match this is the whole
-  // backbuffer and the clear costs one fill of pixels nothing else writes.
-  const float scale = std::min(
-    float(g_displayWidth) / float(g_renderWidth),
-    float(g_displayHeight) / float(g_renderHeight));
-  const float fittedWidth = float(g_renderWidth) * scale;
-  const float fittedHeight = float(g_renderHeight) * scale;
-  const D3D11_VIEWPORT viewport = {
-    (float(g_displayWidth) - fittedWidth) * 0.5f,
-    (float(g_displayHeight) - fittedHeight) * 0.5f,
-    fittedWidth, fittedHeight, 0.0f, 1.0f };
-  // The bars have to be painted every frame: nothing else in the pipeline
-  // writes those pixels, so whatever the last frame left there would stay.
-  const float black[4] = { 0.0f, 0.0f, 0.0f, 1.0f };
-  context->ClearRenderTargetView(g_backRTV, black);
-  context->RSSetViewports(1, &viewport);
-  context->RSSetState(g_raster);
-  context->OMSetBlendState(g_blendState, nullptr, 0xffffffff);
-  context->OMSetDepthStencilState(g_depthState, 0);
-  context->IASetInputLayout(nullptr);
-  context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-  context->VSSetShader(g_vs, nullptr, 0);
-  context->PSSetShader(g_ps, nullptr, 0);
-  context->PSSetConstantBuffers(0, 1, &g_cb);
-  context->PSSetSamplers(0, 1, &g_sampler);
-  // Deliberately the hooked context, not a getContextProcs call. See the
-  // post-process exception in AGENTS.md before changing it.
-  context->PSSetShaderResources(0, 1, &g_colorSRV);
-  context->Draw(3, 0);
+    // Bind the backbuffer first: that unbinds the render target the game left
+    // bound, which is the very texture we are about to sample.
+    context->OMSetRenderTargets(1, &g_backRTV, nullptr);
 
-  ID3D11ShaderResourceView* none = nullptr;
-  context->PSSetShaderResources(0, 1, &none);
+    // Fit the rendered frame inside the backbuffer without changing its shape:
+    // the larger of the two scale factors would crop, so the smaller one is
+    // used and the remainder becomes bars. When the shapes match this is the
+    // whole backbuffer and the clear costs one fill of pixels nothing else
+    // writes.
+    const float scale = std::min(
+      float(g_displayWidth) / float(g_renderWidth),
+      float(g_displayHeight) / float(g_renderHeight));
+    const float fittedWidth = float(g_renderWidth) * scale;
+    const float fittedHeight = float(g_renderHeight) * scale;
+    const D3D11_VIEWPORT viewport = {
+      (float(g_displayWidth) - fittedWidth) * 0.5f,
+      (float(g_displayHeight) - fittedHeight) * 0.5f,
+      fittedWidth, fittedHeight, 0.0f, 1.0f };
+    // The bars have to be painted every frame: nothing else in the pipeline
+    // writes those pixels, so whatever the last frame left there would stay.
+    const float black[4] = { 0.0f, 0.0f, 0.0f, 1.0f };
+    context->ClearRenderTargetView(g_backRTV, black);
+    context->RSSetViewports(1, &viewport);
+    context->RSSetState(g_raster);
+    context->OMSetBlendState(g_blendState, nullptr, 0xffffffff);
+    context->OMSetDepthStencilState(g_depthState, 0);
+    context->IASetInputLayout(nullptr);
+    context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    context->VSSetShader(g_vs, nullptr, 0);
+    context->PSSetShader(g_ps, nullptr, 0);
+    context->PSSetConstantBuffers(0, 1, &g_cb);
+    context->PSSetSamplers(0, 1, &g_sampler);
+    // Deliberately the hooked context, not a getContextProcs call. See the
+    // post-process exception in AGENTS.md before changing it.
+    context->PSSetShaderResources(0, 1, &g_colorSRV);
+    context->Draw(3, 0);
+
+    // savedState's destructor runs here and restores the game's own SRV over
+    // slot 0, which is what an explicit unbind used to do.
+  }
   context->Release();
   if (device) device->Release();
 }

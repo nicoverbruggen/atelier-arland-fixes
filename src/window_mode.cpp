@@ -8,9 +8,10 @@
 // swap chain exists the window's decorations are removed and it is sized to
 // cover the monitor it sits on.
 //
-// The style is re-checked each frame rather than set once: the engine restyles
-// its own window in places (and so does Wine's window manager integration), and
-// a single application at startup does not always survive.
+// The style is re-checked from Present, once every sixtieth call, rather than
+// set once: the engine restyles its own window in places (and so does Wine's
+// window manager integration), and a single application at startup does not
+// always survive.
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 

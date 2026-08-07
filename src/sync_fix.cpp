@@ -676,6 +676,14 @@ std::atomic<void*> g_sceneRt{nullptr};
 std::atomic<ID3D11Texture2D*> g_sceneRtTex{nullptr};
 std::atomic<uint32_t> g_sceneRtDraws{0};
 
+// Serialises the tracked-texture swap in noteSceneRtDraw against the
+// load-and-AddRef in fireSceneRtSmaa. Without it a second recording thread can
+// replace and release the texture in the window between the other thread's load
+// and its AddRef, and the per-frame reset does not drop this reference, so that
+// swap is the only place it can go. Off the hot path: taken when the tracked
+// target changes, and once per frame when the passes fire.
+mutex g_sceneRtMutex;
+
 // Enough draws to be the 3D pass rather than a stray depth-tested blit.
 constexpr uint32_t kSceneDrawThreshold = 24;
 
@@ -878,7 +886,13 @@ bool smaaDepthStateBoundaryEnabled() {
 }
 
 bool smaaSceneRtBoundaryEnabled() {
-  return smaaBoundaryMode() == SmaaBoundary::SceneRt;
+  // The other two boundaries are ANDed with the feature where they are read, in
+  // trackSmaaRenderTargets and smaaDrawBoundary. This one is read straight from
+  // the draw and bind paths, so it carries the gate itself: without it a
+  // disabled SMAA still pays four state queries per draw and keeps a reference
+  // on the scene target that nothing reads.
+  static const bool enabled = atfix::smaaEnabled() && atfix::smaaPreUI();
+  return enabled && smaaBoundaryMode() == SmaaBoundary::SceneRt;
 }
 
 // Temporary boundary-sequence trace; defined below, used by the setter hooks.
@@ -937,13 +951,21 @@ void fireSceneRtSmaa(ID3D11DeviceContext* context, const char* reason) {
   const uint32_t draws = g_sceneRtDraws.load(std::memory_order_relaxed);
   if (draws < kSceneDrawThreshold)
     return;
-  ID3D11Texture2D* tex = g_sceneRtTex.load(std::memory_order_relaxed);
+  // Load and AddRef under the lock: the swap in noteSceneRtDraw can release the
+  // texture between the two, and the reference it drops is the only one the mod
+  // holds.
+  ID3D11Texture2D* tex = nullptr;
+  {
+    std::lock_guard lock(g_sceneRtMutex);
+    tex = g_sceneRtTex.load(std::memory_order_relaxed);
+    if (tex)
+      tex->AddRef();
+  }
   if (!tex)
     return;
   // Cleared before running, not after: the passes re-enter the hooks below.
   g_sceneRtDraws.store(0, std::memory_order_relaxed);
   SmaaReentryGuard guard;
-  tex->AddRef();
   const bool ran = atfix::smaaApplySceneColor(context, tex);
   static std::atomic<bool> logged{false};
   if (verboseLogging() && !logged.exchange(true, std::memory_order_relaxed))
@@ -986,6 +1008,7 @@ void noteSceneRtDraw(ID3D11DeviceContext* context) {
       if (w && d.Width == w && d.Height == h && d.SampleDesc.Count == 1) {
         if (g_sceneRt.exchange(tex, std::memory_order_relaxed) != tex) {
           g_sceneRtDraws.store(0, std::memory_order_relaxed);
+          std::lock_guard lock(g_sceneRtMutex);
           tex->AddRef();
           if (ID3D11Texture2D* prev =
                 g_sceneRtTex.exchange(tex, std::memory_order_relaxed))
@@ -1002,6 +1025,27 @@ void noteSceneRtDraw(ID3D11DeviceContext* context) {
 }
 
 void smaaDrawBoundary(ID3D11DeviceContext* context) {
+  // Which thread each context records draws on. Keyed by context and reported
+  // only when that context's thread changes, so a context that stays put costs
+  // one line and one that moves says so on the frame it moves. Three things it
+  // separates: whether a second deferred recorder exists, whether a context
+  // migrates between threads, and whether the thread_local guards in this file
+  // partition the way the code assumes. All four draw hooks reach here, and
+  // this runs before any per-title gating, so every build reports.
+  if (verboseLogging()) {
+    static mutex threadMutex;
+    static std::map<ID3D11DeviceContext*, DWORD> contextThreads;
+    const DWORD thread = GetCurrentThreadId();
+    std::lock_guard lock(threadMutex);
+    DWORD& seen = contextThreads[context];
+    if (seen != thread) {
+      log("CTX_THREAD context=", context,
+          " kind=", context == g_immCtx.load(std::memory_order_relaxed)
+                      ? "immediate" : "deferred",
+          " thread=", std::dec, thread, " previous=", seen);
+      seen = thread;
+    }
+  }
   noteSceneRtDraw(context);
   static const bool enabled = atfix::smaaEnabled() && atfix::smaaPreUI() &&
     smaaDepthStateBoundaryEnabled();
@@ -3574,6 +3618,31 @@ template<typename T>
 bool hookProc(void* pObject, const char* pName, T** ppOrig, T* pHook,
               uint32_t index) {
   void** vtbl = *reinterpret_cast<void***>(pObject);
+
+  // A vtable entry normally points into the module the vtable itself lives in
+  // (the D3D11 runtime, or DXVK). When it does not, another injector has
+  // already swapped this slot, and the detour below patches that injector's
+  // function rather than the runtime's. Calls still flow (the foreign hook
+  // forwards), so proceed -- but say so: without this line the install logs a
+  // routine success in exactly the stacked-mod configuration most likely to
+  // behave strangely. Special K makes the same module comparison before its
+  // vtable-resolved detours (SK_ValidateVFTableAddress). First mismatch always
+  // logs; the rest of a stacked install repeats only under verbose logging.
+  HMODULE vtblModule = nullptr;
+  HMODULE entryModule = nullptr;
+  const DWORD moduleFlags = GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+    GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT;
+  if (GetModuleHandleExW(moduleFlags,
+        reinterpret_cast<LPCWSTR>(vtbl), &vtblModule) &&
+      GetModuleHandleExW(moduleFlags,
+        reinterpret_cast<LPCWSTR>(vtbl[index]), &entryModule) &&
+      vtblModule != entryModule) {
+    static std::atomic<uint32_t> foreignEntries{0};
+    if (logFirstOrVerbose(foreignEntries))
+      log("Vtable entry for ", pName, " @ ", vtbl[index],
+          " lives outside its vtable's module; detouring another injector's"
+          " hook");
+  }
 
   MH_STATUS mh = MH_CreateHook(vtbl[index],
     reinterpret_cast<void*>(pHook),

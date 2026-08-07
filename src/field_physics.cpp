@@ -93,6 +93,7 @@ const FieldPhysicsAddrs* addressesFor(const Game& game) {
 }
 
 float* g_moveThreshold = nullptr;   // null unless verified and made writable
+DWORD g_thresholdProtection = 0;    // the page's protection before it was opened
 
 // Rescaling the game's own constant keeps the full refresh rate, but it only
 // reduces the movement rather than removing it, and it writes to the game's
@@ -371,13 +372,28 @@ bool prepareThreshold(BYTE* base, const FieldPhysicsAddrs& addrs) {
         kShippedThresholdBits, " at the threshold, found 0x", bits, std::dec);
     return false;
   }
-  DWORD previous = 0;
-  if (!VirtualProtect(threshold, sizeof(float), PAGE_READWRITE, &previous)) {
+  // The page stays writable while the hook is live, because the hook rewrites
+  // the threshold every field frame and re-protecting around each write would
+  // cost a syscall pair per frame. It is put back if the install then fails, so
+  // a declined feature never leaves a page of the game's data open with nothing
+  // writing to it.
+  if (!VirtualProtect(threshold, sizeof(float), PAGE_READWRITE,
+                      &g_thresholdProtection)) {
     log("FIELDPHYS EngineFix declined: threshold page is not writable");
     return false;
   }
   g_moveThreshold = threshold;
   return true;
+}
+
+// Undo prepareThreshold's page opening. Only for the install-failure path.
+void restoreThresholdProtection() {
+  if (!g_moveThreshold || !g_thresholdProtection)
+    return;
+  DWORD ignored = 0;
+  VirtualProtect(g_moveThreshold, sizeof(float), g_thresholdProtection,
+                 &ignored);
+  g_thresholdProtection = 0;
 }
 
 }  // namespace
@@ -435,6 +451,7 @@ bool installFieldPhysics(BYTE* base, const Game& game) {
     reinterpret_cast<void*>(&tracedFieldUpdate),
     reinterpret_cast<void**>(&originalFieldUpdate));
   if (!installed) {
+    restoreThresholdProtection();   // nothing will write it now
     g_moveThreshold = nullptr;   // never leave a rescaled value without the hook
     g_stabilizerActive = false;
   }

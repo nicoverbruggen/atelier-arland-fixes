@@ -29,6 +29,7 @@
 #include "config.h"
 #include "game.h"
 #include "log.h"
+#include "pipeline_state.h"
 #include "supersample.h"
 
 namespace atfix {
@@ -407,119 +408,6 @@ bool smaaEnabled() {
 
 namespace {
 
-// SMAA temporarily owns the parts of the pipeline its three fullscreen passes
-// touch. The usual Rorona/Meruru injection runs just before the game establishes
-// its UI state, but Totori's boundary is the first UI draw itself. Preserve and
-// restore every modified binding so that draw sees exactly the state the game
-// prepared for it.
-class ScopedSmaaState {
-public:
-  explicit ScopedSmaaState(ID3D11DeviceContext* context) : ctx(context) {
-    ctx->IAGetInputLayout(&inputLayout);
-    ctx->IAGetVertexBuffers(0, 1, &vertexBuffer, &vertexStride, &vertexOffset);
-    ctx->IAGetPrimitiveTopology(&topology);
-
-    viewportCount = D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE;
-    ctx->RSGetViewports(&viewportCount, viewports);
-    ctx->RSGetState(&rasterizer);
-
-    ctx->OMGetBlendState(&blend, blendFactor, &sampleMask);
-    ctx->OMGetDepthStencilState(&depthStencil, &stencilRef);
-    ctx->OMGetRenderTargets(
-      D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT, renderTargets, &depthTarget);
-
-    ctx->PSGetSamplers(0, 2, psSamplers);
-    ctx->VSGetConstantBuffers(0, 1, &vsConstantBuffer);
-    ctx->PSGetConstantBuffers(0, 1, &psConstantBuffer);
-    ctx->PSGetShaderResources(0, 10, psResources);
-
-    vsClassCount = kMaxClassInstances;
-    psClassCount = kMaxClassInstances;
-    ctx->VSGetShader(&vertexShader, vsClasses, &vsClassCount);
-    ctx->PSGetShader(&pixelShader, psClasses, &psClassCount);
-
-    // Geometry, hull and domain are deliberately absent. These engines ship no
-    // shader of those kinds: every DXBC blob in all three games is a vertex or
-    // pixel shader, and no gs_/hs_/ds_ compile target appears in any executable
-    // or asset. The stages are null at every injection point, so capturing them
-    // would be restoring null, and the passes never bind them either. Revisit
-    // if a build ever ships one.
-  }
-
-  ~ScopedSmaaState() {
-    ctx->IASetInputLayout(inputLayout);
-    ctx->IASetVertexBuffers(
-      0, 1, &vertexBuffer, &vertexStride, &vertexOffset);
-    ctx->IASetPrimitiveTopology(topology);
-
-    ctx->RSSetViewports(viewportCount, viewports);
-    ctx->RSSetState(rasterizer);
-
-    ctx->OMSetBlendState(blend, blendFactor, sampleMask);
-    ctx->OMSetDepthStencilState(depthStencil, stencilRef);
-    ctx->OMSetRenderTargets(
-      D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT, renderTargets, depthTarget);
-
-    ctx->PSSetSamplers(0, 2, psSamplers);
-    ctx->VSSetConstantBuffers(0, 1, &vsConstantBuffer);
-    ctx->PSSetConstantBuffers(0, 1, &psConstantBuffer);
-    ctx->PSSetShaderResources(0, 10, psResources);
-    ctx->VSSetShader(vertexShader, vsClasses, vsClassCount);
-    ctx->PSSetShader(pixelShader, psClasses, psClassCount);
-
-    release(inputLayout);
-    release(vertexBuffer);
-    release(rasterizer);
-    release(blend);
-    release(depthStencil);
-    for (auto*& target : renderTargets) release(target);
-    release(depthTarget);
-    for (auto*& sampler : psSamplers) release(sampler);
-    release(vsConstantBuffer);
-    release(psConstantBuffer);
-    for (auto*& resource : psResources) release(resource);
-    release(vertexShader);
-    release(pixelShader);
-    for (UINT i = 0; i < vsClassCount; ++i) release(vsClasses[i]);
-    for (UINT i = 0; i < psClassCount; ++i) release(psClasses[i]);
-  }
-
-  ScopedSmaaState(const ScopedSmaaState&) = delete;
-  ScopedSmaaState& operator=(const ScopedSmaaState&) = delete;
-
-private:
-  static constexpr UINT kMaxClassInstances = 256;
-
-  ID3D11DeviceContext* ctx;
-  ID3D11InputLayout* inputLayout = nullptr;
-  ID3D11Buffer* vertexBuffer = nullptr;
-  UINT vertexStride = 0;
-  UINT vertexOffset = 0;
-  D3D11_PRIMITIVE_TOPOLOGY topology = D3D11_PRIMITIVE_TOPOLOGY_UNDEFINED;
-  UINT viewportCount = 0;
-  D3D11_VIEWPORT viewports[
-    D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE] = {};
-  ID3D11RasterizerState* rasterizer = nullptr;
-  ID3D11BlendState* blend = nullptr;
-  FLOAT blendFactor[4] = {};
-  UINT sampleMask = 0;
-  ID3D11DepthStencilState* depthStencil = nullptr;
-  UINT stencilRef = 0;
-  ID3D11RenderTargetView* renderTargets[
-    D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT] = {};
-  ID3D11DepthStencilView* depthTarget = nullptr;
-  ID3D11SamplerState* psSamplers[2] = {};
-  ID3D11Buffer* vsConstantBuffer = nullptr;
-  ID3D11Buffer* psConstantBuffer = nullptr;
-  ID3D11ShaderResourceView* psResources[10] = {};
-  ID3D11VertexShader* vertexShader = nullptr;
-  ID3D11PixelShader* pixelShader = nullptr;
-  ID3D11ClassInstance* vsClasses[kMaxClassInstances] = {};
-  ID3D11ClassInstance* psClasses[kMaxClassInstances] = {};
-  UINT vsClassCount = 0;
-  UINT psClassCount = 0;
-};
-
 // Run the three SMAA passes over `color` (a single-sample colour target),
 // writing the antialiased result back into it via `colorRTV`. `allowDebug`
 // enables the edge/weight debug views (backbuffer path only).
@@ -656,7 +544,7 @@ bool smaaRunPasses(ID3D11Device* dev, ID3D11DeviceContext* ctx,
 bool smaaRunAtDraw(ID3D11Device* dev, ID3D11DeviceContext* ctx,
                    ID3D11Texture2D* color,
                    ID3D11RenderTargetView* colorRTV) {
-  ScopedSmaaState savedState(ctx);
+  ScopedPipelineState savedState(ctx);
   // Debug views are allowed here too: this is the path that actually runs, so
   // gating them to the Present-time fallback made ARLAND_SMAA_DEBUG silently
   // do nothing in the configuration one would be diagnosing.
@@ -706,7 +594,7 @@ void smaaApply(IDXGISwapChain* swapChain) {
     // property and not this function's to assume. This path is the one someone
     // selects while diagnosing a rendering problem, which is when mod-owned
     // state left on the context is least welcome.
-    ScopedSmaaState savedState(ctx);
+    ScopedPipelineState savedState(ctx);
     smaaRunPasses(dev, ctx, back, backRTV, true);
   }
   release(backRTV); release(back);

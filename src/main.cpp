@@ -52,13 +52,22 @@ struct D3D11Proc {
 D3D11Proc loadSystemD3D11() {
   static mutex initMutex;
   static D3D11Proc d3d11Proc;
+  // Both entry points are published together, and by a flag that is not one of
+  // them: the two members are assigned on separate lines, so a reader testing
+  // the first one can take the fast path while the second is still null and
+  // hand E_FAIL back to the game. The games create their device on one thread,
+  // but nothing guarantees these exports only one caller: ReShade guards its
+  // own D3D11 entry points against concurrent re-entry from DXGI's internal
+  // device creation (its thread_local g_in_dxgi_runtime), and the cost of
+  // assuming a single thread here is a silent E_FAIL at device creation.
+  static std::atomic<bool> ready = { false };
 
-  if (d3d11Proc.D3D11CreateDevice)
+  if (ready.load(std::memory_order_acquire))
     return d3d11Proc;
 
   std::lock_guard lock(initMutex);
 
-  if (d3d11Proc.D3D11CreateDevice)
+  if (ready.load(std::memory_order_relaxed))
     return d3d11Proc;
 
   log("Atelier Arland Fix version ", ARLAND_FIX_VERSION,
@@ -103,6 +112,14 @@ D3D11Proc loadSystemD3D11() {
   d3d11Proc.D3D11CreateDeviceAndSwapChain = reinterpret_cast<PFN_D3D11CreateDeviceAndSwapChain>(
     GetProcAddress(libD3D11, "D3D11CreateDeviceAndSwapChain"));
 
+  // The real d3d11.dll always exports both, so a null here means a chain-loaded
+  // d3d11_proxy.dll that is not a D3D11 implementation. The exports return
+  // E_FAIL on a null member; without this line that failure has no explanation
+  // in the log.
+  if (!d3d11Proc.D3D11CreateDevice || !d3d11Proc.D3D11CreateDeviceAndSwapChain)
+    log("Loaded D3D11 module is missing a device-creation export;"
+        " device creation will fail");
+
   arland::initializeGameHooks();
 
   if (atfix::verboseLogging()) {
@@ -111,6 +128,9 @@ D3D11Proc loadSystemD3D11() {
     log("D3D11CreateDeviceAndSwapChain @ ",
       reinterpret_cast<void*>(d3d11Proc.D3D11CreateDeviceAndSwapChain));
   }
+  // Last, after both members are assigned. The two failure returns above leave
+  // the flag clear, so a transient load failure still retries.
+  ready.store(true, std::memory_order_release);
   return d3d11Proc;
 }
 
@@ -398,6 +418,13 @@ void hookFactoryForSwapChain(ID3D11Device* device) {
 
 extern "C" {
 
+// The two exports below are deliberately independent: each forwards to its own
+// system counterpart and neither is implemented in terms of the other. Special K
+// and ReShade both build D3D11CreateDevice on their own
+// D3D11CreateDeviceAndSwapChain; 3Dmigoto once did the reverse and records the
+// two recursing into each other without bound when such proxies stack. The
+// duplication between these functions is what keeps this proxy out of that
+// failure, so do not merge them.
 DLLEXPORT HRESULT __stdcall D3D11CreateDevice(
         IDXGIAdapter*         pAdapter,
         D3D_DRIVER_TYPE       DriverType,
@@ -540,11 +567,11 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved) {
 
     case DLL_PROCESS_DETACH:
       // Only on dynamic unload, where the detours have to be removed before the
-      // code they jump into unmaps. On process exit lpvReserved is non-null, the
-      // other threads are already terminated, and MinHook's thread freeze
-      // (CreateToolhelp32Snapshot under the loader lock) can wait forever on a
-      // lock a killed thread still holds, which leaves the process unable to
-      // finish closing.
+      // code they jump into unmaps. On process exit lpvReserved is non-null and
+      // the other threads have already been terminated; a thread killed inside
+      // any MH_* call still holds MinHook's lock flag, and MH_Uninitialize
+      // would then spin forever in EnterSpinLock (vendor/minhook/src/hook.c),
+      // which has no timeout, leaving the process unable to finish closing.
       if (lpvReserved == nullptr)
         MH_Uninitialize();
       break;

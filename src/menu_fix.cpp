@@ -1525,6 +1525,23 @@ uintptr_t cachedRenderText(uintptr_t a, uintptr_t b,
         // string is bounded to 4096 bytes and the memcpy above moves up to
         // 16 MB, so the copy costs nothing here.
         renderBitmapCache.emplace(cacheKey, std::move(bitmap));
+        // Bounded by entry count and by per-entry size, never by total bytes,
+        // so the two caps multiply on paper. Realistic strings are far under
+        // the per-entry cap and the observed ceiling is a transient tens of
+        // megabytes on Meruru with a conversation balloon live. Report the
+        // total rather than capping it: an eviction policy here would drop an
+        // entry a replay is about to consume, which is the re-render this cache
+        // exists to avoid.
+        if (atfix::verboseLogging()) {
+          static uint32_t reported = 0;
+          if (reported++ % 256 == 0) {
+            size_t total = 0;
+            for (const auto& entry : renderBitmapCache)
+              total += entry.second.bytes.size();
+            atfix::log("DIAGNOSTICS replay_cache entries=",
+              std::dec, renderBitmapCache.size(), " bytes=", total);
+          }
+        }
       }
     }
   }

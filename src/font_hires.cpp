@@ -389,6 +389,10 @@ struct CachedGlyph {
   float advance = 0.0f;
 };
 std::mutex g_glyphMutex;
+// Never cleared, unlike g_upscaleCache below: that one is keyed on whole
+// strings, which are unbounded, while this is keyed on (codepoint, size). The
+// games' UI uses a bounded alphabet at a handful of sizes, so the population
+// converges within a session and each entry is one small glyph bitmap.
 std::unordered_map<uint64_t, CachedGlyph> g_glyphCache;
 
 // Blit codepoint `cp` at pen (penX, baseline); returns its advance (px). Holds
