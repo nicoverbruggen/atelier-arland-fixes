@@ -42,7 +42,7 @@ Use the repository's day-to-day Linux cross-build script from the repository roo
 ./scripts/build_linux.sh
 ```
 
-It compiles the intermediate binaries as `build64/d3d11.dll`, `build64/arland-fix-launcher.exe`, and `build32/msimg32.dll`, verifies their required proxy exports through `scripts/check_exports.py`, then packages the distributable archive as `out/arland-fix-<VERSION>.zip`. For native Windows and manual Meson commands, follow `BUILDING.md`. The export check requires `D3D11CreateDevice` at ordinal 22 and `D3D11CreateDeviceAndSwapChain` at ordinal 23 in the game DLL, and `AlphaBlend` plus `TransparentBlt` in the launcher proxy.
+It compiles the intermediate binaries as `build64/d3d11.dll`, `build64/arland-fix-launcher.exe`, and `build32/msimg32.dll`, verifies their required proxy exports through `scripts/check_exports.py`, then packages the distributable archive as `out/arland-fix-<VERSION>.zip`. For native Windows and manual Meson commands, follow `BUILDING.md`. The export check requires `D3D11CreateDevice` at ordinal 22, `D3D11CreateDeviceAndSwapChain` at ordinal 23 and `D3D11On12CreateDevice` at ordinal 24 in the game DLL, and `AlphaBlend` plus `TransparentBlt` in the launcher proxy. The mod does nothing with D3D11-on-12; that export exists because a tool injected alongside this one can import the name statically, and the loader fails the whole process on a missing static import before any code runs.
 
 ## Validation
 

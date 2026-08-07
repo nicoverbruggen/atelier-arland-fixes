@@ -17,6 +17,10 @@ EXPECTED = {
     "d3d11.dll": {
         "D3D11CreateDevice": 22,
         "D3D11CreateDeviceAndSwapChain": 23,
+        # Forwarded untouched. It is here because a tool injected alongside this
+        # one can import the name statically, and the loader fails the whole
+        # process on a missing static import before any code runs.
+        "D3D11On12CreateDevice": 24,
     },
     "msimg32.dll": {
         "AlphaBlend": None,

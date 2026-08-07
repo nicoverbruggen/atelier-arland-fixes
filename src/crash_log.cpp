@@ -256,6 +256,11 @@ LONG WINAPI crashFilter(EXCEPTION_POINTERS* pointers) {
         "audio-path fault, not a rendering fault");
   }
   log("CRASH end of report");
+  // The ordinary path leaves lines in the operating system's cache, which
+  // survives this process dying but not the machine going with it. A fault bad
+  // enough to take the system down is exactly the one worth having on disk, so
+  // the report is forced out here rather than paying for that on every line.
+  log.flush();
 
   handlingCrash.store(false, std::memory_order_release);
   return previousFilter

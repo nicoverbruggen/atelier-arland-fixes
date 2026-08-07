@@ -39,6 +39,16 @@ using PFN_D3D11CreateDevice = HRESULT (__stdcall *) (
   IDXGIAdapter*, D3D_DRIVER_TYPE, HMODULE, UINT, const D3D_FEATURE_LEVEL*,
   UINT, UINT, ID3D11Device**, D3D_FEATURE_LEVEL*, ID3D11DeviceContext**);
 
+// Forwarded untouched. The mod has nothing to do with D3D11-on-12, but a tool
+// injected alongside it can import the name statically, and a missing static
+// import stops the process before any code runs: no window, no log, nothing to
+// report. 3Dmigoto records exactly that with OpenXR Toolkit against a proxy
+// that exported a subset. The signature is left opaque because nothing here
+// inspects the arguments.
+using PFN_D3D11On12CreateDevice = HRESULT (__stdcall *) (
+        IUnknown*, UINT, const D3D_FEATURE_LEVEL*, UINT, IUnknown**, UINT,
+        UINT, ID3D11Device**, ID3D11DeviceContext**, D3D_FEATURE_LEVEL*);
+
 using PFN_D3D11CreateDeviceAndSwapChain = HRESULT (__stdcall *) (
   IDXGIAdapter*, D3D_DRIVER_TYPE, HMODULE, UINT, const D3D_FEATURE_LEVEL*,
   UINT, UINT, const DXGI_SWAP_CHAIN_DESC*, IDXGISwapChain**, ID3D11Device**,
@@ -47,6 +57,7 @@ using PFN_D3D11CreateDeviceAndSwapChain = HRESULT (__stdcall *) (
 struct D3D11Proc {
   PFN_D3D11CreateDevice             D3D11CreateDevice             = nullptr;
   PFN_D3D11CreateDeviceAndSwapChain D3D11CreateDeviceAndSwapChain = nullptr;
+  PFN_D3D11On12CreateDevice         D3D11On12CreateDevice         = nullptr;
 };
 
 D3D11Proc loadSystemD3D11() {
@@ -111,6 +122,10 @@ D3D11Proc loadSystemD3D11() {
     GetProcAddress(libD3D11, "D3D11CreateDevice"));
   d3d11Proc.D3D11CreateDeviceAndSwapChain = reinterpret_cast<PFN_D3D11CreateDeviceAndSwapChain>(
     GetProcAddress(libD3D11, "D3D11CreateDeviceAndSwapChain"));
+  // Resolved here rather than through a .def forwarder: this DLL is itself
+  // named d3d11.dll, so a forwarder would name itself and loop.
+  d3d11Proc.D3D11On12CreateDevice = reinterpret_cast<PFN_D3D11On12CreateDevice>(
+    GetProcAddress(libD3D11, "D3D11On12CreateDevice"));
 
   // The real d3d11.dll always exports both, so a null here means a chain-loaded
   // d3d11_proxy.dll that is not a D3D11 implementation. The exports return
@@ -549,6 +564,32 @@ DLLEXPORT HRESULT __stdcall D3D11CreateDeviceAndSwapChain(
   device->Release();
   context->Release();
   return hr;
+}
+
+// Pass-through, and nothing else. It exists so the name resolves: a tool
+// injected alongside this one can import it statically, and the loader fails
+// the whole process when a static import is missing, before any code runs.
+// Nothing in this mod touches D3D11-on-12, so the arguments go straight out
+// again untouched.
+DLLEXPORT HRESULT __stdcall D3D11On12CreateDevice(
+        IUnknown*             pDevice,
+        UINT                  Flags,
+  const D3D_FEATURE_LEVEL*    pFeatureLevels,
+        UINT                  FeatureLevels,
+        IUnknown**            ppCommandQueues,
+        UINT                  NumQueues,
+        UINT                  NodeMask,
+        ID3D11Device**        ppDevice,
+        ID3D11DeviceContext** ppImmediateContext,
+        D3D_FEATURE_LEVEL*    pChosenFeatureLevel) {
+  auto proc = atfix::loadSystemD3D11();
+
+  if (!proc.D3D11On12CreateDevice)
+    return E_NOTIMPL;
+
+  return proc.D3D11On12CreateDevice(pDevice, Flags, pFeatureLevels,
+    FeatureLevels, ppCommandQueues, NumQueues, NodeMask, ppDevice,
+    ppImmediateContext, pChosenFeatureLevel);
 }
 
 BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved) {
