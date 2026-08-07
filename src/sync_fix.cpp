@@ -734,11 +734,12 @@ void noteSceneAnchor(IDXGISwapChain* swapChain) {
     // The reference is the point, not the pointer: the anchor is compared by
     // ADDRESS below, so holding one stops a freed texture's address being
     // recycled and faking a match. It also keeps a reference outstanding on
-    // whatever it anchored, which would make ResizeBuffers fail. That was
-    // measured: a probe on the swap chain's ResizeBuffers saw no call in any of
-    // the three games. The measurement covers supersample.cpp as well, which
-    // holds a view over the real backbuffer for the process lifetime whenever
-    // borderless or supersampling is on.
+    // whatever it anchored, which would make ResizeBuffers fail. A probe on the
+    // swap chain's ResizeBuffers saw no call in any of the three games, though
+    // all three do contain one. supersample.cpp records where that call is and
+    // what the measurement does and does not establish; the same reasoning
+    // covers it, because it holds a view over the real backbuffer for the
+    // process lifetime whenever borderless or supersampling is on.
     ID3D11Texture2D* tex = static_cast<ID3D11Texture2D*>(found);
     tex->AddRef();
     if (ID3D11Texture2D* prev =

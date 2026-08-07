@@ -113,11 +113,23 @@ template <typename T> void release(T*& p) { if (p) { p->Release(); p = nullptr; 
 // holds a view over the backbuffer for the process lifetime, which would make a
 // ResizeBuffers call fail if one were ever made.
 //
-// Left that way on purpose. ResizeBuffers was traced in all three games and is
-// never called: the mod forces a windowed flip-model chain sized once at
-// creation, and nothing in these games resizes it after that. A stand-down path
-// would be new code releasing COM references during a teardown that does not
-// happen, which is a worse trade than the gap it closes.
+// Left that way on purpose, and here is what that rests on. All three games do
+// contain a ResizeBuffers call: it sits in PApplication's vtable slot 1, the
+// method that both creates and resizes the swap chain, and the resize half is
+// reachable only when the chain already exists, so a first invocation creates
+// and skips it (rorona-en 0x3daadd, totori-en 0x4beb6d, meruru-en 0x3dcb3d,
+// each on the chain cached at [this+0x3018]). What invokes that slot a second
+// time was not found. It is reached only through the vtable, so there is no
+// call site to point at; the object is a global built before WinMain, no
+// window-message handler appears anywhere in the path, and these games have no
+// display-settings screen. A runtime probe across the three games never saw the
+// call fire.
+//
+// So the reference is held on "not observed", not on "cannot happen". A
+// stand-down path would be new code releasing COM references during a teardown
+// nobody has seen, and it may also be load-bearing in the other direction: if
+// the game does resize at startup, this reference failing it is what keeps the
+// mod's own chosen size rather than the game's.
 //
 // If a change ever introduces a resize, or a device-loss path, this is the
 // assumption it breaks and the first place that has to be handled.
