@@ -9,6 +9,15 @@
 // is exactly the class of bug behind the battle-exit crash fixed in menu_fix.cpp:
 // prefer tryRead over a bare `*reinterpret_cast<T*>(addr)` for anything that reads
 // engine memory.
+//
+// Stores follow one rule. A store through a pointer the mod walked out of engine
+// memory, cached across calls, or resolved from a global must be authorized by
+// writableRange; readableRange accepts a read-only page and so proves nothing
+// about a store. A store into the object the engine itself passed to a detour,
+// its `this` or an argument, made inside that same call, needs no memory guard:
+// the engine's own call is the liveness proof, and the original writes the same
+// object on the same path. Fixed image globals are validated once at install,
+// with writableRange when the validated range will be written.
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 

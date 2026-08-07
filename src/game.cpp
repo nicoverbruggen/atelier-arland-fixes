@@ -86,7 +86,12 @@ constexpr Support X = Support::OnByDefault;
 // Meruru and Totori cast them natively (Totori confirmed healthy by the
 // 2026-07-23 probe). It has no ini key: Rorona ships without shadows the engine
 // plainly means to draw, so restoring them is a defect correction and not a
-// preference. ARLAND_BATTLE_SHADOWS=0 remains, for an A/B during development.
+// preference. ARLAND_BATTLE_SHADOWS=0 remains, for an A/B during development. It
+// is read directly in battle_shadow_restore.cpp rather than through
+// featureEnabled, so unlike the other switches it reaches the Unsupported rows:
+// on Totori and Meruru setting it to 0 also stands down the per-frame battle
+// ticks that the cut-in gate and dim depend on, and the Present hook that drives
+// them.
 // CutInShadows and CutInDimHold are OptIn on all three games. They change how
 // the close-up attack cameras look rather than repair them, and they are still
 // being playtested, so they ship off and are selected in the launcher's
@@ -96,9 +101,10 @@ constexpr Support X = Support::OnByDefault;
 // multilingual battle addresses were RTTI-located and homologue-matched, then
 // confirmed in-game, so the cut-in cells apply to every supported executable.
 // The two startup skips are opt-in in all three games. Their hook targets were
-// resolved per game rather than ported by homology -- each logo vtable came
-// from that game's own RTTI, and each movie routine was anchored on that
-// build's own path string -- and every prologue is verified before install.
+// resolved per game rather than ported across games: each logo vtable came from
+// that game's own RTTI, and each English movie routine was anchored on that
+// build's own path string, with each multilingual address matched from its own
+// English build. Every prologue is verified before install.
 // Confirmed in game on Rorona; Totori and Meruru are wired but untested.
 // SynthesisAnimationRate ships on in all three: it is a defect correction
 // rather than a preference, and at 59.94 Hz and below the original runs

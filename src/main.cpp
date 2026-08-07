@@ -152,8 +152,15 @@ bool perfLogEnabled() {
   return enabled;
 }
 
-// Present must be hooked whenever the transition trace, SMAA, the
-// supersampling downscale, borderless mode or the frame-time log needs it.
+// Present must be hooked whenever the transition trace, the frame-atlas cache,
+// the per-frame battle ticks, SMAA, the supersampling downscale, borderless mode
+// or the frame-time log needs it. The first three arrive through
+// menuTransitionTraceEnabled above.
+//
+// Order matters: battleShadowRestoreActive() reads g_battleAddrs, which the
+// game-hook fan-out sets. Both device-creation routes run the fan-out before
+// this decision. Taking this decision earlier would leave Rorona's battle
+// shadows without their Present-driven half while the install still logs active.
 bool presentHookNeeded() {
   return menuTransitionTraceEnabled() ||
     atfix::smaaEnabled() ||

@@ -13,8 +13,8 @@
 // That overwrites the vector allocation's heap header. Depending on allocator
 // layout, the damage is detected immediately during shop teardown or later in
 // an unrelated allocation. The fix hides state 2 from the original call only
-// when no valid previous row exists. The ordinary refresh still runs and the
-// state is restored before returning, so all valid-row behavior is unchanged.
+// when no valid previous row exists, and puts the state back before returning so
+// the shop commits on the next update. All valid-row behaviour is unchanged.
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 

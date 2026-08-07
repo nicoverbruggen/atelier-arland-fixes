@@ -42,8 +42,8 @@ bool cutinGateHoldEnabled() {
 // Hold the scene light up during cut-ins so the scene keeps full brightness.
 // The user-facing key BattleCutInDimming (env ARLAND_CUTIN_DIMMING) is worded as
 // "may the cut-in dim the scene?", the inverse of this dim-hold action; the
-// matrix descriptor carries that inversion. Rorona/Meruru default to holding
-// (bright); Totori is Unsupported for now.
+// matrix descriptor carries that inversion. OptIn on all three games, like the
+// gate hold above.
 bool cutinDimHoldEnabled() {
   static const bool enabled = featureEnabled(Feature::CutInDimHold);
   return enabled;
@@ -203,6 +203,10 @@ float gateHoldSettleRamp(float s);   // defined below with gateHoldPatch
 // reception gate, so the hold is settle-gated there (same stray-shadow cover
 // logic as gateHoldPatch); Rorona/Meruru keep the instant hold — their gate
 // lives in the separate 880 receiver and carries its own settle gating.
+//
+// The mod's own post-process constant buffers reach here too, because both
+// passes map through the hooked context. See the size notes on DownscaleParams
+// in supersample.cpp and SmaaConstants in smaa.cpp.
 bool dimHoldPatch(void* data, uint32_t size) {
   const auto [fields, count] = dimHoldFields();
   static const bool settleGated = currentTitle() == Title::Totori;

@@ -316,18 +316,15 @@ const int kSSCount = 6;
 // allocate many. Multipliers that would exceed it are not offered (see
 // refillSupersampling), and the mod clamps the ini as well.
 //
-// This could be raised if a reason to ever appears. It is a judgement about
+// This could be raised if a reason to do so ever appears. It is a judgement about
 // what these games can use, not a limit of the implementation.
 const unsigned kMaxRenderWidth = 7680;
 const unsigned kMaxRenderHeight = 4320;
 
-// There used to be a quality preset dropdown above these controls. It set
-// anti-aliasing, multisampling, shadow detail and supersampling together, and
-// each removal took a dimension off it: anisotropic filtering, which stopped
-// being a setting, then multisampling in 0.14. What was left set two adjacent
-// dropdowns, one of which writes the resulting resolution into its own labels,
-// so the ladder said nothing the controls underneath did not. The Graphics page
-// now carries the controls on their own, each with its cost written beside it.
+// There is deliberately no quality preset dropdown above these controls. A
+// preset here would set two adjacent dropdowns, one of which writes the
+// resulting resolution into its own labels, so it would say nothing the controls
+// underneath do not. Each control carries its cost beside it instead.
 //
 // The two cut-in keys in arland-fix.ini are one choice, not two: they describe
 // how the close-up attack cameras look, and the window offers that choice while
@@ -874,9 +871,10 @@ void loadFromIni() {
   updateRenderResolution();
 
   // An absent key falls back to what the DLL would do with it, not to the first
-  // ShadowMultiplier ships at "2", so falling back to "1" here would show
-  // Normal for a default install and then persist that on the next save,
-  // quietly turning the feature off for anyone who opened the launcher.
+  // entry in the list. ShadowMultiplier ships at "2", so falling back to "1"
+  // here would show Normal for a default install and then persist that on the
+  // next save, quietly turning the feature off for anyone who opened the
+  // launcher.
   // Anisotropic filtering is not read here at all any more: it ships on at 16x
   // and this window no longer offers it.
   iniString("Rendering", "ShadowMultiplier", buf, sizeof(buf));
@@ -910,7 +908,9 @@ void loadFromIni() {
     GetPrivateProfileIntA("Graphics", "Outline", 1, g_settingsPath) != 0
       ? BST_CHECKED : BST_UNCHECKED, 0);
 
-  // [Battle]: cut-in defaults match src/game.cpp (shadows on, dimming off).
+  // [Battle]: cut-in defaults match src/game.cpp. Both features ship off, which
+  // is BattleCutInShadows=false with BattleCutInDimming=true: the dimming key is
+  // the inverse one, so true is the game's original dimming.
   SendMessageW(g_hBCutIn, CB_SETCURSEL,
     cutInIndex(iniBool("Battle", "BattleCutInShadows", false),
                iniBool("Battle", "BattleCutInDimming", true)), 0);

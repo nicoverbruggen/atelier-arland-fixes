@@ -728,7 +728,7 @@ bool itemListGeometryValid(
     liveKind == kind &&
     liveCapacity == int32_t(capacity) &&
     liveRecords == records &&
-    readableRange(records, capacity * kItemStride);
+    writableRange(records, capacity * kItemStride);
 }
 
 bool itemListLimitNeedsRepair(uintptr_t owner, size_t capacity) {
@@ -1221,7 +1221,7 @@ char* STDMETHODCALLTYPE previewLabelDetour(uintptr_t record) {
   char* const expected =
     reinterpret_cast<char*>(record + kLabelOffset);
   if (result != expected ||
-      !readableRange(reinterpret_cast<uintptr_t>(result), kLabelCapacity))
+      !writableRange(reinterpret_cast<uintptr_t>(result), kLabelCapacity))
     return result;
 
   size_t length = 0;
@@ -1547,11 +1547,11 @@ bool installItemGuard(BYTE* base, const Game& game) {
   g_containerOwner =
     reinterpret_cast<uintptr_t>(base) + addrs->containerOwner;
   if (!g_effectTable.recordLimit || !g_traitTable.recordLimit ||
-      !readableRange(g_arrayBase, kSetStride * kSetCount) ||
-      !readableRange(g_carriedArray, kCarriedCount * kItemStride) ||
-      !readableRange(g_containerArray, kContainerCount * kItemStride) ||
-      !readableRange(g_carriedOwner, 0x18) ||
-      !readableRange(g_containerOwner, 0x18)) {
+      !writableRange(g_arrayBase, kSetStride * kSetCount) ||
+      !writableRange(g_carriedArray, kCarriedCount * kItemStride) ||
+      !writableRange(g_containerArray, kContainerCount * kItemStride) ||
+      !writableRange(g_carriedOwner, 0x18) ||
+      !writableRange(g_containerOwner, 0x18)) {
     log("Item scan guard: tables or item arrays not mapped; not installing");
     return false;
   }

@@ -592,7 +592,7 @@ Leaving a shop in Totori could crash the game, immediately or a few seconds late
 
 ### Safety
 
-The detour intervenes only when vanilla is about to commit an input value and the previous-row index does not name a row in the live vector. Empty lists already return before that branch and valid indices run the original untouched. The input state is hidden only for the duration of the original call and restored before returning, while the original refresh still updates the index normally. Both Totori executables have the same function bytes and object layout; Rorona and Meruru install nothing. As with every executable hook, the complete target prologue is verified before installation.
+The detour intervenes only when vanilla is about to commit an input value and the previous-row index does not name a row in the live vector. Empty lists already return before that branch and valid indices run the original untouched. The input state is hidden only for the duration of the original call and restored before returning, and the commit the update skipped is taken on the next one. Both Totori executables have the same function bytes and object layout; Rorona and Meruru install nothing. As with every executable hook, the complete target prologue is verified before installation.
 
 ### Details
 

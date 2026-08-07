@@ -41,7 +41,12 @@ using PFN_D3DCompile = HRESULT (WINAPI*)(LPCVOID, SIZE_T, LPCSTR,
   const D3D_SHADER_MACRO*, ID3DInclude*, LPCSTR, LPCSTR, UINT, UINT,
   ID3DBlob**, ID3DBlob**);
 
-// SMAA constant buffer (matches the vendored wrapper's SMAAShaderConstants).
+// SMAA constant buffer (matches the vendored wrapper's SMAAShaderConstants). The
+// size is load-bearing outside this file: the pass maps through the hooked
+// context, so sync_fix.cpp's constant-buffer capture sees this buffer, and
+// battle_shadows.cpp's Totori dim-hold table matches a buffer by size alone. 64
+// is not in that table; 80, 96, 112, 144, 160, 224, 304, 320 and 416 are, so
+// growing this struct into any of those puts it in front of that patch.
 struct SmaaConstants {
   float subsampleIndices[4] = {0, 0, 0, 0};
   float rtMetrics[4] = {0, 0, 0, 0};   // 1/w, 1/h, w, h
@@ -156,6 +161,7 @@ const char* kSmaaPrefix =
 std::atomic<bool> g_init{false};
 bool g_broken = false;
 UINT g_width = 0, g_height = 0;
+DXGI_FORMAT g_format = DXGI_FORMAT_UNKNOWN;
 
 ID3D11VertexShader* g_edgeVS = nullptr;
 ID3D11VertexShader* g_weightVS = nullptr;
@@ -179,7 +185,7 @@ ID3D11RasterizerState*   g_raster = nullptr;
 ID3D11ShaderResourceView* g_areaSRV = nullptr;
 ID3D11ShaderResourceView* g_searchSRV = nullptr;
 
-// Per-size targets, recreated if the back buffer size changes.
+// Per-size targets, recreated if the incoming target's size or format changes.
 ID3D11Texture2D* g_sceneTex = nullptr;
 ID3D11ShaderResourceView* g_sceneSRV = nullptr;
 ID3D11Texture2D* g_edgesTex = nullptr;
@@ -362,7 +368,7 @@ void releaseSized() {
 
 bool initSized(ID3D11Device* dev, UINT w, UINT h, DXGI_FORMAT fmt) {
   releaseSized();
-  g_width = w; g_height = h;
+  g_width = w; g_height = h; g_format = fmt;
   auto make = [&](DXGI_FORMAT format, UINT bind, ID3D11Texture2D** tex,
                   ID3D11RenderTargetView** rtv, ID3D11ShaderResourceView** srv) {
     D3D11_TEXTURE2D_DESC td = {};
@@ -431,6 +437,13 @@ public:
     psClassCount = kMaxClassInstances;
     ctx->VSGetShader(&vertexShader, vsClasses, &vsClassCount);
     ctx->PSGetShader(&pixelShader, psClasses, &psClassCount);
+
+    // Geometry, hull and domain are deliberately absent. These engines ship no
+    // shader of those kinds: every DXBC blob in all three games is a vertex or
+    // pixel shader, and no gs_/hs_/ds_ compile target appears in any executable
+    // or asset. The stages are null at every injection point, so capturing them
+    // would be restoring null, and the passes never bind them either. Revisit
+    // if a build ever ships one.
   }
 
   ~ScopedSmaaState() {
@@ -529,7 +542,11 @@ bool smaaRunPasses(ID3D11Device* dev, ID3D11DeviceContext* ctx,
   }
   if (g_broken)
     return false;
-  if (cd.Width != g_width || cd.Height != g_height)
+  // Format belongs to the target's identity as much as its size does:
+  // CopyResource between unrelated formats is dropped by the runtime with no
+  // HRESULT, which would leave g_sceneTex holding the previous frame and blend
+  // that back into the live one.
+  if (cd.Width != g_width || cd.Height != g_height || cd.Format != g_format)
     if (!initSized(dev, cd.Width, cd.Height, cd.Format)) { g_broken = true; return false; }
 
   ctx->CopyResource(g_sceneTex, color);
@@ -682,8 +699,16 @@ void smaaApply(IDXGISwapChain* swapChain) {
   ID3D11RenderTargetView* backRTV = nullptr;
   if (dev && ctx)
     dev->CreateRenderTargetView(back, nullptr, &backRTV);
-  if (dev && ctx && backRTV)
+  if (dev && ctx && backRTV) {
+    // Same state discipline as the pre-UI path. Nothing downstream depends on
+    // it today, because the engines record their frames on deferred contexts
+    // whose command lists carry their own state, but that is the engine's
+    // property and not this function's to assume. This path is the one someone
+    // selects while diagnosing a rendering problem, which is when mod-owned
+    // state left on the context is least welcome.
+    ScopedSmaaState savedState(ctx);
     smaaRunPasses(dev, ctx, back, backRTV, true);
+  }
   release(backRTV); release(back);
   if (ctx) ctx->Release();
   if (dev) dev->Release();

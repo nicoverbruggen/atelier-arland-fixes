@@ -1009,21 +1009,28 @@ uintptr_t tracedShadowHelperInit(uintptr_t helper, uintptr_t id,
 }
 
 uintptr_t tracedBattleActorInit(uintptr_t actor, uintptr_t scene) {
-  const bool alreadyInitialized = actor && g_battleAddrs &&
-    *reinterpret_cast<const uint8_t*>(
-      actor + g_battleAddrs->initFlagOffset) != 0;
-  const uintptr_t gameMode = actor
-    ? *reinterpret_cast<const uintptr_t*>(actor + 0x10) : 0;
-  const uintptr_t character = actor
-    ? *reinterpret_cast<const uintptr_t*>(actor + 0x18) : 0;
-  const uintptr_t helper = gameMode && g_battleAddrs
+  // actor is this detour's own `this`, so the engine is about to walk it. The
+  // game mode read out of it is the second level, and the helper embedded in
+  // that is what can be stale; registerBattleCharaShadows and
+  // dispatchBattleCharaShadows guard the same chain before the same
+  // dereference. What comes out of this decides a deferral, not a log line.
+  uint8_t initFlag = 0;
+  uintptr_t gameMode = 0;
+  uintptr_t character = 0;
+  uintptr_t contextBefore = 0;
+  bool walked = actor && g_battleAddrs &&
+    tryRead(actor + g_battleAddrs->initFlagOffset, initFlag) &&
+    tryRead(actor + 0x10, gameMode) &&
+    tryRead(actor + 0x18, character);
+  const uintptr_t helper = walked && gameMode
     ? gameMode + g_battleAddrs->helperEmbedOffset : 0;
-  const uintptr_t contextBefore = helper
-    ? *reinterpret_cast<const uintptr_t*>(helper + 0x18) : 0;
+  if (!helper || !tryRead(helper + 0x18, contextBefore))
+    walked = false;
+  const bool alreadyInitialized = initFlag != 0;
   const uintptr_t result = originalBattleActorInit(actor, scene);
   bool deferred = false;
-  if (battleShadowRestoreEnabled() && !alreadyInitialized && result &&
-      helper && character && !contextBefore) {
+  if (walked && battleShadowRestoreEnabled() && !alreadyInitialized && result &&
+      character && !contextBefore) {
     std::lock_guard<std::mutex> lock(pendingBattleShadowMutex);
     const auto duplicate = std::find_if(
       pendingBattleShadows.begin(), pendingBattleShadows.end(),
@@ -1048,6 +1055,10 @@ uintptr_t tracedBattleActorInit(uintptr_t actor, uintptr_t scene) {
 }
 
 size_t shadowLayerCount(uintptr_t helper, size_t offset) {
+  // The same (begin, end) pair the snode walks read at helper+0x48, guarded the
+  // same way: the helper can name an object a previous battle freed.
+  if (!readableRange(helper + offset, 0x10))
+    return 0;
   const auto* vector = reinterpret_cast<const uintptr_t*>(helper + offset);
   const uintptr_t begin = vector[0];
   const uintptr_t end = vector[1];
@@ -1147,7 +1158,7 @@ bool installRoronaBattleShadowRestore(BYTE* base, const Game& game) {
 // only needs the state tracking for the cut-in patches.
 // Tactical-scene hooks (see the caster-clear block above). Installed only when
 // a cut-in hold is enabled — they exist to protect it from stray shadows.
-// hideAll's prologue is byte-identical across all five battle-capable builds;
+// hideAll's prologue is byte-identical across all six builds;
 // showAll differs per engine generation.
 bool installTacticalSceneHooks(BYTE* base, const Game& game) {
   if (!battleShadowRestoreEnabled() || !g_battleAddrs ||
@@ -1296,6 +1307,17 @@ uintptr_t tracedBattleModeCtor(uintptr_t self, uintptr_t a, uintptr_t b,
   const uintptr_t result = originalBattleModeCtor(self, a, b, c);
   // After the original: the mode is fully built here, which is what the rest of
   // the battle code expects to be able to read.
+  //
+  // Drop the previous battle's helper and scene before declaring this battle
+  // active. The helper is embedded in its own game mode and died with it, and
+  // the publish that refreshes it happens later, in the mode's init vtable slot
+  // (15 on Rorona and Meruru, 16 on Totori). The publish is also conditional on
+  // a byte in the create request (Totori mode+0xa00, Meruru mode+0xd30), so a
+  // battle that never publishes would otherwise keep the freed pointer for its
+  // whole length rather than for the gap. Both snode walks and the caster
+  // registration return early on zero.
+  g_battleHelper.store(0, std::memory_order_release);
+  g_battleScene.store(0, std::memory_order_release);
   g_battleGameMode.store(self, std::memory_order_release);
   g_battleSeenLiveMode.store(self, std::memory_order_release);
   g_battleDeadFrames.store(0, std::memory_order_release);
@@ -1317,6 +1339,9 @@ uintptr_t tracedBattleModeDtor(uintptr_t self) {
     restorePublishedHelper("battle_mode_dtor");
     g_battleActive.store(false, std::memory_order_release);
     g_battleGameMode.store(0, std::memory_order_release);
+    g_battleHelper.store(0, std::memory_order_release);
+    g_battleScene.store(0, std::memory_order_release);
+    g_battleCharaVectorAddr.store(0, std::memory_order_release);
     g_lastBattleStateVt.store(0, std::memory_order_release);
     g_battleStateSlot.store(0, std::memory_order_release);
     g_battleSeenLiveMode.store(0, std::memory_order_release);
@@ -1524,7 +1549,11 @@ void installBattleShadowRestore(BYTE* base, const Game& game) {
 // catches a brief cut-in the coarse per-120-frame monitor would miss. Reads
 // only fields the game populates; every access is VirtualQuery-guarded.
 void sceneIdentityTick() {
-  if (!sceneTraceEnabled() || !gameBase || !g_battleAddrs)
+  // managerSlot == 0 marks a game with no global scene manager (Totori). Without
+  // that test the slot address is the image base, and the "manager" logged is
+  // the MZ signature out of the DOS header.
+  if (!sceneTraceEnabled() || !gameBase || !g_battleAddrs ||
+      !g_battleAddrs->managerSlot)
     return;
   const uintptr_t managerSlot =
     reinterpret_cast<uintptr_t>(gameBase) + g_battleAddrs->managerSlot;
@@ -1937,11 +1966,13 @@ void battleFrameTick() {
 namespace arland {
 using namespace atfix;   // battleShadowRestoreActive reaches atfix state
 
-// True when the recognized executable is a battle-capable build (Rorona:
-// caster restore + state tracking; Meruru: state tracking for the cut-in
-// gate/dim) with the battle-shadow machinery enabled; the per-frame battle
-// ticks then need the Present hook regardless of the frame-atlas-cache
-// setting.
+// True when the recognized executable is a battle-capable build with the battle
+// machinery enabled: Rorona gets caster restore and state tracking, Totori and
+// Meruru state tracking for the cut-in gate and dim. g_battleAddrs is set by
+// installBattleShadowRestore, so this answers correctly only after the game-hook
+// fan-out has run; main.cpp's presentHookNeeded depends on that ordering. The
+// per-frame battle ticks then need the Present hook regardless of the
+// frame-atlas-cache setting.
 bool battleShadowRestoreActive() {
   return supportedGame && g_battleAddrs && battleShadowRestoreEnabled();
 }

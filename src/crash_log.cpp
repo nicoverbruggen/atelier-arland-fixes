@@ -19,6 +19,7 @@
 #include "config.h"
 #include "crash_log.h"
 #include "log.h"
+#include "mem.h"
 
 namespace atfix {
 
@@ -28,19 +29,6 @@ namespace {
 
 LPTOP_LEVEL_EXCEPTION_FILTER previousFilter = nullptr;
 std::atomic<bool> handlingCrash = { false };
-
-bool readableRange(uintptr_t address, size_t size) {
-  MEMORY_BASIC_INFORMATION info = { };
-  if (!VirtualQuery(reinterpret_cast<const void*>(address), &info,
-      sizeof(info)))
-    return false;
-  if (info.State != MEM_COMMIT || (info.Protect & PAGE_GUARD) ||
-      (info.Protect & PAGE_NOACCESS))
-    return false;
-  const uintptr_t regionEnd =
-    reinterpret_cast<uintptr_t>(info.BaseAddress) + info.RegionSize;
-  return address + size <= regionEnd;
-}
 
 bool executableAddress(uintptr_t address) {
   MEMORY_BASIC_INFORMATION info = { };

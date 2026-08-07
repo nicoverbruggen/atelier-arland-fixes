@@ -20,9 +20,11 @@ namespace atfix {
 // pre-UI SMAA injection) follows without further interception, and the real
 // backbuffer is touched only by the downscale below.
 
-// Whether the configuration asks for supersampling: a render resolution that
-// exceeds the display resolution. Known before any device exists, so the
-// Present hook can be installed for it.
+// Whether the machinery may be needed: a render resolution larger than the
+// display, or borderless, where fitting the render size inside the monitor goes
+// through the same redirect. Borderless defaults on, so this is true for most
+// installs; ssaaActive() is what says the pass really runs. Known before any
+// device exists, so the Present hook can be installed for it.
 bool ssaaRequested();
 
 // Capture the swap chain's backbuffer and, if the render resolution really is

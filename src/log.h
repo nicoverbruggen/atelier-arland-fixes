@@ -34,7 +34,11 @@ public:
 
 private:
 
-  mutex         m_mutex;
+  // Recursive because the crash filter logs its post-mortem through this same
+  // Log. A fault raised inside the stream write below would otherwise re-enter
+  // a lock the faulting thread already holds and hang the process instead of
+  // producing the report the logger exists for.
+  recursive_mutex m_mutex;
   std::ofstream m_file;
   std::chrono::steady_clock::time_point m_start;
 

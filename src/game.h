@@ -4,8 +4,8 @@
 
 // Per-game capability layer. This header plus the matrix in game.cpp are the
 // single source of truth for which enhancements each Arland game receives and
-// whether they are on by default; the "Feature support by game" table in
-// README.md mirrors the matrix. Both the D3D11 layer and the menu/engine layer
+// whether they are on by default; the fix and graphics-enhancement tables in
+// README.md mirror the cells they list. Both the D3D11 layer and the menu/engine layer
 // consult this so a feature can be gated per game without threading the game
 // identity through every call site.
 namespace atfix {

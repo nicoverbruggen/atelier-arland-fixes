@@ -140,7 +140,7 @@ std::atomic<uint64_t> g_transitionShadowFlushBytes = 0;
 //              UpdateSubresource right before each cinematic shadow-receiving
 //              880 draw (gateHoldAtDraw).
 // Shared arland-fix.ini boolean reader; writes the default back when the key is
-// absent so it appears in the file for the user. Defined below with configPath.
+// absent so it appears in the file for the user. Defined in config.cpp.
 bool arlandConfigBool(const char* section, const char* key, bool def);
 
 // ShadowMultiplier (arland-fix.ini [Rendering], default 2): scales
@@ -148,7 +148,7 @@ bool arlandConfigBool(const char* section, const char* key, bool def);
 // maps to 2048/4096/8192 (plus the caster viewport, the A->B copy box and the
 // receiver's PCF tap scale); anything else, 1 included, keeps vanilla
 // behaviour.
-// ARLAND_SHADOW_MULTIPLIER overrides the ini. Defined below with configPath.
+// ARLAND_SHADOW_MULTIPLIER overrides the ini. Defined in config.cpp.
 UINT shadowMapResolution();
 
 // ---- shadow-res twin plumbing ------------------------------------------
@@ -276,7 +276,13 @@ bool cbCaptureEnabled() {
 }
 
 mutex g_cbCaptureMutex;
-std::map<std::pair<ID3D11Resource*, UINT>, std::pair<const void*, uint32_t>>
+// Keyed by context as well as subresource: the same DYNAMIC buffer can be
+// mapped WRITE_DISCARD on the immediate and on a deferred context at once, and
+// each map renames to its own CPU region. A key without the context would let
+// one context's Unmap patch through the other's still-live pointer, leaving the
+// region it meant to patch untouched.
+std::map<std::tuple<ID3D11DeviceContext*, ID3D11Resource*, UINT>,
+         std::pair<const void*, uint32_t>>
     g_cbCapturePending;
 
 bool isConstantBuffer(ID3D11Resource* resource, D3D11_BUFFER_DESC* desc) {
@@ -289,9 +295,9 @@ bool isConstantBuffer(ID3D11Resource* resource, D3D11_BUFFER_DESC* desc) {
 }
 
 // The game writes cbuffers via Map(WRITE_DISCARD)/Unmap; the CPU payload is
-// only valid between Map and Unmap. Track the mapped pointer per subresource
-// so captureCbUnmap can patch it right before the real Unmap.
-void captureCbMap(ID3D11Resource* resource, UINT sub,
+// only valid between Map and Unmap. Track the mapped pointer per context and
+// subresource so captureCbUnmap can patch it right before the real Unmap.
+void captureCbMap(ID3D11DeviceContext* ctx, ID3D11Resource* resource, UINT sub,
                   const D3D11_MAPPED_SUBRESOURCE* mapped) {
   if (!cbCaptureEnabled() || !resource || !mapped || !mapped->pData)
     return;
@@ -299,17 +305,17 @@ void captureCbMap(ID3D11Resource* resource, UINT sub,
   if (!isConstantBuffer(resource, &desc))
     return;
   std::lock_guard lock(g_cbCaptureMutex);
-  g_cbCapturePending[{resource, sub}] = {mapped->pData, desc.ByteWidth};
+  g_cbCapturePending[{ctx, resource, sub}] = {mapped->pData, desc.ByteWidth};
 }
 
-void captureCbUnmap(ID3D11DeviceContext*, ID3D11Resource* resource,
+void captureCbUnmap(ID3D11DeviceContext* ctx, ID3D11Resource* resource,
                     UINT sub) {
   if (!cbCaptureEnabled())
     return;
   std::pair<const void*, uint32_t> pending{nullptr, 0};
   {
     std::lock_guard lock(g_cbCaptureMutex);
-    auto it = g_cbCapturePending.find({resource, sub});
+    auto it = g_cbCapturePending.find({ctx, resource, sub});
     if (it != g_cbCapturePending.end()) {
       pending = it->second;
       g_cbCapturePending.erase(it);
@@ -331,8 +337,9 @@ void captureCbUnmap(ID3D11DeviceContext*, ID3D11Resource* resource,
 
 std::atomic<ID3D11DeviceContext*> g_immCtx{nullptr};
 
-// A shadow-map clear wipes the engine-side cut-in caster flags; the game-side
-// restore walk lives in menu_fix (env-gated there).
+// A shadow-map clear opens a battle frame's shadow pass, which is where the
+// cut-in holds need this frame's battle state. The callback is in
+// battle_shadow_restore.cpp.
 void cutinShadowMapCleared(ID3D11DeviceContext*,
                            ID3D11DepthStencilView* dsv) {
   if (!dsv)
@@ -627,17 +634,6 @@ void noteViewportExtent(UINT width, UINT height) {
       seen, height, std::memory_order_relaxed)) {}
 }
 
-// Dirty used to be set when the twin was BOUND, so a bind whose only traffic
-// was the frame-start clear let the next resolve stamp a bare clear over a
-// host that still held the last finished frame. Totori's conversation opening
-// hits exactly that: the engine idles the scene for one frame while it
-// prepares the dialogue view, the stamped-black host was blitted and
-// presented, and the engine's backdrop snapshot froze that black frame for
-// the whole conversation. Marking at draw time keeps a clear-only twin from
-// erasing the host; the clear itself is not lost, it stays in the twin and is
-// delivered together with the first draw that follows it. Called from every
-// draw hook after the SMAA boundary has run, so the boundary's own resolve
-// still sees the pre-draw state.
 // ---- scene-target identity -------------------------------------------------
 // The one surface the games composite the finished frame into. supersample.h
 // states the architectural fact this rests on: these games bind the swap-chain
@@ -729,10 +725,12 @@ void noteSceneAnchor(IDXGISwapChain* swapChain) {
   if (g_sceneAnchor.exchange(found, std::memory_order_relaxed) != found) {
     // The reference is the point, not the pointer: the anchor is compared by
     // ADDRESS below, so holding one stops a freed texture's address being
-    // recycled and faking a match. It would also make ResizeBuffers fail while
-    // outstanding, so that was measured: a probe on the swap chain's
-    // ResizeBuffers saw no call in any of the three games, with borderless and
-    // supersampling off, which is the only case that pins the backbuffer.
+    // recycled and faking a match. It also keeps a reference outstanding on
+    // whatever it anchored, which would make ResizeBuffers fail. That was
+    // measured: a probe on the swap chain's ResizeBuffers saw no call in any of
+    // the three games. The measurement covers supersample.cpp as well, which
+    // holds a view over the real backbuffer for the process lifetime whenever
+    // borderless or supersampling is on.
     ID3D11Texture2D* tex = static_cast<ID3D11Texture2D*>(found);
     tex->AddRef();
     if (ID3D11Texture2D* prev =
@@ -820,11 +818,10 @@ bool smaaIsSceneTargetResource(ID3D11Resource* res) {
 }
 
 // ---- pre-UI SMAA injection -------------------------------------------------
-// Run SMAA on the finished 3D scene, before the UI composites on top of it —
-// matching AGT's injection point, so the HUD/menus stay crisp. The boundary is
-// the frame's first bind of the main-size colour target WITHOUT depth (the UI
-// draws to the main render target with depth testing off; the scene rendered
-// to it with depth). Once per frame; the latch is reset at Present.
+// Run SMAA on the finished 3D scene, before the UI composites on top of it,
+// matching AGT's injection point, so the HUD and menus stay crisp. Which draw
+// marks that boundary differs per title and is chosen in smaaBoundaryMode below.
+// Once per frame; the latch is reset at Present.
 std::atomic<bool> g_smaaDoneThisFrame{false};
 std::atomic<bool> g_smaaSceneSeen{false};
 
@@ -1399,7 +1396,10 @@ void recordTransitionMapDetail(ID3D11Resource* resource, UINT subresource,
 D3D11_BOX getResourceBox(
   const ATFIX_RESOURCE_INFO*      pInfo,
         UINT                      Subresource) {
-  uint32_t mip = Subresource % pInfo->Mips;
+  // Mips is 0 only when getResourceInfo failed and the caller did not check,
+  // which tryCpuCopy does not for its source. A divide by zero is not a
+  // graceful way to find that out.
+  uint32_t mip = pInfo->Mips ? Subresource % pInfo->Mips : 0;
 
   uint32_t w = std::max(pInfo->Width >> mip, 1u);
   uint32_t h = std::max(pInfo->Height >> mip, 1u);
@@ -2051,7 +2051,8 @@ HRESULT STDMETHODCALLTYPE ID3D11Device_CreateTexture2D(
           log("Resizing hard-coded ",
               halfSizeBlurTarget ? "960x540 blur target"
                                  : "1920x1080 target",
-              " to ", std::dec, desc.Width, "x", desc.Height);
+              " to ", std::dec, desc.Width, "x", desc.Height,
+              " format=", desc.Format);
       }
     }
 
@@ -2548,6 +2549,17 @@ HRESULT tryCpuCopy(
 
   if (pSrcBox)
     srcBox = *pSrcBox;
+
+  // D3D11 drops a copy whose destination origin lies outside the destination,
+  // and one with an inverted source box. The CPU path has to reject the same
+  // ones: the clamps below are unsigned, so an out-of-range origin wraps instead
+  // of clamping and the copy runs at full source width past the end of the
+  // mapping. Failing here falls back to the real GPU copy. DstX == dstBox.right
+  // is left to the zero-extent check below, which treats it as a no-op.
+  if (srcBox.right < srcBox.left || srcBox.bottom < srcBox.top ||
+      srcBox.back < srcBox.front ||
+      DstX > dstBox.right || DstY > dstBox.bottom || DstZ > dstBox.back)
+    return E_INVALIDARG;
 
   uint32_t w = std::min(srcBox.right - srcBox.left, dstBox.right - DstX);
   uint32_t h = std::min(srcBox.bottom - srcBox.top, dstBox.bottom - DstY);
@@ -3256,7 +3268,7 @@ HRESULT STDMETHODCALLTYPE ID3D11DeviceContext_Map(
     const HRESULT hr = procs->Map(
       pContext, pResource, Subresource, MapType, MapFlags, pMappedResource);
     if (SUCCEEDED(hr)) {
-      captureCbMap(pResource, Subresource, pMappedResource);
+      captureCbMap(pContext, pResource, Subresource, pMappedResource);
     }
     return hr;
   }
@@ -3278,7 +3290,7 @@ HRESULT STDMETHODCALLTYPE ID3D11DeviceContext_Map(
         pResource, Subresource, MapType, caller, uint64_t(nanos));
     }
     if (SUCCEEDED(hr)) {
-      captureCbMap(pResource, Subresource, pMappedResource);
+      captureCbMap(pContext, pResource, Subresource, pMappedResource);
     }
     return hr;
   }
@@ -3298,9 +3310,15 @@ HRESULT STDMETHODCALLTYPE ID3D11DeviceContext_Map(
   if (!inserted) {
     procs->Unmap(pContext, shadow, Subresource);
     shadow->Release();
+    // The Map above already filled the caller's struct, and the pointer in it is
+    // dead once the shadow is unmapped. Clear it so a caller that ignores the
+    // HRESULT faults here rather than writing through it into whatever now owns
+    // that memory.
+    if (pMappedResource)
+      *pMappedResource = D3D11_MAPPED_SUBRESOURCE { };
     return E_FAIL;
   }
-      captureCbMap(pResource, Subresource, pMappedResource);
+      captureCbMap(pContext, pResource, Subresource, pMappedResource);
   return hr;
 }
 

@@ -62,8 +62,9 @@ bool alreadyBorderless(HWND window, const RECT& bounds) {
 
 // Cross-thread SetWindowPos sends messages synchronously to the owning thread,
 // so if a restyle never sticks, re-applying it every frame turns into hammering
-// the game's message loop from the render thread. Give up after a few attempts
-// and say so rather than risk wedging the game.
+// the game's message loop from the render thread. Give up after a few
+// consecutive attempts and say so rather than risk wedging the game; the count
+// starts over as soon as one sticks.
 constexpr uint32_t kMaxRestyleAttempts = 8;
 std::atomic<uint32_t> g_attempts { 0 };
 
@@ -75,6 +76,10 @@ void restyle(HWND window, bool firstTime) {
     return;
   }
   if (alreadyBorderless(window, bounds)) {
+    // The budget below counts consecutive failures, not corrections: a restyle
+    // that stuck proves the window is still being maintained, so eight
+    // legitimate reversions spread over a session cannot exhaust it.
+    g_attempts.store(0, std::memory_order_relaxed);
     if (firstTime)
       log("Borderless: window is already borderless and monitor-sized"
         " (", std::dec, bounds.right - bounds.left, "x",

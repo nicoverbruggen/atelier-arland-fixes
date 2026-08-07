@@ -688,10 +688,16 @@ bool hiResTextRerender(uintptr_t renderer, const char* utf8,
   std::memcpy(metrics, output + 0x10, sizeof(metrics));
   if (width <= 0 || height <= 0 || !pixels)
     return false;
-  const int newW = width * kScale;
-  const int newH = height * kScale;
-  if (static_cast<int64_t>(newW) * newH > kMaxBytes)
+  // width and height come out of engine memory, so scale them in 64-bit: an int
+  // product would wrap before the guard below could see it. Both fit in an int
+  // once that guard has passed. menu_fix.cpp does the same thing for the same
+  // pair of fields.
+  const int64_t scaledW = int64_t(width) * kScale;
+  const int64_t scaledH = int64_t(height) * kScale;
+  if (scaledW * scaledH > kMaxBytes)
     return false;
+  const int newW = int(scaledW);
+  const int newH = int(scaledH);
 
   // "replaced" is best-effort: re-render from the bundled font when every glyph
   // resolves, otherwise fall through and upscale the baked bitmap so the string

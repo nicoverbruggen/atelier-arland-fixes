@@ -90,6 +90,13 @@ float4 PSMain(VSOut i) : SV_TARGET {
 }
 )HLSL";
 
+// The downscale's constants. The size is load-bearing outside this file: the
+// pass maps through the hooked context, so sync_fix.cpp's constant-buffer
+// capture sees this buffer, and battle_shadows.cpp's Totori dim-hold table
+// matches a buffer by size alone. 32 is a live row in that table. What keeps the
+// patch off this buffer is the value predicate: it needs the first float above
+// 0.5, and texel[0] is 1/renderWidth. Reordering these fields so a value above
+// 0.5 lands at offset 0 arms that write.
 struct DownscaleParams {
   float texel[2] = {0.0f, 0.0f};
   float ratio[2] = {1.0f, 1.0f};
@@ -115,8 +122,9 @@ template <typename T> void release(T*& p) { if (p) { p->Release(); p = nullptr; 
 // assumption it breaks and the first place that has to be handled.
 std::atomic<bool> g_active{false};
 
-// Identity only, never dereferenced: the backbuffer outlives the swap chain we
-// took it from, and holding a reference to it would pin the chain.
+// Identity only, never dereferenced: g_backRTV holds a reference to this same
+// texture for the process lifetime, so the address cannot be recycled under the
+// comparison and a second reference here would buy nothing.
 const void* g_backbuffer = nullptr;
 
 // How many render-target views the engine asked for over the backbuffer. Zero
@@ -426,19 +434,20 @@ void ssaaDownscale(IDXGISwapChain* swapChain) {
   if (device) device->GetImmediateContext(&context);
   if (!context) { if (device) device->Release(); return; }
 
-  // The rest of the picture, on the first downscaled frame, and unconditional:
-  // "supersampling is on but the edges are still jagged" cannot be answered
-  // from the lines above, because they only say the redirect happened. What
-  // decides whether the result is actually supersampled is how much of the
-  // target the engine drew into (the viewport it was still using when the frame
-  // ended) and how many source texels each output pixel averages. A viewport
-  // smaller than the render size means the engine drew a corner of the target
-  // and the downscale is magnifying it; taps=1 at a 2x ratio is the exact 2x2
-  // box filter and is correct, but at a larger ratio it is undersampling.
-  // Reported a few hundred frames in, not on the first one. The first frames
+  // The rest of the picture, a few hundred frames in. "Supersampling is on but
+  // the edges are still jagged" cannot be answered from the lines above, because
+  // they only say the redirect happened. What decides whether the result is
+  // actually supersampled is how much of the target the engine drew into (the
+  // viewport it was still using when the frame ended) and how many source texels
+  // each output pixel averages. A viewport smaller than the render size means
+  // the engine drew a corner of the target and the downscale is magnifying it;
+  // taps=1 at a 2x ratio is the exact 2x2 box filter and is correct, but at a
+  // larger ratio it is undersampling. Not on the first frame: the first frames
   // are a loading screen drawn at swap-chain size, so "the largest viewport so
-  // far" is not yet the answer to what the engine draws the game at -- asking
-  // then produces a confident report of a problem that does not exist.
+  // far" is not yet the answer to what the engine draws the game at, and asking
+  // then produces a confident report of a problem that does not exist. The
+  // detail line follows verbose logging; the warning below does not, because it
+  // names a real problem rather than describing a healthy run.
   static std::atomic<uint32_t> framesSeen{0};
   const uint32_t frame = framesSeen.fetch_add(1, std::memory_order_relaxed);
   if (frame == 300) {

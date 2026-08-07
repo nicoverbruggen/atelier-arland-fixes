@@ -37,7 +37,7 @@
 
 namespace atfix {
 extern Log log;
-bool arlandInCinematicBattle();   // defined later in this TU
+bool arlandInCinematicBattle();   // battle_shadow_restore.cpp
 bool arlandConfigBool(const char* section, const char* key, bool def);  // config.cpp
 bool atlasReconcileEnabled();   // sync_fix.cpp
 uint64_t atlasWriteMapCount();  // sync_fix.cpp
@@ -268,12 +268,13 @@ std::unordered_map<RenderTextKey, RenderTextBitmap, RenderTextKeyHash>
 // known where the allocation happens, so it is recorded there and read here
 // rather than inferred from an object that has stopped telling the truth.
 //
-// Rewritten after every real render (see cachedRenderText): a render is the one
-// thing that can change the buffer at output+8, whether the engine frees and
-// reallocates inside its own render or the substitution installs a new one. The
-// mod cannot observe the engine's free, but it does not need to -- it only needs
-// to know the record may be stale, and the render is that signal. A record
-// therefore describes the most recent render for that output, or is absent.
+// Rewritten by every path that can install a buffer here: the render hook after
+// each real render, which covers both the engine's own free and reallocate and
+// the substitution's install, and the replay when it allocates a larger buffer
+// of its own. The engine can also free the buffer with no render, which the mod
+// cannot observe, so a record is not proof the buffer is still there. The pixel
+// address is compared as well, and a record that no longer matches the object is
+// ignored.
 struct InstalledTextBuffer {
   uintptr_t pixels = 0;
   uint64_t bytes = 0;
@@ -1379,13 +1380,12 @@ uintptr_t cachedRenderText(uintptr_t a, uintptr_t b,
     if (a && b)
       atfix::hiResTextRerender(a, reinterpret_cast<const char*>(b),
         gameAlloc, gameFree);
-    // A render is the one thing that can change the buffer at output+8: the
-    // engine frees and reallocates inside its own render whenever the string's
-    // pow2 dims change, and the substitution installs a new buffer over the top.
-    // The engine's free is invisible to the mod, so the record is rebuilt from
-    // scratch here rather than patched -- either the substitution just installed
-    // a buffer whose size it reported, or the mod owns nothing for this output
-    // and the record goes. Either way it can never outlive a render.
+    // Rebuilt from scratch rather than patched: the engine frees and reallocates
+    // inside its own render whenever the string's pow2 dims change, and the
+    // substitution installs a new buffer over the top. The engine's free is
+    // invisible here, so either the substitution just installed a buffer whose
+    // size it reported, or the mod owns nothing for this output and the record
+    // goes.
     {
       const auto* renderer = reinterpret_cast<const BYTE*>(a);
       uintptr_t outputAddress = 0;
@@ -1993,8 +1993,10 @@ bool installTextBitmapAllocator(BYTE* base, const Game& game) {
   // Resolve the engine's aligned text-buffer allocator/free — the pair the
   // renderText path uses for the output object's `+8` pixel buffer — so a
   // feature can grow/replace that buffer and have the engine free it correctly.
-  // English-build-only (the RVAs are per-build); needed by the text-bitmap
-  // replay cache and by the high-resolution text substitution. Rorona's
+  // English-build-only (the RVAs are per-build). It rides on the hi-res text
+  // consumer: the fan-out installs it only after that consumer succeeded, so the
+  // replay cache uses it when it is there and runs without it when it is not
+  // (see cachedRenderText). Rorona's
   // allocate is a `mov edx,0x10; jmp` thunk; Totori/Meruru inline the alignment
   // so their allocate is a full function (same `void*(size_t)` signature).
   if (game.exeBuild != BuildEnglish ||
@@ -2197,6 +2199,12 @@ void detectAndInstallGameHooks() {
       ? installBucTextCacheScope(gameBase, game) : false;
     const bool deepStatsInstalled = atlasInstalled
       ? installDeepMenuStats(gameBase, game) : false;
+    // Bare calls by convention: every installer below is all-or-nothing and
+    // logs its own status. A partial failure inside one leaves no rewritten
+    // game code and no detour whose safety depends on a sibling that failed, so
+    // there is no result here worth branching on. An installer that cannot hold
+    // that property unwinds itself, the way installSaveMenuFix restores its
+    // gates when the carried-press repair will not install.
     atfix::installBattleShadowRestore(gameBase, game);
     atfix::installFieldPhysics(gameBase, game);
     atfix::installWorldMapFix(gameBase, game);
@@ -2214,8 +2222,9 @@ void detectAndInstallGameHooks() {
       : !hiresRequested ? "off"
       : textBitmapAllocatorInstalled && hiResTextConsumerInstalled
         ? "active" : "failed";
-    // The resolved state, not a per-game guess: this read "not_applicable" for
-    // every non-Rorona game even while the frame scope was running.
+    // Resolved through the matrix rather than guessed from the title: the frame
+    // scope is not Rorona-only, so only an Unsupported cell may report
+    // not_applicable.
     const char* frameCacheStatus =
       atfix::featureSupport(atfix::Feature::FrameAtlasCache) ==
           atfix::Support::Unsupported

@@ -159,7 +159,7 @@ public:
     auto now = Clock::now();
 
     return (now < time)
-      ? wait_for(lock, now - time)
+      ? wait_for(lock, time - now)
       : std::cv_status::timeout;
   }
 
@@ -169,7 +169,7 @@ public:
       return true;
 
     auto now = Clock::now();
-    return now < time && wait_for(lock, now - time, pred);
+    return now < time && wait_for(lock, time - now, pred);
   }
 
   template<typename Rep, typename Period>
