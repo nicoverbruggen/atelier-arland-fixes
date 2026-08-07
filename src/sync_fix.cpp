@@ -1025,11 +1025,21 @@ void noteSceneRtDraw(ID3D11DeviceContext* context) {
       if (w && d.Width == w && d.Height == h && d.SampleDesc.Count == 1) {
         if (g_sceneRt.exchange(tex, std::memory_order_relaxed) != tex) {
           g_sceneRtDraws.store(0, std::memory_order_relaxed);
-          std::lock_guard lock(g_sceneRtMutex);
-          tex->AddRef();
-          if (ID3D11Texture2D* prev =
-                g_sceneRtTex.exchange(tex, std::memory_order_relaxed))
-            prev->Release();
+          ID3D11Texture2D* previous = nullptr;
+          {
+            std::lock_guard lock(g_sceneRtMutex);
+            tex->AddRef();
+            previous = g_sceneRtTex.exchange(tex, std::memory_order_relaxed);
+          }
+          // Released outside the lock. The lock exists so this swap cannot
+          // interleave with fireSceneRtSmaa's load-and-AddRef, which does not
+          // depend on when the old reference is dropped. Dropping the last one
+          // destroys the texture, and that runs runtime code under whatever
+          // locks it wants; keeping it out here means our lock is never held
+          // across anything that can do real work. AddRef stays inside, being
+          // an interlocked increment that cannot call back.
+          if (previous)
+            previous->Release();
         }
         g_sceneRtDraws.fetch_add(1, std::memory_order_relaxed);
       }

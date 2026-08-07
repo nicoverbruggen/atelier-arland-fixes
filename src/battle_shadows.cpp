@@ -341,6 +341,19 @@ bool isShadowSrvLocked(ID3D11ShaderResourceView* srv) {
   // verdict on a recycled pointer could make gateHoldAtDraw write its 16 gate
   // bytes into an unrelated 880-byte VS cb0. Caller holds g_shadowTraceMutex, so
   // the static generation is accessed under the lock.
+  //
+  // That lock is deliberately held across the three D3D11 queries below, and it
+  // is worth knowing why that is a considered position rather than an oversight.
+  // Holding one's own lock while calling into someone else's code is the usual
+  // ingredient for a deadlock, because what it takes next is out of our hands.
+  // It is safe here because these are queries that submit no work and because
+  // nothing the runtime can reach takes g_shadowTraceMutex, so it has no route
+  // back in. What would break that is a caller of this function that the
+  // runtime itself can invoke. The same shape exists at the replay cache in
+  // menu_fix.cpp and around ShadowCharacterBuild in battle_shadow_restore.cpp.
+  // If a hang is ever seen on any of the three, the way out is to classify the
+  // view through D3D11 private data instead of this cache, which removes the
+  // need for a lock here at all and retires the generation counter with it.
   static uint32_t cachedGeneration = 0;
   const uint32_t generation = arlandSceneGeneration();
   if (generation != cachedGeneration) {
