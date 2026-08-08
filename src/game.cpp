@@ -63,6 +63,8 @@ const Descriptor& descriptor(Feature f) {
     /* FieldMonsterSnap   */ { "ARLAND_MONSTER_SNAP", "Field", "MonsterSnapFix", false },
     /* FieldCharacterPull */ { "ARLAND_CHARACTER_PULL", "Field", "CharacterPullFix", false },
     /* FastSaveMenu       */ { "ARLAND_SAVE_MENU_GATES", "Menus", "FastSaveMenu", false },
+    // No ini key: a correction is not a setting. See pad_rescan.h.
+    /* PadRescanBackoff   */ { "ARLAND_PAD_RESCAN", nullptr, nullptr, false },
   };
   return table[static_cast<int>(f)];
 }
@@ -144,10 +146,10 @@ constexpr Support X = Support::OnByDefault;
 // suggested Rorona's title wait paced a real fade; playing it showed no fade
 // there at all, so that concern is withdrawn.
 constexpr Support kMatrix[3][static_cast<int>(Feature::Count)] = {
-  //           Sync Menu Atls Frme Res  ShMl Bat  CutS CutD Logo Movi Card Snap Pull Save
-  /* Rorona */ { X,   X,   X,   X,   X,   X,   X,   O,   O,   O,   O,   X,   X,   X,   X },
-  /* Totori */ { X,   X,   X,   X,   X,   X,   U,   O,   O,   O,   O,   X,   X,   X,   X },
-  /* Meruru */ { X,   X,   X,   O,   X,   X,   U,   O,   O,   O,   O,   X,   X,   X,   X },
+  //           Sync Menu Atls Frme Res  ShMl Bat  CutS CutD Logo Movi Card Snap Pull Save Pad
+  /* Rorona */ { X,   X,   X,   X,   X,   X,   X,   O,   O,   O,   O,   X,   X,   X,   X,   X },
+  /* Totori */ { X,   X,   X,   X,   X,   X,   U,   O,   O,   O,   O,   X,   X,   X,   X,   X },
+  /* Meruru */ { X,   X,   X,   O,   X,   X,   U,   O,   O,   O,   O,   X,   X,   X,   X,   X },
 };
 
 int titleRow(Title t) {

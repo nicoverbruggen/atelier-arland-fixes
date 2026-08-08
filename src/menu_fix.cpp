@@ -19,6 +19,8 @@
 #include "../vendor/minhook/include/MinHook.h"
 #include "config.h"
 #include "field_physics.h"
+#include "pad_notify_trace.h"
+#include "pad_rescan.h"
 #include "worldmap_fix.h"
 #include "item_guard.h"
 #include "stream_lifetime_fix.h"
@@ -2247,6 +2249,13 @@ void detectAndInstallGameHooks() {
     atfix::installBattleShadowRestore(gameBase, game);
     atfix::installFieldPhysics(gameBase, game);
     atfix::installWorldMapFix(gameBase, game);
+    atfix::installPadRescanBackoff(gameBase, game);
+    // Observes the pad rescan's other half and installs nothing: it asks
+    // whether a controller arriving under Proton is announced to this process,
+    // which is what would let the rescan be suppressed outright instead of
+    // rate-limited. Off unless ARLAND_PAD_NOTIFY_TRACE is set. Here rather than
+    // in DllMain because it starts a thread, which the loader lock forbids.
+    atfix::startPadNotifyTrace();
     atfix::installItemGuard(gameBase, game);
     atfix::installStreamLifetimeFix(gameBase, game);
     atfix::installShopFix(gameBase, game);

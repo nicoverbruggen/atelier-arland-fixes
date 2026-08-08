@@ -88,6 +88,8 @@ else
     'src/config.cpp',
     'src/crash_log.cpp',
     'src/sharpen.cpp',
+    'src/pad_rescan.cpp',
+    'src/pad_notify_trace.cpp',
     'src/smaa.cpp',
     'src/field_physics.cpp',
     'src/worldmap_fix.cpp',

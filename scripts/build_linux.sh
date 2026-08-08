@@ -21,7 +21,7 @@ buildtype="${1:-release}"
 # "can only create exec sessions on running containers" is a poor way to find
 # that out mid-build.
 if ! podman container exists "$container"; then
-    echo "Container '$container' does not exist. See BUILDING.md for how to create it." >&2
+    echo "Container '$container' does not exist: it is Fedora with meson, ninja and mingw64-gcc-c++." >&2
     exit 1
 fi
 if [[ "$(podman inspect -f '{{.State.Running}}' "$container" 2>/dev/null)" != "true" ]]; then
@@ -88,7 +88,7 @@ mkdir -p "$stage/arland-fix"
 cp "$repo/build64/d3d11.dll" "$repo/build64/arland-fix-launcher.exe" \
    "$repo/build32/msimg32.dll" "$stage/"
 cp "$repo/default.ini" "$stage/arland-fix.ini"
-cp "$repo/README.md" "$repo/CHANGELOG.md" "$repo/ADVANCED.md" "$repo/LICENSE" \
+cp "$repo/README.md" "$repo/LICENSE" \
    "$stage/arland-fix/"
 cp -r "$repo/licenses" "$stage/arland-fix/LICENSES"
 # Named for what they cover: LICENSE points at them and there is no vendor/

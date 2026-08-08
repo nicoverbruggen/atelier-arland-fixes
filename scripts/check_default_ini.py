@@ -2,8 +2,8 @@
 """Check default.ini against the defaults the code actually uses.
 
 default.ini is what users get in the release archive, and it repeats values that
-really live in src/. Nothing stops the two drifting apart, and a stale shipped
-file misrepresents the mod to exactly the people least able to notice. This
+really live in src/. It is now the only description of the
+option surface, and a stale shipped file misrepresents the mod to exactly the people least able to notice. This
 compares them and fails if they disagree.
 
 Checked in both directions:
@@ -200,7 +200,7 @@ def main():
         for problem in problems:
             print(f"  - {problem}", file=sys.stderr)
         print(
-            "\nUpdate default.ini (and ADVANCED.md) to match, or adjust the "
+            "\nUpdate default.ini to match, or adjust the "
             "allowlists in this script if an option is deliberately undocumented.",
             file=sys.stderr,
         )

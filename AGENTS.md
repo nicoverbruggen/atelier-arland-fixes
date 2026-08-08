@@ -27,10 +27,8 @@ The current tree contains:
 - `vendor/minhook/` contains the unmodified vendored MinHook dependency and its license; `vendor/stb/` holds stb_truetype; `vendor/font/` holds the bundled replacement fonts (`.ttf`) and the per-glyph fallback face.
 - `scripts/embed_font.py` compiles the vendored fonts into the DLL at build time; the generated sources live under the build directory and are not committed.
 - `.github/workflows/build.yml` builds and publishes both Windows DLLs.
-- `README.md` is the user-facing overview and installation guide for the drop-in defaults.
-- `ADVANCED.md` documents the optional features and their `arland-fix.ini` configuration; user-facing configuration is documented exclusively through `arland-fix.ini` (environment switches are diagnostics and belong in `TECHNICAL.md` only).
-- `BUILDING.md` contains the build instructions.
-- `TECHNICAL.md` documents how each fix is implemented and why it works that way. Each section opens with a TL;DR that gives the short version of the explanation below it. Keep the language plain: a reader who knows how to program but not this engine should follow it. Measurements, test results and the record of how a conclusion was reached do not belong here.
+- `README.md` is the user-facing overview: what the mod does per game, and how to install it. It is the only prose document in the repository.
+- `default.ini` is the option surface. Every user-facing key appears there with its default, and environment switches are diagnostics that must not be given one.
 
 Keep the root minimal. Packaged build output belongs below ignored `out/` and must not be committed. The day-to-day Linux build script uses `build64/` and `build32/` as intermediate Meson trees before packaging the distributable archive into `out/`.
 
@@ -42,7 +40,7 @@ Use the repository's day-to-day Linux cross-build script from the repository roo
 ./scripts/build_linux.sh
 ```
 
-It compiles the intermediate binaries as `build64/d3d11.dll`, `build64/arland-fix-launcher.exe`, and `build32/msimg32.dll`, verifies their required proxy exports through `scripts/check_exports.py`, then packages the distributable archive as `out/arland-fix-<VERSION>.zip`. For native Windows and manual Meson commands, follow `BUILDING.md`. The export check requires `D3D11CreateDevice` at ordinal 22, `D3D11CreateDeviceAndSwapChain` at ordinal 23 and `D3D11On12CreateDevice` at ordinal 24 in the game DLL, and `AlphaBlend` plus `TransparentBlt` in the launcher proxy. The mod does nothing with D3D11-on-12; that export exists because a tool injected alongside this one can import the name statically, and the loader fails the whole process on a missing static import before any code runs.
+It compiles the intermediate binaries as `build64/d3d11.dll`, `build64/arland-fix-launcher.exe`, and `build32/msimg32.dll`, verifies their required proxy exports through `scripts/check_exports.py`, then packages the distributable archive as `out/arland-fix-<VERSION>.zip`. The export check requires `D3D11CreateDevice` at ordinal 22, `D3D11CreateDeviceAndSwapChain` at ordinal 23 and `D3D11On12CreateDevice` at ordinal 24 in the game DLL, and `AlphaBlend` plus `TransparentBlt` in the launcher proxy. The mod does nothing with D3D11-on-12; that export exists because a tool injected alongside this one can import the name statically, and the loader fails the whole process on a missing static import before any code runs.
 
 ## Validation
 
@@ -70,7 +68,7 @@ A refactor, or a performance idea with no measured problem behind it, is not a f
 
 ## Configuration options
 
-`default.ini` ships in the release archive and repeats defaults that really live in `src/config.cpp` (and `src/game.cpp`'s feature table). When you add, rename, remove or re-default an option, update `default.ini` and `ADVANCED.md` in the same change.
+`default.ini` ships in the release archive and repeats defaults that really live in `src/config.cpp` (and `src/game.cpp`'s feature table). When you add, rename, remove or re-default an option, update `default.ini` in the same change.
 
 `scripts/check_default_ini.py` enforces this and runs in CI: it checks that every option the code reads is documented, that nothing documented is unread, and that the literal defaults agree. If an option is deliberately kept out of `default.ini`, or its default cannot be read from a single call site (the per-game cut-in keys), add it to the allowlists at the top of that script rather than dropping the check.
 
@@ -99,10 +97,12 @@ When changing existing code, change the comments the change makes wrong and leav
 
 Philip Rebohle created the original `atelier-sync-fix` synchronization implementation. TellowKrinkle supplied the earlier Map/Unmap coherence work and the old-Arland resolution correction. Yuri Hime's Atelier Graphics Tweak and the linked Steam investigations are prior work identifying the broad font-atlas transfer problem; AGT's unsafe upload-suppression implementation is not included. Nico, the author of this repository, led the Arland menu-hitch investigation, the `.PSSG` and bounded atlas-read cache research, and the launcher analysis. MinHook is by Tsuda Kageyu and contributors.
 
-Maintain these distinctions in source comments, `README.md`, `TECHNICAL.md`, and `LICENSE`. Do not imply that the menu investigation created the original synchronization technique.
+Maintain these distinctions in source comments, `README.md`, and `LICENSE`. Do not imply that the menu investigation created the original synchronization technique.
 
 Documentation must describe the current repository state. Do not narrate it using a specific release or version number, and do not hard-wrap Markdown prose.
 
 Avoid overusing em-dashes in source comments and documentation. Prefer commas, parentheses, or separate sentences; occasional correct use is fine, but do not lean on them.
 
-`TECHNICAL.md` and the code must stay in sync: every shipped fix and feature has a section in `TECHNICAL.md` describing how it works, and any change that adds, removes, or alters a fix's behavior or defaults amends `TECHNICAL.md` in the same change. A fix that exists only in code is undocumented and incomplete. The table of contents at the top lists every section, so a new section is added there in the same change.
+**The code is the technical record.** There is no prose document describing how the fixes work, and adding one is not the default answer to "this needs explaining". A fix's header explains what the defect is, what the correction does, and why it takes that shape; the evidence that settled it belongs there too, next to the thing it justifies. A reader who opens `src/sharpen.h` should not need anything else to understand the pass.
+
+That places a real obligation on comments. They carry what a separate document would have carried, so they are written for someone who can program but does not know this engine, and they record the reasoning rather than restating the code. A measurement that decided a design goes in the header that design lives in.

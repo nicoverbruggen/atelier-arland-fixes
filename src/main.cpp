@@ -4,6 +4,7 @@
 #include "config.h"
 #include "crash_log.h"
 #include "menu_fix.h"
+#include "pad_notify_trace.h"
 #include "path_util.h"
 #include "sharpen.h"
 #include "smaa.h"
@@ -251,7 +252,7 @@ HRESULT STDMETHODCALLTYPE tracedPresent(
     startedNanos, std::memory_order_relaxed);
   // Passive crash probe: record process memory every ~10s so the runaway-
   // allocation hang in dense battles (the KTGL sound reclaim-starvation leak —
-  // see the crash analysis in TECHNICAL.md) leaves a trail in arland-fix.log
+  // see the crash analysis below) leaves a trail in arland-fix.log
   // even though it hangs rather than throwing an exception the post-mortem could
   // catch. Opt-in via [Diagnostics] VerboseLogging so the default log stays quiet.
   if (atfix::verboseLogging()) {
@@ -329,7 +330,7 @@ HRESULT STDMETHODCALLTYPE tracedPresent(
     swapChain, presentInterval(syncInterval), flags);
   // Record a lost device once — the post-mortem a present-time hang/TDR leaves.
   // Kept as a passive diagnostic: it names the fault when a transition-teardown
-  // race removes the device (see the crash analysis in TECHNICAL.md).
+  // race removes the device.
   if (result == DXGI_ERROR_DEVICE_REMOVED || result == DXGI_ERROR_DEVICE_RESET) {
     static std::atomic<bool> loggedLoss{false};
     if (!loggedLoss.exchange(true, std::memory_order_relaxed)) {
@@ -641,8 +642,14 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved) {
       // any MH_* call still holds MinHook's lock flag, and MH_Uninitialize
       // would then spin forever in EnterSpinLock (vendor/minhook/src/hook.c),
       // which has no timeout, leaving the process unable to finish closing.
-      if (lpvReserved == nullptr)
+      // The pad-notification trace owns a thread and two windows, and the same
+      // reasoning applies to it: on process exit its pump has already been
+      // terminated, so posting to its windows and waiting for it would wait for
+      // a thread that cannot answer.
+      if (lpvReserved == nullptr) {
+        atfix::stopPadNotifyTrace();
         MH_Uninitialize();
+      }
       break;
   }
 

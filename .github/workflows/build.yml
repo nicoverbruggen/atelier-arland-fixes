@@ -108,7 +108,7 @@ jobs:
           # level. The vendored texts are named for what they cover, since
           # LICENSE points at them and there is no vendor/ tree here.
           mkdir -p dist/arland-fix
-          cp README.md CHANGELOG.md ADVANCED.md LICENSE dist/arland-fix/
+          cp README.md LICENSE dist/arland-fix/
           cp -r licenses dist/arland-fix/LICENSES
           cp vendor/minhook/LICENSE.txt dist/arland-fix/LICENSES/MinHook.txt
           cp vendor/smaa/LICENSE.txt dist/arland-fix/LICENSES/SMAA.txt
@@ -135,31 +135,10 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          # Release notes are the CHANGELOG section for the tag. A pre-release
-          # tag (v0.5-pre, v0.5-pre2) rarely has a heading of its own, so it
-          # falls back to the release it leads up to: v0.5-pre2 -> ## v0.5.
-          # That way cutting a pre-release needs no CHANGELOG edit.
-          extract_notes() {
-            awk -v heading="## $1" '
-              $0 == heading { found = 1; next }
-              found && /^## v/ { exit }
-              found { print }
-              END { if (!found) exit 1 }
-            ' CHANGELOG.md
-          }
-          BASE_TAG="$(echo "${GITHUB_REF_NAME}" | sed -E 's/-?pre[0-9]*$//I')"
-          if extract_notes "${GITHUB_REF_NAME}" > changes.md; then
-            echo "Release notes from ## ${GITHUB_REF_NAME}"
-          elif [ "${BASE_TAG}" != "${GITHUB_REF_NAME}" ] && \
-               extract_notes "${BASE_TAG}" > changes.md; then
-            echo "No ## ${GITHUB_REF_NAME} heading; using ## ${BASE_TAG}"
-          elif [ "${BASE_TAG}" != "${GITHUB_REF_NAME}" ]; then
-            echo "CHANGELOG.md has neither a ## ${GITHUB_REF_NAME} nor a ## ${BASE_TAG} heading" >&2
-            exit 1
-          else
-            echo "CHANGELOG.md has no ## ${GITHUB_REF_NAME} heading" >&2
-            exit 1
-          fi
+          # The release is created empty: the maintainer writes the notes.
+          # Auto-generating them from commits produced a wall of internal churn,
+          # and deriving them from a CHANGELOG made cutting a release depend on
+          # having remembered to edit a document. Neither is wanted.
           # Tags containing "pre" (e.g. v0.5-pre) publish as a GitHub pre-release.
           if echo "${GITHUB_REF_NAME}" | grep -qi 'pre'; then
             PRERELEASE="--prerelease"
@@ -167,8 +146,8 @@ jobs:
             PRERELEASE="--latest"
           fi
           if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
-            gh release edit "${GITHUB_REF_NAME}" --notes-file changes.md $PRERELEASE
+            gh release edit "${GITHUB_REF_NAME}" $PRERELEASE
             gh release upload "${GITHUB_REF_NAME}" "arland-fix-${GITHUB_REF_NAME}.zip" --clobber
           else
-            gh release create "${GITHUB_REF_NAME}" "arland-fix-${GITHUB_REF_NAME}.zip" --verify-tag --notes-file changes.md --title "${GITHUB_REF_NAME}" $PRERELEASE
+            gh release create "${GITHUB_REF_NAME}" "arland-fix-${GITHUB_REF_NAME}.zip" --verify-tag --notes "" --title "${GITHUB_REF_NAME}" $PRERELEASE
           fi
