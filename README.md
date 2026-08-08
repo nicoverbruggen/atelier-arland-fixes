@@ -2,6 +2,8 @@
 
 This mod significantly improves performance and adds various improvements to the Steam releases of **Atelier Rorona DX, Atelier Totori DX, and Atelier Meruru DX**, in every supported language.
 
+For the Dusk trilogy games, please see [this repository instead](https://github.com/nicoverbruggen/atelier-dusk-fixes).
+
 > [!TIP]
 > No separate `atelier-sync-fix` or `dinput8.dll` is required. For newer Atelier games (Mysterious games and newer), use the upstream [atelier-sync-fix](https://github.com/doitsujin/atelier-sync-fix) or an appropriate maintained fork instead. This project deliberately contains only Arland-specific code.
 
