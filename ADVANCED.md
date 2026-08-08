@@ -54,7 +54,7 @@ Both cut-in keys are off as shipped, which leaves the close-ups as the game rend
 | `[Startup]` | Values | Default |
 | --- | --- | --- |
 | `SkipLogos` | `true` skips the publisher and developer logos while the game boots. | `false` |
-| `SkipIntroMovie` | `true` skips the opening movie that plays after the logos. The ending movies are unaffected. | `false` |
+| `SkipIntroMovie` | `true` skips the first movie of the run, which is the opening that plays after the logos. Movies you ask for yourself are unaffected: the endings play, and so does anything you replay from the in-game Movies gallery. | `false` |
 
 `[Launcher] SkipLauncher` is above. `[Diagnostics] VerboseLogging` and `[Debug] View` are diagnostics and live in [TECHNICAL.md](TECHNICAL.md#diagnostics).
 

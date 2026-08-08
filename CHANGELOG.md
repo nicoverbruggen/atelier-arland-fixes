@@ -6,6 +6,8 @@
 
 - **Text with a symbol in it is no longer left blurry.** The high-resolution text feature drew each string from a bundled font, and a single character that font had no glyph for, such as the `⇔` in Totori's travel routes or the `♪` and `△` in Meruru's tips, sent the whole line back to the game's own low-resolution art. Those characters now come from a fallback face and the rest of the line stays sharp. Bullet lists, wave dashes and the hyphen variants read as their plain equivalents.
 
+- **The opening-movie skip no longer blocks the Movies gallery.** With `SkipIntroMovie=true`, replaying the opening from the in-game gallery played nothing and gave no reason. Only the first movie of a run is skipped now, so the endings and everything you pick yourself play normally. All three games.
+
 - **Various internal safety and correctness fixes.**
 
 ## v0.14

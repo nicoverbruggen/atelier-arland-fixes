@@ -689,11 +689,13 @@ All three games are wired, both builds each. Every address came from that game's
 
 ### TL;DR
 
-`[Startup] SkipIntroMovie=true` skips the opening movie that plays after the startup logos. The ending movies are not affected. All three games, off by default.
+`[Startup] SkipIntroMovie=true` skips the first movie the game plays, which is the opening that follows the startup logos. Nothing later is affected: the ending movies play, and so does anything replayed from the in-game Movies gallery. All three games, off by default.
 
 ### Safety
 
-One prologue-verified MinHook detour, installed only when the capability matrix supports the feature and the user opted in. The skip is confined to the opening by the movie index the routine already receives as an argument; every other index calls the original untouched, so the endings play normally. The detour reproduces the routine's own "cannot play" branch rather than inventing a new state, and it neither allocates nor frees. The enable flag is resolved once at install time and read as a plain atomic. With the option off the original is always called.
+One prologue-verified MinHook detour, installed only when the capability matrix supports the feature and the user opted in. The skip is confined to the first movie of the run by a play budget of one, held in an atomic counter; every play after it calls the original untouched. The detour reproduces the routine's own "cannot play" branch rather than inventing a new state, and it neither allocates nor frees. The enable flag is resolved once at install time and read as a plain atomic. With the option off the original is always called.
+
+Skipping the open routine cannot cost a gallery unlock. Every call site of it, in all six builds, sets the movie's seen-bit with `bts` into a bitset before calling in, so the unlock is already recorded by the time the detour decides anything.
 
 ### Details
 
@@ -701,9 +703,13 @@ All movies go through one routine that opens them, and its prologue is the same 
 
 The routine begins by asking whether the movie subsystem is ready. When it is not, the routine writes 1 to the player's state byte at `+0x30` and returns without opening anything. The per-frame movie update reads that byte first and returns "not playing" immediately when it is set, so the caller treats the movie as finished and moves on. That is the engine's own graceful degradation for a movie it cannot play, which is what makes it a safe thing to trigger deliberately: the surrounding code already handles it.
 
-The detour therefore does exactly what that branch does. For index 0 with the option on, it writes the state byte and returns without calling the original. Nothing else in the movie path is touched.
+The detour therefore does exactly what that branch does. For the first movie of the run with the option on, it writes the state byte and returns without calling the original. Nothing else in the movie path is touched.
 
-All three games are wired. The English address for each was anchored on the single reference to that build's own `Res/x64/movie` path string rather than on a homology vote, which matters because the vote came back WEAK for Totori: its routine is a slightly different compile and carries its own prologue window. The multilingual addresses are MATCH from their own English build, and index 0 was confirmed to be `opening.wmv` in all six movie tables.
+The gate counts plays instead of reading the index the routine is handed, and the reason is the gallery. All three games have one, each executable carrying the `ExtraStateMovie` class and Rorona a `Movies` menu entry, and it reaches the player through this same routine. A rule that recognises `opening.wmv` therefore skips it wherever it is played from, including when the player picks it deliberately, with nothing on screen to explain it. A count cannot make that mistake, because the budget is spent during boot and the gallery is always afterwards. A time window was the other candidate and was rejected: it has to assume how long booting takes, so it expires early on a slow machine and reaches into play on a fast one.
+
+A budget of one is the right size because the failure modes are asymmetric. Too small and a movie plays, which is the feature not fully working, visibly and harmlessly. Too large and it eats a movie the player asked for, which is a bug they cannot explain. The log records the ordinal and index of each distinct movie the routine is asked for, so a run reports whether one was the right size rather than leaving it assumed.
+
+All three games are wired. The English address for each was anchored on the single reference to that build's own `Res/x64/movie` path string rather than on a homology vote, which matters because the vote came back WEAK for Totori: its routine is a slightly different compile and carries its own prologue window. The multilingual addresses are MATCH from their own English build.
 
 ## Save data slots view pacing
 

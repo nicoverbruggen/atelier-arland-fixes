@@ -2115,7 +2115,8 @@ void createControls(HWND w) {
     g_hSkipMovie = mkCheck(w, L"Skip the opening movie", 0, 0, 10,
       IDC_SKIPMOVIE);
     page.checkRow(g_hSkipMovie,
-      L"Goes straight to the title screen. The ending movies still play.");
+      L"Goes straight to the title screen. Only the first movie of the run is "
+      L"skipped, so the endings and the Movies gallery still play.");
 
     // [Launcher] SkipLauncher. Read by the 32-bit msimg32 proxy rather than by
     // the DLL, and about the launch Steam performs rather than the window in
