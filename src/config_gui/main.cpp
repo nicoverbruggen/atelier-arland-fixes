@@ -2119,8 +2119,8 @@ void createControls(HWND w) {
     g_hLang = mkCombo(w, 0, 0, 10, IDC_LANG);
     comboFill(g_hLang, kLangItems, kLangCount);
     page.row(L"Language:", g_hLang,
-      L"Written to the game's own settings, and decides which of the game's "
-      L"two executables starts.");
+      L"What language you would like to play the game in. "
+      L"Decides which executable is started.");
 
     g_hBase = mkCombo(w, 0, 0, 10, IDC_BASE);
     unsigned maxW = 0, maxH = 0;
@@ -2147,22 +2147,21 @@ void createControls(HWND w) {
         packRes(kBaseItems[i].w, kBaseItems[i].h));
     }
     page.row(L"Resolution:", g_hBase,
-      L"What reaches the screen. Also written to the game's own settings.");
+      L"Output resolution. It's recommended to pick your screen resolution.");
 
     g_hWinMode = mkCombo(w, 0, 0, 10, IDC_WINMODE);
     for (int i = 0; i < kWindowModeCount; ++i)
       SendMessageW(g_hWinMode, CB_ADDSTRING, 0, (LPARAM)kWindowModes[i].label);
     page.row(L"Window mode:", g_hWinMode,
-      L"Borderless fills the monitor without taking over the display, so "
-      L"alt-tab is instant.");
+      L"Play the game in a window or in fullscreen mode.");
 
     // A statement of fact rather than a setting, so it spans the width.
     page.fullNote(runningUnderWine()
-      ? L"The game runs at your display's refresh rate, 120 Hz and 144 Hz "
-        L"included. The mod does not cap the frame rate, so a limit set by "
+      ? L"The game runs at your display's refresh rate. "
+        L"The mod does not cap the frame rate, so a limit set by "
         L"Steam or the compositor is respected."
-      : L"The game runs at your display's refresh rate, 120 Hz and 144 Hz "
-        L"included. The mod does not cap the frame rate.");
+      : L"The game runs at your display's refresh rate. "
+        L"The mod does not cap the frame rate.");
 
     page.heading(L"Startup");
     g_hSkipLogos = mkCheck(w, L"Skip the startup logos", 0, 0, 10,
@@ -2193,8 +2192,8 @@ void createControls(HWND w) {
     g_hSS = mkCombo(w, 0, 0, 10, IDC_SS);
     refillSupersampling();
     page.row(L"Supersampling:", g_hSS,
-      L"Renders higher, then scales down. The sharpest, and the costliest. "
-      L"Limited to 8K.");
+      L"Increases the render resolution despite the chosen screen resolution. "
+      L"Limited to 8K, but gives you better image quality and less aliasing.");
 
     // The live readout under the supersampling row. Registered as a note so it
     // draws in the secondary colour, but it is not created by note(): its text
@@ -2208,37 +2207,33 @@ void createControls(HWND w) {
     g_hShadow = mkCombo(w, 0, 0, 10, IDC_SHADOW);
     comboFill(g_hShadow, kShadowItems, 4);
     page.row(L"Shadow detail:", g_hShadow,
-      L"Larger shadow maps, so sharper shadow edges. Costs video memory.");
+      L"Larger shadow maps, which results in sharper shadow edges (less blocky shadows).");
 
     g_hSmaa = mkCheck(w, L"Edge smoothing", 0, 0, 10, IDC_SMAA);
     page.checkRow(g_hSmaa,
-      L"Cheap, and smooths edges multisampling cannot -- including "
-      L"edges inside textures.");
+      L"Basic anti-aliasing. Use this if supersampling is too hard to run.");
 
     g_hSharpen = mkCombo(w, 0, 0, 10, IDC_SHARPEN);
     comboFill(g_hSharpen, kSharpenItems, kSharpenCount);
     page.row(L"Sharpening:", g_hSharpen,
-      L"Sharpens the scene, which edge smoothing softens a little. Works on "
-      L"its own too. Runs before the interface, so menus and text are left "
-      L"alone.");
+      L"Sharpens the scene. Good with edge smoothing and supersampling.");
 
     g_hOutline = mkCheck(w, L"Character outlines", 0, 0, 10, IDC_OUTLINE);
     page.checkRow(g_hOutline,
-      L"The game's own outline rendering. On as it shipped.");
+      L"The game's own outline rendering. Turn it off at higher resolutions.");
 
     page.heading(L"Text");
     g_hFont = mkCombo(w, 0, 0, 10, IDC_FONT);
     comboFill(g_hFont, kFontItems, 3);
     page.row(L"UI font:", g_hFont,
-      L"Re-renders the game's UI text from a bundled font. English builds "
-      L"only.");
+      L"Much of the text is easier to read if you enable high resolution fonts.");
 
     page.heading(L"Battle");
     g_hBCutIn = mkCombo(w, 0, 0, 10, IDC_BCUTIN);
     for (int i = 0; i < kCutInCount; ++i)
       SendMessageW(g_hBCutIn, CB_ADDSTRING, 0, (LPARAM)kCutInModes[i].label);
     page.row(L"Attack cut-ins:", g_hBCutIn,
-      L"Classic is the close-up as the game shipped it. Enhanced restores the "
+      L"Classic is how the game normally looks. Enhanced restores the "
       L"ground shadows and keeps the scene at full brightness.");
   }
 
