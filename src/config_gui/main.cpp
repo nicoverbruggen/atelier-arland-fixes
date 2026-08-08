@@ -49,6 +49,7 @@ enum : int {
   IDC_RENDLBL,  // read-only computed render-resolution label
   IDC_SHADOW,
   IDC_SMAA,
+  IDC_SHARPEN,
   IDC_TABS,
   IDC_WINMODE,
   IDC_LANG,
@@ -128,7 +129,7 @@ const wchar_t* const kRepositoryUrl =
   L"https://github.com/nicoverbruggen/atelier-arland-fixes";
 HWND g_hWinMode, g_hLang, g_hBCutIn,
      g_hFont, g_hBase, g_hSS, g_hRendLbl, g_hShadow,
-     g_hSmaa, g_hOutline,
+     g_hSmaa, g_hSharpen, g_hOutline,
      g_hSkipLogos, g_hSkipMovie, g_hSkipLauncher, g_hVerbose;
 
 HFONT g_uiFont = nullptr;
@@ -203,7 +204,10 @@ bool nativeStyling();
 // 720p TV, a handheld, or Big Picture on either. Scaling up (for a controller
 // at TV distance) is therefore always optional and always clamped to the
 // monitor's work area, so no scale can push the buttons off-screen.
-const int kBaseWidth = 700;
+// The width came down from 700 when the descriptions moved under their
+// controls: it was carrying a third column sized for the longest sentence on
+// any page. The height grows on its own.
+const int kBaseWidth = 480;
 const int kBaseHeight = 440;
 
 // Two separate factors, because they do not apply to the same things.
@@ -239,6 +243,17 @@ const ComboItem kFontItems[] = {
 // means, since the group labels above them are written in plain language and a
 // bare "8" would say nothing on its own. The second column is the exact string
 // written to the ini and must not change.
+// Sharpening strength, written as the percentage the DLL reads. Four presets
+// rather than a free number: Low/Medium/High is what games that name this
+// setting at all use, and the whole range is already bounded in the shader.
+const ComboItem kSharpenItems[] = {
+  { L"Off",           "0"   },
+  { L"Low  (30%)",    "30"  },
+  { L"Medium  (60%)", "60"  },
+  { L"High  (100%)",  "100" },
+};
+const int kSharpenCount = 4;
+
 const ComboItem kShadowItems[] = {
   { L"Normal (1024 map)",    "1" }, { L"2x (2048 map)", "2" },
   { L"4x (4096 map)",        "4" }, { L"8x (8192 map)", "8" },
@@ -884,6 +899,21 @@ void loadFromIni() {
   SendMessageW(g_hSmaa, BM_SETCHECK,
     iniBool("Rendering", "SMAA", true) ? BST_CHECKED : BST_UNCHECKED, 0);
 
+  // Matched by number and rounded to the nearest preset rather than by string:
+  // the key is a percentage the DLL reads, so an ini can hold a value no preset
+  // names -- hand-edited, or set through ARLAND_SHARPEN. Falling back to Off
+  // there would read as the setting having been lost.
+  iniString("Rendering", "Sharpen", buf, sizeof(buf));
+  {
+    const int percent = buf[0] ? atoi(buf) : 0;
+    int index = 0, best = -1;
+    for (int i = 0; i < kSharpenCount; ++i) {
+      const int distance = abs(atoi(kSharpenItems[i].value) - percent);
+      if (best < 0 || distance < best) { best = distance; index = i; }
+    }
+    SendMessageW(g_hSharpen, CB_SETCURSEL, index, 0);
+  }
+
   // Borderless wins when set; otherwise the game's own FullScreen decides.
   const bool borderless = iniBool("Rendering", "Borderless", true);
   const bool fullscreen =
@@ -967,6 +997,7 @@ void resetToDefaults() {
   setSsIndex(0);                                  // supersampling off
   SendMessageW(g_hShadow, CB_SETCURSEL, 1, 0);    // 2048 map, the shipped default
   SendMessageW(g_hSmaa, BM_SETCHECK, BST_CHECKED, 0);
+  SendMessageW(g_hSharpen, CB_SETCURSEL, 0, 0);   // off, as it ships
   SendMessageW(g_hOutline, BM_SETCHECK, BST_CHECKED, 0);   // on as it shipped
   SendMessageW(g_hBCutIn, CB_SETCURSEL, 0, 0);   // Classic, as the game shipped
   SendMessageW(g_hSkipLogos, BM_SETCHECK, BST_UNCHECKED, 0);
@@ -1037,6 +1068,8 @@ SaveOutcome saveToIni() {
   iniWrite("Rendering", "ShadowMultiplier",
     comboValue(g_hShadow, kShadowItems, 4), g_iniPath);
   iniWriteBool("Rendering", "SMAA", isChecked(g_hSmaa));
+  iniWrite("Rendering", "Sharpen",
+    comboValue(g_hSharpen, kSharpenItems, kSharpenCount), g_iniPath);
   {
     int sel = (int)SendMessageW(g_hWinMode, CB_GETCURSEL, 0, 0);
     if (sel < 0 || sel >= kWindowModeCount)
@@ -1136,7 +1169,7 @@ void reportSaveFailure(HWND owner, SaveOutcome outcome) {
 // changing a setting back to its old value correctly counts as unchanged.
 struct UiState {
   int font, base, ss, shadow, winMode, lang;
-  int smaa, outline, cutIn, skipLauncher, verbose;
+  int smaa, sharpen, outline, cutIn, skipLauncher, verbose;
   int skipLogos, skipMovie, debugView;
 };
 UiState g_savedState;
@@ -1150,6 +1183,7 @@ UiState currentState() {
   s.winMode = (int)SendMessageW(g_hWinMode, CB_GETCURSEL, 0, 0);
   s.lang = (int)SendMessageW(g_hLang, CB_GETCURSEL, 0, 0);
   s.smaa = isChecked(g_hSmaa);
+  s.sharpen = (int)SendMessageW(g_hSharpen, CB_GETCURSEL, 0, 0);
   s.outline = isChecked(g_hOutline);
   s.cutIn = (int)SendMessageW(g_hBCutIn, CB_GETCURSEL, 0, 0);
   s.skipLogos = isChecked(g_hSkipLogos);
@@ -1829,11 +1863,28 @@ struct Layout {
   static int labelWidth()    { return S(150); }
   static int controlLeft()   { return left() + S(156); }
   static int controlWidth()  { return S(230); }
-  static int noteLeft()      { return left() + S(406); }
+  // DESCRIPTIONS GO UNDER THEIR CONTROL, not in a column beside it.
+  //
+  // A third column made the description's length part of the page's geometry:
+  // a long one made its row tall and left the short rows sitting in white
+  // space, and checkbox rows started theirs 130 pixels left of the combo rows'
+  // because a checkbox has no label column -- true, and irrelevant to a reader,
+  // who sees a ragged edge rather than a rule about control metrics. Under the
+  // control the text sits next to what it describes, its length affects only
+  // its own row, and the window loses the width it was carrying for the longest
+  // sentence on any page.
+  //
+  // The indent is what marks the text as belonging to the control above rather
+  // than standing on its own, which is the job the column used to do.
+  static int noteLeft()      { return left() + S(16); }
   static int noteWidth()     { return right() - noteLeft(); }
-  static int checkNoteLeft() { return left() + S(276); }
-  static int checkNoteWidth(){ return right() - checkNoteLeft(); }
   static int fullWidth()     { return right() - left(); }
+
+  // The two vertical gaps. Named because under() has to undo one to reach the
+  // other, and a bare number there would survive a change to the spacing and
+  // quietly stop lining up.
+  static int lineGap()       { return S(4); }    // control to its description
+  static int rowGap()        { return S(14); }   // one row to the next
 
   int measure(const wchar_t* text, int width) const {
     HDC dc = GetDC(parent);
@@ -1866,8 +1917,15 @@ struct Layout {
     return height;
   }
 
-  // label + control + note. The row is as tall as whichever of the two sides
-  // needs more room.
+  // The description under a control, and the space that closes the row. Kept in
+  // one place because the two row kinds differ only in what goes above it.
+  void closeRow(const wchar_t* noteText) {
+    if (noteText)
+      y += lineGap() + note(noteText, noteLeft(), noteWidth(), y);
+    y += rowGap();
+  }
+
+  // label + control, then the description under both.
   void row(const wchar_t* labelText, HWND control, const wchar_t* noteText) {
     // The label is centred against the control rather than nudged down by a
     // fixed four pixels, which only looked centred at one font size.
@@ -1877,20 +1935,17 @@ struct Layout {
     // for a combo box the height passed here is how far the list drops.
     MoveWindow(control, controlLeft(), y, controlWidth(), S(200), TRUE);
     onPage(page, control);
-    int used = controlHeight();
-    if (noteText)
-      used = std::max(used, note(noteText, noteLeft(), noteWidth(), y));
-    y += used + S(12);
+    y += controlHeight();
+    closeRow(noteText);
   }
 
+  // A checkbox carries its own label, so it spans the width the label and the
+  // control together would have taken.
   void checkRow(HWND check, const wchar_t* noteText) {
-    MoveWindow(check, left(), y, checkNoteLeft() - left() - S(16),
-      checkHeight(), TRUE);
+    MoveWindow(check, left(), y, fullWidth(), checkHeight(), TRUE);
     onPage(page, check);
-    int used = checkHeight();
-    if (noteText)
-      used = std::max(used, note(noteText, checkNoteLeft(), checkNoteWidth(), y));
-    y += used + S(12);
+    y += checkHeight();
+    closeRow(noteText);
   }
 
   // Bold, and with more air above it than below, so it binds to the rows it
@@ -1931,11 +1986,14 @@ struct Layout {
 
   // A line belonging to the control above it, so it starts at the control
   // column rather than the label margin.
+  // A line belonging to the control above it. It reads as the last line of that
+  // control's description, so it sits in the description's own column -- and
+  // the row above must have been closed without one for the two to meet.
   void under(HWND control) {
-    MoveWindow(control, controlLeft(), y,
-      fullWidth() - (controlLeft() - left()), labelHeight(), TRUE);
+    y -= rowGap() - lineGap();
+    MoveWindow(control, noteLeft(), y, noteWidth(), labelHeight(), TRUE);
     onPage(page, control);
-    y += labelHeight() + S(10);
+    y += labelHeight() + rowGap();
   }
 
   // A SysLink measures itself: LM_GETIDEALSIZE takes the width it will be
@@ -2156,6 +2214,13 @@ void createControls(HWND w) {
     page.checkRow(g_hSmaa,
       L"Cheap, and smooths edges multisampling cannot -- including "
       L"edges inside textures.");
+
+    g_hSharpen = mkCombo(w, 0, 0, 10, IDC_SHARPEN);
+    comboFill(g_hSharpen, kSharpenItems, kSharpenCount);
+    page.row(L"Sharpening:", g_hSharpen,
+      L"Sharpens the scene, which edge smoothing softens a little. Works on "
+      L"its own too. Runs before the interface, so menus and text are left "
+      L"alone.");
 
     g_hOutline = mkCheck(w, L"Character outlines", 0, 0, 10, IDC_OUTLINE);
     page.checkRow(g_hOutline,

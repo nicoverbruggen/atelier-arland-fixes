@@ -87,6 +87,7 @@ else
     'src/game.cpp',
     'src/config.cpp',
     'src/crash_log.cpp',
+    'src/sharpen.cpp',
     'src/smaa.cpp',
     'src/field_physics.cpp',
     'src/worldmap_fix.cpp',

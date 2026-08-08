@@ -5,6 +5,7 @@
 #include "crash_log.h"
 #include "menu_fix.h"
 #include "path_util.h"
+#include "sharpen.h"
 #include "smaa.h"
 #include "supersample.h"
 #include "sync_fix.h"
@@ -318,6 +319,10 @@ HRESULT STDMETHODCALLTYPE tracedPresent(
   atfix::maintainBorderlessWindow();   // re-applies only if the game restyled
   atfix::noteSceneAnchor(swapChain);         // re-anchor: survives ResizeBuffers
   atfix::notePresentBackbuffer(swapChain);   // ARLAND_PRESENT_TRACE diagnostic
+  // Loading the shader compiler from a draw or bind detour deadlocks on the
+  // loader lock; from the frame tick nothing is held. Idempotent, and a no-op
+  // when sharpening is off.
+  atfix::sharpenPreload();
   atfix::smaaApply(swapChain);        // Present-time path (only if pre-UI off)
   atfix::ssaaDownscale(swapChain);    // supersampling: render res -> backbuffer
   const HRESULT result = originalPresent(

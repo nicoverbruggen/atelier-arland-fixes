@@ -18,6 +18,7 @@
 #include "util.h"
 #include "game.h"
 #include "config.h"
+#include "sharpen.h"
 #include "smaa.h"
 #include "supersample.h"
 #include "sync_internal.h"
@@ -984,6 +985,11 @@ void fireSceneRtSmaa(ID3D11DeviceContext* context, const char* reason) {
   g_sceneRtDraws.store(0, std::memory_order_relaxed);
   SmaaReentryGuard guard;
   const bool ran = atfix::smaaApplySceneColor(context, tex);
+  // Sharpening rides every pre-UI boundary SMAA does, on the same surface and
+  // always after it: sharpening first would only give SMAA harder edges to
+  // blend away again. It does not depend on that pass having run -- with SMAA
+  // off this is a sharpening filter on the finished scene, still pre-UI.
+  atfix::sharpenApply(context, tex);
   static std::atomic<bool> logged{false};
   if (verboseLogging() && !logged.exchange(true, std::memory_order_relaxed))
     log("SMAA: pre-UI injection on the scene target, reason=", reason,
@@ -1099,6 +1105,7 @@ void smaaDrawBoundary(ID3D11DeviceContext* context) {
   if (scene) {
     g_smaaDoneThisFrame.store(true, std::memory_order_relaxed);
     const bool ran = atfix::smaaApplySceneColor(context, scene);
+    atfix::sharpenApply(context, scene);
     static std::atomic<bool> depthBoundaryLogged{false};
     if (verboseLogging() &&
         !depthBoundaryLogged.exchange(true, std::memory_order_relaxed))
@@ -1256,6 +1263,7 @@ void smaaSceneBoundary(ID3D11DeviceContext* context, UINT rtvCount,
     // Present resets the frame.
     g_smaaSceneSeen.store(false, std::memory_order_relaxed);
     atfix::smaaApplySceneColor(context, scene);
+    atfix::sharpenApply(context, scene);
     scene->Release();
   }
 }

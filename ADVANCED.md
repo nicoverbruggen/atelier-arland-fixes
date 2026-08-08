@@ -29,6 +29,7 @@ The file sits beside the DLLs and is created on first launch. Close the game bef
 | `RenderWidth` / `RenderHeight` | Internal render size. Larger than the display size is supersampling. Blank matches the display size. | blank |
 | `Borderless` | `true` / `false` | `true` |
 | `SMAA` | `true` / `false` | `true` |
+| `Sharpen` | `0` to `100`. Contrast-adaptive sharpening over the scene, applied after SMAA and before the interface. `0` is off. | `0` |
 | `Font` | `replaced`, `upscaled`, `original` | `replaced` |
 | `ShadowMultiplier` | `1` (off), `2`, `4`, `8` | `2` |
 | `AnisotropicFiltering` | `1` (off), `2`, `4`, `8`, `16` | `16` |
