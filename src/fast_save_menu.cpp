@@ -73,6 +73,7 @@
 #include "log.h"
 #include "mem.h"
 #include "fast_save_menu.h"
+#include "page_patch.h"
 
 namespace atfix {
 
@@ -328,27 +329,15 @@ bool installCarriedPressRepair(BYTE* base, const Game& game) {
 
 // All or nothing. A half-applied set would leave the view reachable through one
 // path and gated through another, which is the worst thing to hand someone
-// trying to measure whether this helped.
-// Put back the original branch bytes for the first `count` gates. Used to unwind
-// a patch loop that failed part way, and to put every gate back when the
-// carried-press repair cannot install, so the executable is left as the game
-// shipped it rather than half patched.
-void restoreGates(BYTE* base, const Gate* gates, size_t count) {
-  for (size_t i = 0; i < count; ++i) {
-    BYTE* branch = base + gates[i].comissRva + gates[i].branchOffset;
-    DWORD previous = 0;
-    if (!VirtualProtect(branch, gates[i].branchLength, PAGE_EXECUTE_READWRITE,
-                        &previous))
-      continue;
-    std::memcpy(branch, gates[i].expected.data() + gates[i].branchOffset,
-                gates[i].branchLength);
-    DWORD ignored = 0;
-    VirtualProtect(branch, gates[i].branchLength, previous, &ignored);
-    FlushInstructionCache(GetCurrentProcess(), branch, gates[i].branchLength);
+// trying to measure whether this helped. PagePatchTransaction retains both the
+// original bytes and page protections until the carried-press hook commits.
+bool applyGates(BYTE* base, const Gate* gates, size_t count,
+                PagePatchTransaction& transaction) {
+  std::array<PagePatch, 5> patches = {};
+  if (count > patches.size()) {
+    log("FIXES save_menu_gates=failed (patch capacity)");
+    return false;
   }
-}
-
-bool applyGates(BYTE* base, const Gate* gates, size_t count) {
   for (size_t i = 0; i < count; ++i) {
     if (!matches(base + gates[i].comissRva, gates[i].expected)) {
       log("FIXES save_menu_gates=signature_mismatch at ", gates[i].name,
@@ -357,23 +346,26 @@ bool applyGates(BYTE* base, const Gate* gates, size_t count) {
     }
   }
   for (size_t i = 0; i < count; ++i) {
-    BYTE* branch = base + gates[i].comissRva + gates[i].branchOffset;
-    DWORD previous = 0;
-    if (!VirtualProtect(branch, gates[i].branchLength, PAGE_EXECUTE_READWRITE,
-                        &previous)) {
-      // Undo whatever this loop already wrote. Leaving some gates removed and
-      // others in place is the one outcome the all-or-nothing rule above exists
-      // to prevent, and it is worse than not applying the feature at all: the
-      // paths that were patched open the view instantly with no carried-press
-      // repair, which is the defect the repair exists for.
-      restoreGates(base, gates, i);
-      log("FIXES save_menu_gates=protect_failed at ", gates[i].name);
-      return false;
+    patches[i] = {
+      base + gates[i].comissRva + gates[i].branchOffset,
+      gates[i].expected.data() + gates[i].branchOffset,
+      gates[i].branchLength,
+    };
+  }
+  if (!transaction.applyNops(patches.data(), count)) {
+    const PagePatchFailure& failure = transaction.failure();
+    log("FIXES save_menu_gates=apply_failed stage=",
+        pagePatchStageName(failure.stage), " at ",
+        failure.index < count ? gates[failure.index].name : "capacity");
+    if (transaction.rollbackFailure().stage != PagePatchStage::None) {
+      const PagePatchFailure& rollback = transaction.rollbackFailure();
+      log("FIXES save_menu_gates=rollback_incomplete stage=",
+          pagePatchStageName(rollback.stage), " at ",
+          rollback.index < count ? gates[rollback.index].name : "capacity");
     }
-    std::memset(branch, 0x90, gates[i].branchLength);
-    DWORD ignored = 0;
-    VirtualProtect(branch, gates[i].branchLength, previous, &ignored);
-    FlushInstructionCache(GetCurrentProcess(), branch, gates[i].branchLength);
+    return false;
+  }
+  for (size_t i = 0; i < count; ++i) {
     log("FIXES save_menu_gate ", gates[i].name, " neutered at 0x", std::hex,
         gates[i].comissRva + gates[i].branchOffset, std::dec, " (",
         static_cast<int>(gates[i].branchLength), " bytes)");
@@ -405,7 +397,8 @@ bool installSaveMenuFix(BYTE* base, const Game& game) {
     default:
       log("FIXES save_menu_gates=not_applicable"); return false;
   }
-  const bool ok = applyGates(base, gates, count);
+  PagePatchTransaction transaction;
+  const bool ok = applyGates(base, gates, count, transaction);
   log("FIXES save_menu_gates=", ok ? "active" : "failed");
   if (!ok)
     return false;
@@ -414,10 +407,12 @@ bool installSaveMenuFix(BYTE* base, const Game& game) {
     // opens in time to catch the release of the press that opened it, which is
     // the defect the repair exists for, so put the branches back and leave the
     // game behaving as it shipped.
-    restoreGates(base, gates, count);
-    log("FIXES save_menu_gates=rolled_back");
+    const bool restored = transaction.rollback();
+    log("FIXES save_menu_gates=",
+        restored ? "rolled_back" : "rollback_incomplete");
     return false;
   }
+  transaction.commit();
   return true;
 }
 

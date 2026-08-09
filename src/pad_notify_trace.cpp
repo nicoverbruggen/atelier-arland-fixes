@@ -13,6 +13,8 @@
 
 #include "pad_notify_trace.h"
 #include "log.h"
+#include "module_lifetime.h"
+#include "util.h"
 
 namespace atfix {
 
@@ -30,9 +32,9 @@ constexpr GUID kHidInterfaceClass = {
 
 constexpr wchar_t kWindowClass[] = L"AtelierArlandFixPadNotify";
 
-// How long stopPadNotifyTrace waits for the pump. Bounded because the caller is
-// DllMain and a wait that never ends there stops the process from finishing its
-// unload.
+// How long an explicit stop waits for the pump before leaving it intact so a
+// later call can retry. stopPadNotifyTrace is never called under the loader
+// lock.
 constexpr DWORD kStopWaitMillis = 2000;
 
 // One registration and the window that receives it. The window is published for
@@ -50,14 +52,10 @@ Notification g_notifications[2] = {
   { "all", nullptr, DEVICE_NOTIFY_ALL_INTERFACE_CLASSES, {}, nullptr },
 };
 
-std::atomic<bool> g_started{false};
 std::atomic<bool> g_stopRequested{false};
 std::atomic<uint64_t> g_events{0};
+mutex g_lifecycleMutex;
 HANDLE g_thread = nullptr;
-// Set by the pump as the last thing it does, and what stopPadNotifyTrace waits
-// on. Waiting on the thread handle instead would deadlock: the thread's own exit
-// path takes the loader lock that DllMain is holding while it waits.
-HANDLE g_finished = nullptr;
 
 // 0 off, 1 message-only windows, 2 hidden top-level windows. See the header for
 // what the second mode is for.
@@ -216,8 +214,8 @@ HWND createNotifyWindow(int mode, LONG_PTR index) {
   return window;
 }
 
-DWORD WINAPI padNotifyPump(LPVOID) {
-  const int mode = traceMode();
+DWORD WINAPI padNotifyPump(LPVOID parameter) {
+  const int mode = static_cast<int>(reinterpret_cast<intptr_t>(parameter));
   WNDCLASSEXW windowClass = {};
   windowClass.cbSize = sizeof(windowClass);
   windowClass.lpfnWndProc = &padNotifyWndProc;
@@ -225,7 +223,6 @@ DWORD WINAPI padNotifyPump(LPVOID) {
   windowClass.lpszClassName = kWindowClass;
   if (!RegisterClassExW(&windowClass)) {
     log("PADNOTIFY start=failed stage=class error=", std::dec, GetLastError());
-    SetEvent(g_finished);
     return 0;
   }
   log("PADNOTIFY start mode=", mode == 2 ? "top_level" : "message_only");
@@ -283,50 +280,80 @@ DWORD WINAPI padNotifyPump(LPVOID) {
   }
   UnregisterClassW(kWindowClass, selfModule());
   log("PADNOTIFY stop events=", std::dec, g_events.load());
-  SetEvent(g_finished);
   return 0;
 }
 
 }  // namespace
 
 void startPadNotifyTrace() {
-  if (!traceMode())
+  const int mode = traceMode();
+  if (!mode)
     return;
-  // One thread and one pair of windows per process, however often this is
-  // reached.
-  if (g_started.exchange(true))
-    return;
-  g_finished = CreateEventW(nullptr, TRUE, FALSE, nullptr);
-  if (!g_finished) {
-    log("PADNOTIFY start=failed stage=event error=", std::dec, GetLastError());
+
+  std::lock_guard lock(g_lifecycleMutex);
+  if (g_thread) {
+    const DWORD state = WaitForSingleObject(g_thread, 0);
+    if (state == WAIT_TIMEOUT)
+      return;
+    if (state != WAIT_OBJECT_0) {
+      log("PADNOTIFY start=failed stage=thread_probe error=",
+        std::dec, GetLastError());
+      return;
+    }
+    // The previous pump ended on its own (for example, window-class creation
+    // failed). Reap it here so a later call gets a real retry.
+    CloseHandle(g_thread);
+    g_thread = nullptr;
+  }
+
+  // A worker publishes return addresses and a WndProc into this image. Pin it
+  // before CreateThread so FreeLibrary can never unmap code they may call.
+  if (!retainModuleForProcessLifetime()) {
+    log("PADNOTIFY start=failed stage=module_retention error=",
+      std::dec, GetLastError());
     return;
   }
-  g_thread = CreateThread(nullptr, 0, &padNotifyPump, nullptr, 0, nullptr);
-  if (!g_thread) {
+
+  g_stopRequested.store(false);
+  g_events.store(0);
+  HANDLE thread = CreateThread(nullptr, 0, &padNotifyPump,
+    reinterpret_cast<LPVOID>(static_cast<intptr_t>(mode)), 0, nullptr);
+  if (!thread) {
     log("PADNOTIFY start=failed stage=thread error=", std::dec, GetLastError());
-    CloseHandle(g_finished);
-    g_finished = nullptr;
+    return;
   }
+  // Publication comes only after every fallible setup step, so failure never
+  // poisons subsequent start calls.
+  g_thread = thread;
 }
 
 void stopPadNotifyTrace() {
-  if (!g_started.load() || !g_finished)
-    return;
-  g_stopRequested.store(true);
-  for (Notification& notification : g_notifications) {
-    HWND window = notification.window.load();
-    if (window)
-      PostMessageW(window, WM_CLOSE, 0, 0);
+  HANDLE thread = nullptr;
+  {
+    std::lock_guard lock(g_lifecycleMutex);
+    if (!g_thread)
+      return;
+    g_stopRequested.store(true);
+    for (Notification& notification : g_notifications) {
+      HWND window = notification.window.load();
+      if (window)
+        PostMessageW(window, WM_CLOSE, 0, 0);
+    }
+    thread = g_thread;
   }
-  // A timeout leaves the pump running in code that is about to unmap, so it is
-  // worth a line in the log even though there is nothing left to do about it.
-  if (WaitForSingleObject(g_finished, kStopWaitMillis) != WAIT_OBJECT_0)
+
+  // Wait for the thread itself, not a signal set just before its return. Only
+  // this proves that no instruction in the worker remains to execute.
+  if (WaitForSingleObject(thread, kStopWaitMillis) != WAIT_OBJECT_0) {
     log("PADNOTIFY stop=timeout");
-  CloseHandle(g_finished);
-  g_finished = nullptr;
-  if (g_thread) {
+    return;
+  }
+
+  std::lock_guard lock(g_lifecycleMutex);
+  if (g_thread == thread) {
     CloseHandle(g_thread);
     g_thread = nullptr;
+    g_stopRequested.store(false);
   }
 }
 

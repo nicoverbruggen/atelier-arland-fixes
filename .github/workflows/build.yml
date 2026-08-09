@@ -96,8 +96,12 @@ jobs:
         run: python3 scripts/check_default_ini.py
       - name: Check launcher contract
         run: python3 scripts/check_launcher_contract.py
+      - name: Check transactional mutation contract
+        run: python3 scripts/check_transaction_contract.py
       - name: Check core fix contract
         run: python3 scripts/check_core_contract.py
+      - name: Check asynchronous lifecycle contract
+        run: python3 scripts/check_lifecycle_contract.py
       - name: Assemble the archive
         run: |
           # Shipped under its final name so the archive extracts straight into

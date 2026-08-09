@@ -49,13 +49,16 @@
 namespace atfix {
 
 // Starts the trace if ARLAND_PAD_NOTIFY_TRACE is set, and does nothing at all
-// otherwise. Safe to call more than once; only the first call starts a thread.
-// Not callable from DllMain: it creates a thread, which the loader lock makes
-// unsafe there.
+// otherwise. Safe to call more than once; only one live thread is kept, and a
+// failed or already-exited worker can be retried. Not callable from DllMain: it
+// creates a thread, which the loader lock makes unsafe there. Starting the
+// worker pins this DLL until process exit because its callbacks must stay mapped.
 void startPadNotifyTrace();
 
 // Closes the windows, drops both registrations and waits for the pump to finish.
-// A no-op when the trace never started.
+// A no-op when the trace never started. Also not callable from DllMain: it joins
+// the actual thread, whose exit may need the loader lock. A timeout leaves the
+// retained worker intact so a later call can retry safely.
 void stopPadNotifyTrace();
 
 }  // namespace atfix

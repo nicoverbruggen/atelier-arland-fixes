@@ -85,7 +85,7 @@ Like other DLL-based game fixes, this mod is loaded by the game and changes how 
 
 In practical terms:
 
-- The mod checks that it recognizes the exact game version before applying a fix. If something does not match what it expects, that fix is skipped.
+- Address-based and Direct3D fixes require an exact executable name and build fingerprint. If either does not match, those fixes are skipped and Direct3D is only forwarded. Two startup-window corrections must be hooked before the normal fingerprint gate runs; they change a call only when the game module, executable/window name or class/background brush matches their narrow runtime checks, and otherwise pass it through unchanged.
 - It does not read or write your save files, collect usage data, update itself or connect to the internet in the background.
 - The only files it normally creates or updates are its settings and diagnostic logs. Changing options in the settings launcher also updates the game's own settings file.
 - **Play without the mod** starts the game with the fixes disabled. Removing or renaming the mod's DLL files returns the game to normal the next time it starts.

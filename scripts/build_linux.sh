@@ -64,7 +64,9 @@ done
 python3 "$repo/scripts/check_exports.py" \
   "$repo/build64/d3d11.dll" "$repo/build32/msimg32.dll"
 python3 "$repo/scripts/check_launcher_contract.py"
+python3 "$repo/scripts/check_transaction_contract.py"
 python3 "$repo/scripts/check_core_contract.py"
+python3 "$repo/scripts/check_lifecycle_contract.py"
 
 # Package the same archive the release workflow does, so what gets tested by
 # hand locally has the same shape as what users download: same file names, same

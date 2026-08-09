@@ -38,6 +38,7 @@
 #include <cstring>
 #include <vector>
 
+#include "ini_write_set.h"
 
 namespace {
 
@@ -452,26 +453,11 @@ struct WriteFailure {
 WriteFailure g_iniFailure;
 WriteFailure g_settingsFailure;
 
-// The last value this save committed to each file, kept so a reported failure
-// can be checked against what is actually on disk. See verifyWrite below.
-struct LastWrite {
-  bool have = false;
-  char section[32] = {};
-  char key[32] = {};
-  char value[64] = {};
-};
-LastWrite g_iniLastWrite;
-LastWrite g_settingsLastWrite;
-
-void noteLastWrite(LastWrite* last, const char* section, const char* key,
-                   const char* value) {
-  if (!section || !key || !value)
-    return;                   // the flush carries no key to check
-  last->have = true;
-  lstrcpynA(last->section, section, sizeof(last->section));
-  lstrcpynA(last->key, key, sizeof(last->key));
-  lstrcpynA(last->value, value, sizeof(last->value));
-}
+// Every intended key state, including deletions, is retained until the save
+// finishes. Checking only the final successful key can let an earlier failed
+// write hide behind a later success.
+atfix::launcher::IniWriteSet g_iniWrites;
+atfix::launcher::IniWriteSet g_settingsWrites;
 
 bool iniWrite(const char* section, const char* key, const char* value,
               const char* path) {
@@ -481,9 +467,10 @@ bool iniWrite(const char* section, const char* key, const char* value,
   if (!path || !path[0])
     return true;
   const bool settings = path == g_settingsPath;
-  if (WritePrivateProfileStringA(section, key, value, path)) {
-    noteLastWrite(settings ? &g_settingsLastWrite : &g_iniLastWrite,
-                  section, key, value);
+  auto& writes = settings ? g_settingsWrites : g_iniWrites;
+  if (!writes.note(section, key, value)) {
+    SetLastError(ERROR_INSUFFICIENT_BUFFER);
+  } else if (WritePrivateProfileStringA(section, key, value, path)) {
     return true;
   }
   WriteFailure* failure = settings ? &g_settingsFailure : &g_iniFailure;
@@ -509,17 +496,9 @@ bool iniWrite(const char* section, const char* key, const char* value,
 // is the worse error of the two: it sends the user to check permissions on a
 // folder that is fine, and it teaches them to ignore the warning.
 //
-// So a reported failure is checked against the file: read back the last value
-// this save wrote and see whether it is there. Nothing to check against means
-// trusting the report, which is the safe direction.
-bool verifyWrite(const char* path, const LastWrite& last) {
-  if (!path || !path[0] || !last.have)
-    return false;
-  char readBack[64] = {};
-  GetPrivateProfileStringA(last.section, last.key, "\x01", readBack,
-    sizeof(readBack), path);
-  return readBack[0] != '\x01' && lstrcmpA(readBack, last.value) == 0;
-}
+// So a reported failure is checked against every intended final key state in
+// the file. This preserves Wine's harmless flush-failure exception without
+// allowing an early missing key to be masked by a later successful one.
 
 // The launcher shares arland-fix.log with the DLL rather than opening a second
 // file: it is the file the user is asked for when reporting a problem, and a
@@ -1016,8 +995,8 @@ bool isChecked(HWND ctrl) {
 SaveOutcome saveToIni() {
   g_iniFailure = WriteFailure{};
   g_settingsFailure = WriteFailure{};
-  g_iniLastWrite = LastWrite{};
-  g_settingsLastWrite = LastWrite{};
+  g_iniWrites.clear();
+  g_settingsWrites.clear();
 
   // Write only the known keys. WritePrivateProfileStringA leaves every other
   // line in the file untouched, so anything unrecognized is preserved.
@@ -1116,9 +1095,9 @@ SaveOutcome saveToIni() {
   // worth knowing about because they mean the platform is misreporting.
   SaveOutcome outcome;
   outcome.ini = !g_iniFailure.failed ||
-                verifyWrite(g_iniPath, g_iniLastWrite);
+                g_iniWrites.verify(g_iniPath);
   outcome.settings = !g_settingsFailure.failed ||
-                     verifyWrite(g_settingsPath, g_settingsLastWrite);
+                     g_settingsWrites.verify(g_settingsPath);
   logSaveFailure("arland-fix.ini", g_iniPath, g_iniFailure, outcome.ini);
   logSaveFailure("ArlandDX_Settings.ini", g_settingsPath, g_settingsFailure,
                  outcome.settings);
@@ -2597,8 +2576,14 @@ LRESULT CALLBACK WndProc(HWND w, UINT msg, WPARAM wp, LPARAM lp) {
           MB_YESNOCANCEL | MB_ICONQUESTION | MB_DEFBUTTON3);
         if (answer == IDCANCEL)
           return 0;
-        if (answer == IDYES)
-          reportSaveFailure(w, saveToIni());
+        if (answer == IDYES) {
+          const SaveOutcome saved = saveToIni();
+          if (!saved.ok()) {
+            reportSaveFailure(w, saved);
+            return 0;  // keep the controls and unsaved edits alive for retry
+          }
+          markSaved();
+        }
       }
       DestroyWindow(w);
       return 0;

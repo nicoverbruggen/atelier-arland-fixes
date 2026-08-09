@@ -87,6 +87,7 @@ else
     'src/game.cpp',
     'src/config.cpp',
     'src/crash_log.cpp',
+    'src/module_lifetime.cpp',
     'src/sharpen.cpp',
     'src/pad_rescan.cpp',
     'src/pad_notify_trace.cpp',

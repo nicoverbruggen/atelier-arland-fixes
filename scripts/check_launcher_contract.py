@@ -15,6 +15,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 GUI = (ROOT / "src" / "config_gui" / "main.cpp").read_text()
 PROXY = (ROOT / "src" / "launcher_proxy.cpp").read_text()
+INI_WRITES = (ROOT / "src" / "config_gui" / "ini_write_set.h").read_text()
 
 
 def fail(message):
@@ -101,12 +102,61 @@ def main():
         )
         if not gui_language or not proxy_language:
             raise ValueError("language mapping is incomplete")
+
+        arm = required(
+            PROXY, r"bool armRedirect\(\) \{(.*?)\n\}", "armRedirect"
+        ).group(1)
+        if "kLauncherEntryExpected" not in arm or "std::memcmp(g_entryPoint" not in arm:
+            raise ValueError("proxy does not verify the launcher entry byte window")
+        if arm.index("std::memcmp(g_entryPoint") > arm.index("VirtualProtect(g_entryPoint"):
+            raise ValueError("proxy makes the entry writable before verifying its bytes")
+        if len(re.findall(r"0x[0-9a-f]{2}", required(
+            PROXY,
+            r"kLauncherEntryExpected\s*=\s*\{(.*?)\};",
+            "launcher entry expected array",
+        ).group(1))) != 17:
+            raise ValueError("launcher entry verification window is not 17 bytes")
+        for token in (
+            "kLauncherEntryRelocationOffset = 13",
+            "kLauncherPreferredImageBase = 0x00400000",
+            "relocateEntryWindow(base, expectedEntry)",
+        ):
+            if token not in PROXY:
+                raise ValueError(f"launcher entry verification is not ASLR-aware: {token}")
+
+        original = required(
+            PROXY,
+            r"void runOriginalEntryPoint\(\) \{(.*?)\n\}",
+            "runOriginalEntryPoint",
+        ).group(1)
+        if "if (!VirtualProtect" not in original or "ExitProcess(1)" not in original:
+            raise ValueError("entry restore failure can recurse into the redirect")
+
+        if "LastWrite" in GUI or "verifyWrite(" in GUI:
+            raise ValueError("GUI reverted to last-key-only save verification")
+        for token in ("g_iniWrites.verify", "g_settingsWrites.verify"):
+            if token not in GUI:
+                raise ValueError(f"GUI does not exhaustively verify {token}")
+        for token in ("for (size_t i = 0; i < count_; ++i)",
+                      "entries_[i].deleted", "GetPrivateProfileStringA"):
+            if token not in INI_WRITES:
+                raise ValueError(f"INI write-set helper is missing {token}")
+
+        close = required(
+            GUI, r"case WM_CLOSE:(.*?)case WM_DESTROY:", "WM_CLOSE handler"
+        ).group(1)
+        if not re.search(
+            r"const SaveOutcome saved = saveToIni\(\);.*?"
+            r"if \(!saved\.ok\(\)\) \{.*?return 0;.*?\}.*?DestroyWindow",
+            close, re.DOTALL,
+        ):
+            raise ValueError("failed close-time save can still destroy the window")
     except (OSError, ValueError) as exc:
         return fail(str(exc))
 
     print(
         "launcher contract ok: game executables, shared files, redirect "
-        "controls, and language mapping agree"
+        "controls, language mapping, entry verification, and save persistence agree"
     )
     return 0
 

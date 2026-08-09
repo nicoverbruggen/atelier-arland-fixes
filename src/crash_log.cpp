@@ -20,6 +20,7 @@
 #include "crash_log.h"
 #include "log.h"
 #include "mem.h"
+#include "module_lifetime.h"
 
 namespace atfix {
 
@@ -274,6 +275,14 @@ void installCrashLogger() {
     const char* value = std::getenv("ARLAND_CRASH_LOG");
     if (value && value[0] == '0')
       return false;
+    // SetUnhandledExceptionFilter has no compare-and-restore operation. Once
+    // this callback is visible, the only race-free lifetime is the process's:
+    // pin the image first so a later FreeLibrary cannot leave a stale pointer.
+    if (!retainModuleForProcessLifetime()) {
+      log("FIXES crash_logging=off reason=module_retention_failed error=",
+        std::dec, GetLastError());
+      return false;
+    }
     previousFilter = SetUnhandledExceptionFilter(&crashFilter);
     log("FIXES crash_logging=active");
     if (verboseLogging())

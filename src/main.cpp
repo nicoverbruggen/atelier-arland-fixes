@@ -642,14 +642,11 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved) {
       // any MH_* call still holds MinHook's lock flag, and MH_Uninitialize
       // would then spin forever in EnterSpinLock (vendor/minhook/src/hook.c),
       // which has no timeout, leaving the process unable to finish closing.
-      // The pad-notification trace owns a thread and two windows, and the same
-      // reasoning applies to it: on process exit its pump has already been
-      // terminated, so posting to its windows and waiting for it would wait for
-      // a thread that cannot answer.
-      if (lpvReserved == nullptr) {
-        atfix::stopPadNotifyTrace();
+      // Any asynchronous callback or worker pins this DLL before it is
+      // published, so dynamic detach cannot race either one. In the unpinned
+      // early-load case only MinHook can have been initialized here.
+      if (lpvReserved == nullptr)
         MH_Uninitialize();
-      }
       break;
   }
 

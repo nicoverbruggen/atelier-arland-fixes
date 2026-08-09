@@ -51,6 +51,25 @@ void launcherLog(const char* message) {
 #endif
 }
 
+void launcherLogEntryWindows(const std::uint8_t* actual,
+                             const std::uint8_t* expected,
+                             std::size_t size) {
+#ifdef ARLAND_LAUNCHER_DIAGNOSTIC
+  char line[256] = {};
+  int used = wsprintfA(line, "entry actual=");
+  for (std::size_t i = 0; i < size && used + 3 < int(sizeof(line)); ++i)
+    used += wsprintfA(line + used, "%02x", unsigned(actual[i]));
+  used += wsprintfA(line + used, " expected=");
+  for (std::size_t i = 0; i < size && used + 3 < int(sizeof(line)); ++i)
+    used += wsprintfA(line + used, "%02x", unsigned(expected[i]));
+  launcherLog(line);
+#else
+  (void)actual;
+  (void)expected;
+  (void)size;
+#endif
+}
+
 using PFN_AlphaBlend = BOOL (WINAPI *)(
   HDC, int, int, int, int, HDC, int, int, int, int, BLENDFUNCTION);
 using PFN_TransparentBlt = BOOL (WINAPI *)(
@@ -124,6 +143,41 @@ bool g_startsGame = false;
 std::array<wchar_t, 32768> g_gameDirectory = { };
 std::uint8_t* g_entryPoint = nullptr;
 std::array<std::uint8_t, 5> g_entryOriginal = { };
+
+// All three installed ArlandDXLauncher.exe copies have byte-identical .text
+// sections (their resources make the complete files differ). This is the
+// verified 17-byte entry window at RVA 0x120be6, checked against every shipped
+// launcher. Its final dword is an absolute address and every launcher's PE
+// relocation table names it as HIGHLOW at entry+13, so the loader legitimately
+// changes those four bytes when ASLR moves the image. Header-derived location
+// is not identity: compare the exact loader-adjusted window before replacing
+// its first five bytes.
+constexpr std::array<std::uint8_t, 17> kLauncherEntryExpected = {
+  0xe8, 0x08, 0xde, 0x00, 0x00, 0xe9, 0x00, 0x00,
+  0x00, 0x00, 0x6a, 0x14, 0x68, 0x28, 0x8a, 0x59, 0x00,
+};
+
+constexpr std::size_t kLauncherEntryRelocationOffset = 13;
+constexpr std::uint32_t kLauncherPreferredImageBase = 0x00400000;
+
+template<std::size_t N>
+void relocateEntryWindow(std::uint8_t* loadedBase,
+                         std::array<std::uint8_t, N>& expected) {
+  static_assert(N >= kLauncherEntryRelocationOffset + sizeof(std::uint32_t));
+  std::uint32_t absolute = 0;
+  std::memcpy(&absolute, expected.data() + kLauncherEntryRelocationOffset,
+              sizeof(absolute));
+  // PE32 HIGHLOW relocation arithmetic is modulo 2^32. Expressing the delta
+  // as unsigned also covers an image loaded below its preferred base. Use the
+  // verified file ImageBase rather than the loaded header: Wine rewrites that
+  // header field to the actual base, which would incorrectly make this delta
+  // zero under Proton.
+  absolute += static_cast<std::uint32_t>(
+                reinterpret_cast<std::uintptr_t>(loadedBase)) -
+              kLauncherPreferredImageBase;
+  std::memcpy(expected.data() + kLauncherEntryRelocationOffset, &absolute,
+              sizeof(absolute));
+}
 
 // `directory` + `name`, where g_gameDirectory keeps its trailing backslash, so
 // this is a plain concatenation. False if the result does not fit.
@@ -307,12 +361,25 @@ bool armRedirect() {
     reinterpret_cast<const IMAGE_NT_HEADERS32*>(base + dos->e_lfanew);
   if (nt->Signature != IMAGE_NT_SIGNATURE ||
       nt->FileHeader.Machine != IMAGE_FILE_MACHINE_I386 ||
-      !nt->OptionalHeader.AddressOfEntryPoint)
+      !nt->OptionalHeader.AddressOfEntryPoint ||
+      nt->OptionalHeader.SizeOfImage < kLauncherEntryExpected.size() ||
+      nt->OptionalHeader.AddressOfEntryPoint >
+        nt->OptionalHeader.SizeOfImage - kLauncherEntryExpected.size())
     return false;
 
-  // Taken from the headers rather than from a hardcoded address, so this holds
-  // for all three games' launchers and for any future build of them.
+  // The header locates the entry, and the loader-adjusted shipped byte window
+  // identifies it. Comparing the raw file bytes here would reject a valid
+  // ASLR-rebased launcher because entry+13 is a PE HIGHLOW relocation.
   g_entryPoint = base + nt->OptionalHeader.AddressOfEntryPoint;
+  auto expectedEntry = kLauncherEntryExpected;
+  relocateEntryWindow(base, expectedEntry);
+  if (std::memcmp(g_entryPoint, expectedEntry.data(), expectedEntry.size())) {
+    launcherLogEntryWindows(g_entryPoint, expectedEntry.data(),
+                            expectedEntry.size());
+    launcherLog("launcher entry bytes are unknown; leaving it untouched");
+    g_entryPoint = nullptr;
+    return false;
+  }
   std::memcpy(g_entryOriginal.data(), g_entryPoint, g_entryOriginal.size());
 
   DWORD oldProtect = 0;
