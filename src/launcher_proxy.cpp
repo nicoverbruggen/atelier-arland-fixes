@@ -236,14 +236,20 @@ constexpr std::array<GameExecutables, 3> SupportedGames = {{
 // builds do not each carry every language, so this matters. If the build the
 // language calls for is not installed the other one is used rather than
 // starting nothing.
+//
+// The comparison is against the whole value because the stock launcher's own
+// is: it compares the parsed string against the constants "1", "2", "3" and
+// "4", so "10" is unrecognized there and falls to English, where a
+// first-character test would read it as Japanese.
 bool resolveGameExecutable(std::array<wchar_t, 32768>& out) {
   std::array<wchar_t, 16> language = { };
   std::array<wchar_t, 32768> settings = { };
   if (pathInGameDirectory(L"ArlandDX_Settings.ini", settings))
     GetPrivateProfileStringW(L"Lang", L"Language", L"2", language.data(),
       static_cast<DWORD>(language.size()), settings.data());
-  const bool english = language[0] != L'1' && language[0] != L'3' &&
-                       language[0] != L'4';
+  const bool english = lstrcmpW(language.data(), L"1") != 0 &&
+                       lstrcmpW(language.data(), L"3") != 0 &&
+                       lstrcmpW(language.data(), L"4") != 0;
 
   for (const GameExecutables& game : SupportedGames) {
     const wchar_t* candidates[2] = {
@@ -275,10 +281,14 @@ void runOriginalEntryPoint() {
     ExitProcess(1);
   }
   std::memcpy(g_entryPoint, g_entryOriginal.data(), g_entryOriginal.size());
-  DWORD ignored = 0;
-  VirtualProtect(g_entryPoint, g_entryOriginal.size(), oldProtect, &ignored);
   FlushInstructionCache(GetCurrentProcess(), g_entryPoint,
     g_entryOriginal.size());
+  DWORD ignored = 0;
+  // The bytes are back either way, so the stock launcher still runs; a page
+  // left writable is worth a line rather than a refusal.
+  if (!VirtualProtect(g_entryPoint, g_entryOriginal.size(), oldProtect,
+                      &ignored))
+    launcherLog("launcher entry bytes restored, but page protection was not");
   reinterpret_cast<void (*)()>(g_entryPoint)();
 }
 

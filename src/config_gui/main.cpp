@@ -1266,11 +1266,17 @@ int gameInFolder(const char* dir) {
 //
 // If the build the language calls for is not installed, the other one is used
 // rather than refusing to start anything.
+//
+// The comparison is against the whole value, as the stock launcher's is: it
+// compares against the constants "1", "2", "3" and "4", so "10" is
+// unrecognized there and falls to English, where a first-character test would
+// read it as Japanese.
 bool gameExeForLanguage(const char* language, char* out) {
   if (g_game < 0 || !g_gameDir[0])
     return false;
-  const char code = language ? language[0] : '2';
-  const bool english = code != '1' && code != '3' && code != '4';
+  const char* code = language ? language : "2";
+  const bool english = lstrcmpA(code, "1") != 0 && lstrcmpA(code, "3") != 0 &&
+                       lstrcmpA(code, "4") != 0;
   const Game& game = kGames[g_game];
   const char* first = english ? game.english : game.multilingual;
   const char* second = english ? game.multilingual : game.english;
@@ -2541,6 +2547,18 @@ LRESULT CALLBACK WndProc(HWND w, UINT msg, WPARAM wp, LPARAM lp) {
           return 0;
         case IDC_OPENENV:
         case IDC_OPENLAUNCHER: {
+          // Saved first, so the stock tool opens onto the settings on screen
+          // rather than the ones on disk. Koei Tecmo's settings editor writes
+          // the same ArlandDX_Settings.ini this window does, so without this
+          // the two overwrite each other in whichever order they are used: the
+          // editor opens on stale values, and the next Play writes this
+          // window's controls back over whatever was changed there.
+          const SaveOutcome saved = saveToIni();
+          if (!saved.ok()) {
+            reportSaveFailure(w, saved);
+            return 0;  // do not open a tool onto settings that never saved
+          }
+          markSaved();
           const bool env = LOWORD(wp) == IDC_OPENENV;
           const char* exeName =
             env ? "ArlandDXEnv.exe" : "ArlandDXLauncher.exe";

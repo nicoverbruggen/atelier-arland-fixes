@@ -3,6 +3,7 @@
 
 #include "config.h"
 #include "crash_log.h"
+#include "hook_util.h"
 #include "menu_fix.h"
 #include "pad_notify_trace.h"
 #include "path_util.h"
@@ -182,7 +183,54 @@ using PFN_IDXGIFactory_CreateSwapChain = HRESULT (STDMETHODCALLTYPE *) (
   IDXGIFactory*, IUnknown*, DXGI_SWAP_CHAIN_DESC*, IDXGISwapChain**);
 PFN_IDXGIFactory_CreateSwapChain originalCreateSwapChain = nullptr;
 mutex presentHookMutex;
+// Installation state for the two proxy-local hooks, kept separately from the
+// original pointers above. A non-null original is not the same fact: MinHook
+// publishes the trampoline when the hook is created, so a create that succeeds
+// and an enable that fails would leave the pointer set with no detour on the
+// target, and using it as the guard would then refuse every later attempt for
+// the rest of the session.
+bool presentHookInstalled = false;
+bool createSwapChainHookInstalled = false;
+// Set only when a rollback could not undo what the failed attempt owned. A
+// clean rollback leaves nothing behind, so the next swap chain may retry; an
+// incomplete one means a detour of ours may still be live and a second attempt
+// would be creating a hook over a target whose state we no longer know.
+bool presentHookPoisoned = false;
+bool createSwapChainHookPoisoned = false;
 std::atomic<int64_t> previousPresentNanos = 0;
+
+// Shared failure handling for both installers. Runs the rollback and reports
+// what happened, and returns true when the rollback was complete, meaning a
+// later attempt may retry. The report is throttled the same way as the other
+// install failures in this file: always the first time, then only when verbose
+// logging is on, because these installers run once per swap chain.
+bool declineHookTransaction(HookTransaction& transaction, const char* what,
+                            std::atomic<bool>& reported) {
+  const bool speak = atfix::verboseLogging() ||
+    !reported.exchange(true, std::memory_order_relaxed);
+  const HookTransactionFailure& failure = transaction.failure();
+  if (speak)
+    log(what, ": transaction declined stage=",
+      hookTransactionStageName(failure.stage), " target=", failure.target,
+      failure.status ? " status=" : "",
+      failure.status
+        ? MH_StatusToString(static_cast<MH_STATUS>(failure.status)) : "");
+  if (transaction.rollback()) {
+    if (speak)
+      log(what, ": rolled back completely; a later swap chain may retry");
+    return true;
+  }
+  const HookTransactionFailure& rollbackFailure = transaction.rollbackFailure();
+  log(what, ": ROLLBACK INCOMPLETE stage=",
+      hookTransactionStageName(rollbackFailure.stage),
+      " target=", rollbackFailure.target,
+      rollbackFailure.status ? " status=" : "",
+      rollbackFailure.status
+        ? MH_StatusToString(static_cast<MH_STATUS>(rollbackFailure.status))
+        : "",
+      "; refusing every later attempt because hook ownership is now uncertain");
+  return false;
+}
 
 bool menuTransitionTraceEnabled() {
   const char* trace = std::getenv("ARLAND_MENU_TRANSITION_TRACE");
@@ -357,33 +405,29 @@ HRESULT STDMETHODCALLTYPE tracedPresent(
   return result;
 }
 
+// Present lives in the swap chain's vtable, so it can only be hooked once an
+// instance exists. Installed as a transaction so that a create which succeeds
+// and an enable which fails removes its own hook: MinHook would otherwise
+// answer the next attempt with MH_ERROR_ALREADY_CREATED, and accepting that as
+// ownership is exactly the state Batch 4 removed everywhere else.
 void hookSwapChain(IDXGISwapChain* swapChain) {
   if (!swapChain || !presentHookNeeded())
     return;
   std::lock_guard lock(presentHookMutex);
-  if (originalPresent)
+  if (presentHookInstalled || presentHookPoisoned)
     return;
   void** vtable = *reinterpret_cast<void***>(swapChain);
-  MH_STATUS status = MH_CreateHook(vtable[8],
-    reinterpret_cast<void*>(&tracedPresent),
-    reinterpret_cast<void**>(&originalPresent));
-  if (status && status != MH_ERROR_ALREADY_CREATED) {
+  HookTransaction transaction;
+  if (!transaction.create(vtable[8], reinterpret_cast<void*>(&tracedPresent),
+        reinterpret_cast<void**>(&originalPresent)) ||
+      !transaction.enableAll()) {
     static std::atomic<bool> reported{false};
-    if (atfix::verboseLogging() ||
-        !reported.exchange(true, std::memory_order_relaxed))
-      log("Failed to create transition Present hook: ",
-        MH_StatusToString(status));
+    presentHookPoisoned =
+      !declineHookTransaction(transaction, "Transition Present hook", reported);
     return;
   }
-  status = MH_EnableHook(vtable[8]);
-  if (status) {
-    static std::atomic<bool> reported{false};
-    if (atfix::verboseLogging() ||
-        !reported.exchange(true, std::memory_order_relaxed))
-      log("Failed to enable transition Present hook: ",
-        MH_StatusToString(status));
-    return;
-  }
+  transaction.commit();
+  presentHookInstalled = true;
   if (atfix::verboseLogging())
     log("Created transition Present hook @ ", vtable[8]);
 }
@@ -432,22 +476,22 @@ void hookFactoryForSwapChain(ID3D11Device* device) {
         std::hex, result, std::dec);
   } else {
     std::lock_guard lock(presentHookMutex);
-    if (!originalCreateSwapChain) {
+    if (!createSwapChainHookInstalled && !createSwapChainHookPoisoned) {
       void** vtable = *reinterpret_cast<void***>(factory);
-      MH_STATUS status = MH_CreateHook(vtable[10],
-        reinterpret_cast<void*>(&tracedCreateSwapChain),
-        reinterpret_cast<void**>(&originalCreateSwapChain));
-      if (!status || status == MH_ERROR_ALREADY_CREATED)
-        status = MH_EnableHook(vtable[10]);
-      if (status) {
+      HookTransaction transaction;
+      if (!transaction.create(vtable[10],
+            reinterpret_cast<void*>(&tracedCreateSwapChain),
+            reinterpret_cast<void**>(&originalCreateSwapChain)) ||
+          !transaction.enableAll()) {
         static std::atomic<bool> reported{false};
-        if (atfix::verboseLogging() ||
-            !reported.exchange(true, std::memory_order_relaxed))
-          log("Failed to hook IDXGIFactory::CreateSwapChain: ",
-            MH_StatusToString(status));
+        createSwapChainHookPoisoned = !declineHookTransaction(
+          transaction, "Transition CreateSwapChain hook", reported);
+      } else {
+        transaction.commit();
+        createSwapChainHookInstalled = true;
+        if (atfix::verboseLogging())
+          log("Created transition CreateSwapChain hook @ ", vtable[10]);
       }
-      else if (atfix::verboseLogging())
-        log("Created transition CreateSwapChain hook @ ", vtable[10]);
     }
   }
   if (factory)

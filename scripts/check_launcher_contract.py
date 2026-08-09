@@ -89,15 +89,22 @@ def main():
         # 1, 3, and 4 use the multilingual executable; everything else uses the
         # English executable. Check both source forms rather than allowing a
         # future edit to silently change one side.
+        #
+        # Both compare the WHOLE value, as the stock launcher does. A
+        # first-character test would read "10" as Japanese where the game reads
+        # it as unrecognized and starts the English build, so the comparison
+        # form is part of the contract rather than an implementation detail.
         gui_language = required(
             GUI,
-            r"const bool english = code != '1' && code != '3' && code != '4';",
+            r'const bool english = lstrcmpA\(code, "1"\) != 0 && '
+            r'lstrcmpA\(code, "3"\) != 0 &&\s*lstrcmpA\(code, "4"\) != 0;',
             "GUI language mapping",
         )
         proxy_language = required(
             PROXY,
-            r"const bool english = language\[0\] != L'1' && language\[0\] != L'3' &&\s*"
-            r"language\[0\] != L'4';",
+            r'const bool english = lstrcmpW\(language\.data\(\), L"1"\) != 0 &&\s*'
+            r'lstrcmpW\(language\.data\(\), L"3"\) != 0 &&\s*'
+            r'lstrcmpW\(language\.data\(\), L"4"\) != 0;',
             "proxy language mapping",
         )
         if not gui_language or not proxy_language:

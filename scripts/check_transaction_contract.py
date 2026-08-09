@@ -11,6 +11,7 @@ HOOK_H = (ROOT / "src" / "hook_util.h").read_text()
 HOOK_CPP = (ROOT / "src" / "hook_util.cpp").read_text()
 GATES = (ROOT / "src" / "fast_save_menu.cpp").read_text()
 PAGE_PATCH = (ROOT / "src" / "page_patch.h").read_text()
+MAIN = (ROOT / "src" / "main.cpp").read_text()
 
 
 def require(condition, message):
@@ -51,6 +52,28 @@ def main():
                       "rollback()"):
             require(token in PAGE_PATCH,
                     f"page-patch transaction is missing {token}")
+
+        # The proxy's own swap-chain and factory installers. They are outside
+        # both the single-hook helper and the game-side installers, so nothing
+        # above covers them.
+        for token in ("MH_CreateHook", "MH_EnableHook"):
+            require(token not in MAIN,
+                    f"proxy installer calls {token} outside a transaction")
+        require(MAIN.count("HookTransaction transaction") == 2 and
+                MAIN.count("transaction.enableAll()") == 2 and
+                MAIN.count("transaction.commit()") == 2,
+                "the Present and factory installers are not both transactional")
+        require("declineHookTransaction" in MAIN and
+                "transaction.rollback()" in MAIN and
+                "ROLLBACK INCOMPLETE" in MAIN,
+                "proxy installer failure does not roll back and report")
+        for token in ("presentHookInstalled", "createSwapChainHookInstalled",
+                      "presentHookPoisoned", "createSwapChainHookPoisoned"):
+            require(token in MAIN,
+                    f"proxy installer state is missing {token}")
+        require("if (originalPresent)\n    return;" not in MAIN and
+                "if (!originalCreateSwapChain)" not in MAIN,
+                "proxy installer still uses a published original as its state")
     except (OSError, ValueError) as exc:
         print(f"transaction contract check failed: {exc}", file=sys.stderr)
         return 1
