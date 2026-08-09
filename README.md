@@ -19,6 +19,8 @@ The **included launcher** replaces the standard window for the Arland games and 
 
 ### List of fixes and improvements
 
+These are enabled by default, as they are crucial fixes. Some items do not apply to all games, as they differ slightly in terms of engine and functionality.
+
 | Fix                                        | Rorona | Totori | Meruru |
 |--------------------------------------------|:------:|:------:|:------:|
 | Much faster menus (removed stutter)        |   ✓    |   ✓    |   ✓    |
@@ -26,7 +28,6 @@ The **included launcher** replaces the standard window for the Arland games and 
 | Text-corruption fix                        |   ✓    |   ✓    |   ✓    |
 | Higher resolution rendering                |   ✓    |   ✓    |   ✓    |
 | High-resolution UI text                    |   ✓    |   ✓    |   ✓    |
-| SMAA anti-aliasing                         |   ✓    |   ✓    |   ✓    |
 | Correct behaviour at high refresh rates    |   ✓    |   ✓    |   ✓    |
 | Borderless windowed at your desktop size   |   ✓    |   ✓    |   ✓    |
 | Correct world-map analog cursor speed      |   —    |   ✓    |   ✓    |
@@ -41,13 +42,36 @@ If the game crashes, the mod appends a report to `arland-fix.log` that helps pin
 
 ### List of graphics enhancements
 
+These things were not part of the original games, but were added with the mod. These can be turned off.
+
 | Enhancement                                | Rorona | Totori | Meruru |
 |--------------------------------------------|:------:|:------:|:------:|
+| Edge smoothing (SMAA)                      |   ✓    |   ✓    |   ✓    |
 | Supersampling (internal render resolution) |   ✓    |   ✓    |   ✓    |
 | Sharpening                                 |   ✓    |   ✓    |   ✓    |
 | Anisotropic filtering                      |   ✓    |   ✓    |   ✓    |
-| Shadow multiplier                          |   ✓    |   ✓    |   ✓    |
-| Battle cut-in shadows and brightness       |   ✓    |   ✓    |   ✓    |
+| Shadow enhancements                        |   ✓    |   ✓    |   ✓    |
+
+## Installation on Windows
+
+> [!IMPORTANT]
+> This mod is a replacement for `atelier-sync-fix` and Atelier Graphics Tweak (`AGT`), so remove those mods first if you have them installed.
+
+1. Open the game's installation directory from Steam by selecting **Manage → Browse local files**.
+2. Copy the contents of the latest release (`d3d11.dll`, `arland-fix-launcher.exe`, `msimg32.dll` and `arland-fix.ini`) into that directory, beside the game's own executables. If you are updating an existing install, keep the `arland-fix.ini` you already have, since the bundled one is only the defaults.
+3. Launch the game normally through Steam. The mod's launcher should open now instead of the original one.
+
+## Installation on Linux (Proton)
+
+The mod works correctly under Proton, and the games keep using Steam as usual. There is one extra step: Wine ships its own `d3d11` and `msimg32`, and it prefers them over the files in the game folder, so you have to tell it not to.
+
+In **Properties → General → Launch Options**, add:
+
+```text
+WINEDLLOVERRIDES="d3d11,msimg32=n,b" %command%
+```
+
+Keep `%command%` at the end. After this, the game should use the new launcher that the mod provides.
 
 ## Safety
 
@@ -75,31 +99,9 @@ The complete source code and the steps GitHub uses to build each release are pub
 > [!TIP]
 > If you do not read code yourself, an LLM (like ChatGPT or Claude) can help review the repository for obvious red flags and explain whether it appears to do what this page claims. That can be a useful second opinion, but it is not a guarantee and cannot prove that a downloaded file was built from the published source. You can ask it to inspect the built files, however this may use up a lot of tokens.
 
-## Installation on Windows
+## Configuration
 
-1. Open the game's installation directory from Steam by selecting **Manage → Browse local files**.
-2. Copy `d3d11.dll`, `arland-fix-launcher.exe`, `msimg32.dll` and `arland-fix.ini` into that directory, beside the game executables and `ArlandDXEnv.exe`. If you are updating an existing install, keep the `arland-fix.ini` you already have — the bundled one is only the defaults.
-3. Launch the game normally through Steam.
-
-All performance and text-correctness fixes are enabled automatically. No additional configuration is required, but it's recommended that you adjust the graphics settings according to your hardware configuration. The launcher explains what each one costs.
-
-Use it on its own. It is meant to be the only graphics mod in the folder: copy the four files in as listed above and nothing else. Do not rename `d3d11.dll` to anything else, and do not place a second copy of it under another name. Other tools that install themselves as `d3d11.dll` cannot be used at the same time, because only one of them can have that name.
-
-### Wine and Proton
-
-Copy the files in exactly as above, then add this to the game's Steam Launch Options (Properties → General → Launch Options):
-
-```text
-WINEDLLOVERRIDES="d3d11,msimg32=n,b" %command%
-```
-
-Without it Wine loads its own `d3d11` and ignores the mod's, so the files sit in the folder doing nothing and the game looks entirely unmodified. 
-
-If nothing seems to have changed after installing, check this first. `arland-fix.log` appearing in the game directory is the sign the mod loaded.
-
-### Advanced options
-
-The release archive includes an `arland-fix.ini` listing every option with its default; if none is present the mod creates a minimal one on first launch. You can customize settings by using the mod's launcher.
+Use the launcher. It writes the game's own configuration file and the mod's `arland-fix.ini`, and only shows options the game it sits next to supports. `arland-fix.ini` ships with every default filled in, so it also serves as the list of what can be set.
 
 ## Credits
 
