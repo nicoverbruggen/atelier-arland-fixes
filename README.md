@@ -27,9 +27,8 @@ These are enabled by default, as they are crucial fixes. Some items do not apply
 | Frame sync fix                             |   ✓    |   ✓    |   ✓    |
 | Text-corruption fix                        |   ✓    |   ✓    |   ✓    |
 | Higher resolution rendering                |   ✓    |   ✓    |   ✓    |
-| High-resolution UI text                    |   ✓    |   ✓    |   ✓    |
+| High-resolution UI text (English builds)   |   ✓    |   ✓    |   ✓    |
 | Correct behaviour at high refresh rates    |   ✓    |   ✓    |   ✓    |
-| Borderless windowed at your desktop size   |   ✓    |   ✓    |   ✓    |
 | Correct world-map analog cursor speed      |   —    |   ✓    |   ✓    |
 | Restored ordinary-battle shadows           |   ✓    |   —    |   —    |
 | Instant save and load menus                |   ✓    |   ✓    |   ✓    |
@@ -42,7 +41,7 @@ If the game crashes, the mod appends a report to `arland-fix.log` that helps pin
 
 ### List of graphics enhancements
 
-These things were not part of the original games, but were added with the mod. These can be turned off.
+These things were not part of the original games, but were added with the mod. Each one can be turned on or off in the launcher. Edge smoothing, anisotropic filtering and the shadow enhancements are on to begin with; supersampling, sharpening and borderless are optional.
 
 | Enhancement                                | Rorona | Totori | Meruru |
 |--------------------------------------------|:------:|:------:|:------:|
@@ -51,6 +50,7 @@ These things were not part of the original games, but were added with the mod. T
 | Sharpening                                 |   ✓    |   ✓    |   ✓    |
 | Anisotropic filtering                      |   ✓    |   ✓    |   ✓    |
 | Shadow enhancements                        |   ✓    |   ✓    |   ✓    |
+| Borderless windowed at your desktop size   |   ✓    |   ✓    |   ✓    |
 
 ## Installation on Windows
 
