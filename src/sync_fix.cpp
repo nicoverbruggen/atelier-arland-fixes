@@ -22,6 +22,7 @@
 #include "smaa.h"
 #include "supersample.h"
 #include "sync_internal.h"
+#include "sync_upload_policy.h"
 #include "d3d11_procs.h"
 
 namespace atfix {
@@ -3232,16 +3233,14 @@ void STDMETHODCALLTYPE ID3D11DeviceContext_UpdateSubresource(
     }
   }
 
-  procs->UpdateSubresource(pContext, pResource,
-    Subresource, pBox, effectiveData, RowPitch, SlicePitch);
-
-  ID3D11Resource* shadowResource = getShadowResource(pResource);
-  
-  if (shadowResource) {
-    procs->UpdateSubresource(pContext, shadowResource,
-      Subresource, pBox, pData, RowPitch, SlicePitch);
-    shadowResource->Release();
-  }
+  updateMirroredSubresource<ID3D11Resource>(
+    pResource, effectiveData,
+    [&](ID3D11Resource* resource, const void* data) {
+      procs->UpdateSubresource(pContext, resource,
+        Subresource, pBox, data, RowPitch, SlicePitch);
+    },
+    [](ID3D11Resource* resource) { return getShadowResource(resource); },
+    [](ID3D11Resource* resource) { resource->Release(); });
 }
 
 using SubresourceRef = std::pair<ID3D11Resource*, UINT>;
@@ -3285,6 +3284,47 @@ void markShadowDirty(ID3D11Resource* pResource, UINT Subresource) {
     pResource->AddRef();
   g_haveDirtyShadows.store(true, std::memory_order_release);
 }
+
+struct DirtyShadowUpload {
+  const ContextProcs* procs;
+  ID3D11DeviceContext* context;
+  ID3D11Resource* resource;
+  ID3D11Resource* shadow;
+  UINT subresource;
+  D3D11_MAP destinationMapType;
+  const ATFIX_RESOURCE_INFO* info;
+  D3D11_MAPPED_SUBRESOURCE destination = {};
+  D3D11_MAPPED_SUBRESOURCE source = {};
+  HRESULT hr = S_OK;
+
+  bool mapDestination() {
+    hr = procs->Map(context, resource, subresource,
+      destinationMapType, 0, &destination);
+    return SUCCEEDED(hr);
+  }
+
+  bool mapSource() {
+    hr = procs->Map(context, shadow, subresource,
+      D3D11_MAP_READ, 0, &source);
+    return SUCCEEDED(hr);
+  }
+
+  void copy() {
+    copyMappedSubresource(info, subresource, &destination, &source);
+  }
+
+  void unmapSource() {
+    procs->Unmap(context, shadow, subresource);
+  }
+
+  void unmapDestination() {
+    procs->Unmap(context, resource, subresource);
+  }
+
+  void requeue() {
+    markShadowDirty(resource, subresource);
+  }
+};
 
 void flushDirtyShadows(ID3D11DeviceContext* pContext) {
   if (!isImmediatecontext(pContext) ||
@@ -3334,35 +3374,29 @@ void flushDirtyShadows(ID3D11DeviceContext* pContext) {
     const D3D11_MAP mapType = info.Usage == D3D11_USAGE_DYNAMIC
       ? D3D11_MAP_WRITE_DISCARD
       : D3D11_MAP_WRITE;
-    D3D11_MAPPED_SUBRESOURCE dst = { };
-    D3D11_MAPPED_SUBRESOURCE src = { };
-    HRESULT hr = procs->Map(pContext, resource, subresource, mapType, 0, &dst);
-    if (SUCCEEDED(hr)) {
-      hr = procs->Map(pContext, shadow, subresource, D3D11_MAP_READ, 0, &src);
-      if (SUCCEEDED(hr)) {
-        copyMappedSubresource(&info, subresource, &dst, &src);
-        if (transitionTraceEnabled()) {
-          const uint32_t mip = info.Mips ? subresource % info.Mips : 0;
-          const uint64_t width = std::max(info.Width >> mip, 1u);
-          const uint64_t height = std::max(info.Height >> mip, 1u);
-          const uint64_t depth = std::max(info.Depth >> mip, 1u);
-          g_transitionShadowFlushBytes.fetch_add(
-            width * height * depth * getFormatPixelSize(info.Format),
-            std::memory_order_relaxed);
-        }
-        procs->Unmap(pContext, shadow, subresource);
-      } else {
-        static std::atomic<uint32_t> reportedShadowUpload{0};
-        if (logFirstOrVerbose(reportedShadowUpload))
-          log("Failed to map a shadow resource for upload, hr 0x",
-              std::hex, hr);
+    DirtyShadowUpload upload = {
+      procs, pContext, resource, shadow, subresource, mapType, &info };
+    const ShadowUploadResult result = uploadDirtyShadow(upload);
+    if (result == ShadowUploadResult::Copied) {
+      if (transitionTraceEnabled()) {
+        const uint32_t mip = info.Mips ? subresource % info.Mips : 0;
+        const uint64_t width = std::max(info.Width >> mip, 1u);
+        const uint64_t height = std::max(info.Height >> mip, 1u);
+        const uint64_t depth = std::max(info.Depth >> mip, 1u);
+        g_transitionShadowFlushBytes.fetch_add(
+          width * height * depth * getFormatPixelSize(info.Format),
+          std::memory_order_relaxed);
       }
-      procs->Unmap(pContext, resource, subresource);
+    } else if (result == ShadowUploadResult::SourceMapFailed) {
+      static std::atomic<uint32_t> reportedShadowUpload{0};
+      if (logFirstOrVerbose(reportedShadowUpload))
+        log("Failed to map a shadow resource for upload, hr 0x",
+            std::hex, upload.hr);
     } else {
       static std::atomic<uint32_t> reportedDestinationUpload{0};
       if (logFirstOrVerbose(reportedDestinationUpload))
         log("Failed to map a destination resource for upload, hr 0x",
-            std::hex, hr);
+            std::hex, upload.hr);
     }
 
     shadow->Release();

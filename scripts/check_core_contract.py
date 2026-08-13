@@ -19,6 +19,7 @@ GAME_CPP = (ROOT / "src" / "game.cpp").read_text()
 MAIN_CPP = (ROOT / "src" / "main.cpp").read_text()
 MENU_CPP = (ROOT / "src" / "menu_fix.cpp").read_text()
 SYNC_CPP = (ROOT / "src" / "sync_fix.cpp").read_text()
+SYNC_UPLOAD_POLICY = (ROOT / "src" / "sync_upload_policy.h").read_text()
 SHARPEN_CPP = (ROOT / "src" / "sharpen.cpp").read_text()
 SMAA_CPP = (ROOT / "src" / "smaa.cpp").read_text()
 SSAA_CPP = (ROOT / "src" / "supersample.cpp").read_text()
@@ -189,6 +190,34 @@ def main():
             if not re.search(rf"\b{hook}\s*\)", SYNC_CPP):
                 raise ValueError(f"required device hook is missing: {hook}")
 
+        # Dirty-shadow failures must remain retryable, and patched constant-
+        # buffer bytes must be identical in the game resource and its staging
+        # mirror. The policy has a failure-injection harness; these checks pin
+        # the production path to that tested policy.
+        required_upload_wiring = (
+            '#include "sync_upload_policy.h"',
+            "updateMirroredSubresource<ID3D11Resource>(\n"
+            "    pResource, effectiveData,",
+            "const ShadowUploadResult result = uploadDirtyShadow(upload);",
+            "markShadowDirty(resource, subresource);",
+        )
+        for fragment in required_upload_wiring:
+            if fragment not in SYNC_CPP:
+                raise ValueError(
+                    "sync upload path no longer uses its tested policy: "
+                    + fragment
+                )
+        source_at = SYNC_UPLOAD_POLICY.find("operations.mapSource()")
+        destination_at = SYNC_UPLOAD_POLICY.find("operations.mapDestination()")
+        if source_at < 0 or destination_at < 0 or source_at > destination_at:
+            raise ValueError(
+                "dirty-shadow upload no longer maps the readable source first"
+            )
+        if "submit(shadow, effectiveData);" not in SYNC_UPLOAD_POLICY:
+            raise ValueError(
+                "staging mirror no longer receives the effective base payload"
+            )
+
         # Fullscreen passes run inside the game's frame. Preserve every render
         # target sharpening can displace, and never draw any pass after a
         # failed WRITE_DISCARD map (which would reuse stale constants).
@@ -247,7 +276,7 @@ def main():
 
     print(
         "core contract ok: feature matrix, installer fan-out, "
-        "text-buffer lifetimes, synchronization hook surface, render-pass "
+        "text-buffer lifetimes, synchronization hooks/uploads, render-pass "
         "safety, retryable SSAA setup, and compiler portability agree"
     )
     return 0
