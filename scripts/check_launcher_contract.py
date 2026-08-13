@@ -138,6 +138,39 @@ def main():
         ).group(1)
         if "if (!VirtualProtect" not in original or "ExitProcess(1)" not in original:
             raise ValueError("entry restore failure can recurse into the redirect")
+        # And the restore has to end by actually running what it restored. That
+        # is the whole point of the function and it was unpinned until the
+        # diagnostic removal in 04b929f deleted a log line that was the entire
+        # body of an unbraced `if`, leaving this call as the new body: a
+        # successful restore then returned from the launcher's entry point
+        # instead of calling it.
+        #
+        # Indentation cannot tell the two apart, which is why the defect was
+        # invisible -- the orphaned call kept the indent it always had, so it
+        # reads as unguarded either way. The statement BEFORE it does tell them
+        # apart: a real statement ends in `;` or `}`, and the tail of an
+        # unbraced condition does not.
+        lines = original.splitlines()
+        call = next(
+            (i for i, line in enumerate(lines)
+             if "reinterpret_cast<void (*)()>(g_entryPoint)()" in line),
+            None,
+        )
+        if call is None:
+            raise ValueError(
+                "runOriginalEntryPoint never calls the entry point it restored"
+            )
+        preceding = ""
+        for line in reversed(lines[:call]):
+            stripped = line.strip()
+            if stripped and not stripped.startswith("//"):
+                preceding = stripped
+                break
+        if not preceding.endswith((";", "}")):
+            raise ValueError(
+                "the restored entry point is only called conditionally, so a "
+                "successful restore never runs it: " + preceding
+            )
 
         if "LastWrite" in GUI or "verifyWrite(" in GUI:
             raise ValueError("GUI reverted to last-key-only save verification")

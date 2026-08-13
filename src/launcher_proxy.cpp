@@ -237,11 +237,12 @@ void runOriginalEntryPoint() {
   std::memcpy(g_entryPoint, g_entryOriginal.data(), g_entryOriginal.size());
   FlushInstructionCache(GetCurrentProcess(), g_entryPoint,
     g_entryOriginal.size());
+  // Unchecked, and it has to stay that way: the original bytes are already
+  // back, so the stock launcher runs correctly whether or not the page returns
+  // to its old protection. Refusing to call it over a left-writable page would
+  // turn a cosmetic failure into a launcher that does nothing.
   DWORD ignored = 0;
-  // The bytes are back either way, so the stock launcher still runs; a page
-  // left writable is worth a line rather than a refusal.
-  if (!VirtualProtect(g_entryPoint, g_entryOriginal.size(), oldProtect,
-                      &ignored))
+  VirtualProtect(g_entryPoint, g_entryOriginal.size(), oldProtect, &ignored);
   reinterpret_cast<void (*)()>(g_entryPoint)();
 }
 
