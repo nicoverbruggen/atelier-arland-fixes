@@ -509,6 +509,21 @@ bool texture2DDesc(ID3D11Resource* resource, D3D11_TEXTURE2D_DESC* desc) {
 // configPath / arlandConfigBool / shadowMapResolution / configuredResolution
 // moved to config.cpp (arland-fix.ini access). applyResolutionOverride stays
 // here because it mutates the resolution globals below.
+
+// Whether swap-chain creation has to be intercepted for the resolution policy
+// alone, with no other feature asking for it. This mirrors the two gates in
+// applyResolutionOverride below: the render size decides whether the game's own
+// swap-chain size is recorded, and the display size decides whether the chain is
+// rewritten. Keep the two in step. A blank ini still answers true, because
+// displayResolution falls back to the desktop mode, which is what moves a fresh
+// install off the game's 720p default.
+bool resolutionOverrideNeeded() {
+  UINT width = 0;
+  UINT height = 0;
+  return displayResolution(&width, &height) ||
+    renderResolution(&width, &height);
+}
+
 bool applyResolutionOverride(DXGI_SWAP_CHAIN_DESC* pDesc) {
   if (!pDesc)
     return false;
@@ -894,6 +909,21 @@ SmaaBoundary smaaBoundaryMode() {
   return mode;
 }
 
+// Who needs the pre-UI boundary detected at all. Two passes are placed there,
+// edge smoothing and sharpening, and sharpen.h records that they are separate
+// settings: sharpening a frame that was never antialiased is what the Sharpen
+// slider means with SMAA off. Detecting the boundary only when SMAA was on
+// therefore left that slider doing nothing, silently, because every call site
+// of sharpenApply sits behind one of the four gates below.
+//
+// Opening the boundary for sharpening alone cannot run SMAA: smaaApplySceneColor
+// gates on smaaEnabled() itself and returns false.
+bool preUiBoundaryNeeded() {
+  static const bool needed =
+    (atfix::smaaEnabled() || atfix::sharpenEnabled()) && atfix::smaaPreUI();
+  return needed;
+}
+
 bool smaaTargetBindBoundaryEnabled() {
   const SmaaBoundary mode = smaaBoundaryMode();
   return mode == SmaaBoundary::TargetBind || mode == SmaaBoundary::Both;
@@ -908,10 +938,9 @@ bool smaaSceneRtBoundaryEnabled() {
   // The other two boundaries are ANDed with the feature where they are read, in
   // trackSmaaRenderTargets and smaaDrawBoundary. This one is read straight from
   // the draw and bind paths, so it carries the gate itself: without it a
-  // disabled SMAA still pays four state queries per draw and keeps a reference
-  // on the scene target that nothing reads.
-  static const bool enabled = atfix::smaaEnabled() && atfix::smaaPreUI();
-  return enabled && smaaBoundaryMode() == SmaaBoundary::SceneRt;
+  // boundary nothing consumes still pays four state queries per draw and keeps
+  // a reference on the scene target that nothing reads.
+  return preUiBoundaryNeeded() && smaaBoundaryMode() == SmaaBoundary::SceneRt;
 }
 
 // Temporary boundary-sequence trace; defined below, used by the setter hooks.
@@ -923,8 +952,7 @@ void fireSceneRtSmaa(ID3D11DeviceContext* context, const char* reason);
 void trackSmaaRenderTargets(
     ID3D11DeviceContext* context, UINT rtvCount,
     ID3D11RenderTargetView* const* rtvs, ID3D11DepthStencilView* dsv) {
-  static const bool enabled = atfix::smaaEnabled() && atfix::smaaPreUI();
-  if (!enabled)
+  if (!preUiBoundaryNeeded())
     return;
   const bool mainWithDepth = rtvCount >= 1 && rtvs && rtvs[0] && dsv &&
     smaaMainSizeColor(rtvs[0], nullptr);
@@ -988,13 +1016,15 @@ void fireSceneRtSmaa(ID3D11DeviceContext* context, const char* reason) {
   const bool ran = atfix::smaaApplySceneColor(context, tex);
   // Sharpening rides every pre-UI boundary SMAA does, on the same surface and
   // always after it: sharpening first would only give SMAA harder edges to
-  // blend away again. It does not depend on that pass having run -- with SMAA
-  // off this is a sharpening filter on the finished scene, still pre-UI.
-  atfix::sharpenApply(context, tex);
+  // blend away again. It does not depend on that pass having run. With SMAA off
+  // this is a sharpening filter on the finished scene, still pre-UI, which is
+  // why preUiBoundaryNeeded() opens the boundary for either setting.
+  const bool sharpened = atfix::sharpenApply(context, tex);
   static std::atomic<bool> logged{false};
   if (verboseLogging() && !logged.exchange(true, std::memory_order_relaxed))
-    log("SMAA: pre-UI injection on the scene target, reason=", reason,
-        " depth_draws=", std::dec, draws, " passes_ran=", ran ? 1 : 0);
+    log("PRE-UI: injection on the scene target, reason=", reason,
+        " depth_draws=", std::dec, draws, " smaa=", ran ? 1 : 0,
+        " sharpen=", sharpened ? 1 : 0);
   tex->Release();
 }
 
@@ -1081,8 +1111,8 @@ void smaaDrawBoundary(ID3D11DeviceContext* context) {
     }
   }
   noteSceneRtDraw(context);
-  static const bool enabled = atfix::smaaEnabled() && atfix::smaaPreUI() &&
-    smaaDepthStateBoundaryEnabled();
+  static const bool enabled =
+    preUiBoundaryNeeded() && smaaDepthStateBoundaryEnabled();
   if (!enabled ||
       g_smaaDoneThisFrame.load(std::memory_order_relaxed))
     return;
@@ -1106,11 +1136,12 @@ void smaaDrawBoundary(ID3D11DeviceContext* context) {
   if (scene) {
     g_smaaDoneThisFrame.store(true, std::memory_order_relaxed);
     const bool ran = atfix::smaaApplySceneColor(context, scene);
-    atfix::sharpenApply(context, scene);
+    const bool sharpened = atfix::sharpenApply(context, scene);
     static std::atomic<bool> depthBoundaryLogged{false};
     if (verboseLogging() &&
         !depthBoundaryLogged.exchange(true, std::memory_order_relaxed))
-      log("SMAA: pre-UI depth-state boundary active passes_ran=", ran ? 1 : 0);
+      log("PRE-UI: depth-state boundary active smaa=", ran ? 1 : 0,
+          " sharpen=", sharpened ? 1 : 0);
     scene->Release();
   }
   rtv->Release();
@@ -1238,8 +1269,7 @@ void presentTraceRenderTargets(UINT rtvCount,
 void smaaSceneBoundary(ID3D11DeviceContext* context, UINT rtvCount,
                        ID3D11RenderTargetView* const* rtvs,
                        ID3D11DepthStencilView* dsv) {
-  if (!atfix::smaaEnabled() || !atfix::smaaPreUI() ||
-      rtvCount != 1 || !rtvs || !rtvs[0])
+  if (!preUiBoundaryNeeded() || rtvCount != 1 || !rtvs || !rtvs[0])
     return;
   if (dsv) {
     // Main colour + depth = the scene pass. Feeds Totori's depth-state
@@ -1256,15 +1286,16 @@ void smaaSceneBoundary(ID3D11DeviceContext* context, UINT rtvCount,
     return;
   ID3D11Texture2D* scene = nullptr;
   if (smaaIsSceneTarget(rtvs[0], &scene) && scene) {
-    static std::atomic<bool> logged{false};
-    if (verboseLogging() && !logged.exchange(true, std::memory_order_relaxed))
-      log("SMAA: pre-UI target-bind boundary active");
     g_smaaDoneThisFrame.store(true, std::memory_order_relaxed);
     // The scene latch has been spent; clear it so nothing re-enters before
     // Present resets the frame.
     g_smaaSceneSeen.store(false, std::memory_order_relaxed);
-    atfix::smaaApplySceneColor(context, scene);
-    atfix::sharpenApply(context, scene);
+    const bool ran = atfix::smaaApplySceneColor(context, scene);
+    const bool sharpened = atfix::sharpenApply(context, scene);
+    static std::atomic<bool> logged{false};
+    if (verboseLogging() && !logged.exchange(true, std::memory_order_relaxed))
+      log("PRE-UI: target-bind boundary active smaa=", ran ? 1 : 0,
+          " sharpen=", sharpened ? 1 : 0);
     scene->Release();
   }
 }
@@ -3866,9 +3897,15 @@ void hookContext(ID3D11DeviceContext* pContext) {
   HOOK_PROC(ID3D11DeviceContext, pContext, procs, 45, RSSetScissorRects);
   HOOK_PROC(ID3D11DeviceContext, pContext, procs, 33, OMSetRenderTargets);
   HOOK_PROC(ID3D11DeviceContext, pContext, procs, 34, OMSetRenderTargetsAndUnorderedAccessViews);
-  // Feeds the depth-state scene/UI boundary and the wireframe view's
-  // UI/movie exclusion, so either one needs it.
-  if ((atfix::smaaEnabled() && atfix::smaaPreUI()) || debugWireframe())
+  // Feeds the wireframe view's UI/movie exclusion and BOTH pre-UI boundaries,
+  // so any of the three needs it. Not just the depth-state boundary: the
+  // scene-target injector's first-UI-draw trigger reads the same depthDisabled
+  // flag, and this hook is the only thing that ever writes it. Gate this on one
+  // pass while the boundary is open for another and the flag stays false
+  // forever, which kills the depth-state boundary outright and leaves the
+  // scene-target one firing on its bind-away backstop alone, possibly after the
+  // UI has drawn onto the scene target.
+  if (preUiBoundaryNeeded() || debugWireframe())
     HOOK_PROC(ID3D11DeviceContext, pContext, procs, 36, OMSetDepthStencilState);
   HOOK_PROC(ID3D11DeviceContext, pContext, procs, 48, UpdateSubresource);
 

@@ -10,8 +10,14 @@
 // across it, which removes the staircase and softens the edge in the same
 // stroke. A sharpening pass afterwards makes it look crisp again without
 // bringing the staircase back, because it works on local contrast rather than
-// on geometry. A box filter is an average and an average is a blur, so the supersampling
-// downscale wants this as much as the pre-UI path does; both call it.
+// on geometry.
+//
+// WHERE IT RUNS. Only at the pre-UI boundary, in sync_fix.cpp, on the scene
+// target. The supersampling downscale does not call it, so under supersampling
+// the frame is sharpened at render resolution and then box-filtered down, and a
+// box filter is an average and an average is a blur. Sharpening the downscale
+// result as well would answer that, and nothing here has measured whether the
+// second pass is visible enough to be worth its cost.
 //
 // THE FILTER IS AMD'S CAS, not an unsharp mask. The difference matters at the
 // extremes: an unsharp mask sharpens uniformly and rings on already-hard edges,

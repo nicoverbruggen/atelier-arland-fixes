@@ -261,9 +261,14 @@ bool perfLogEnabled() {
 }
 
 // Present must be hooked whenever the transition trace, the frame-atlas cache,
-// the per-frame battle ticks, SMAA, the supersampling downscale, borderless mode
-// or the frame-time log needs it. The first three arrive through
-// menuTransitionTraceEnabled above.
+// the per-frame battle ticks, SMAA, sharpening, the supersampling downscale,
+// borderless mode or the frame-time log needs it. The first three arrive
+// through menuTransitionTraceEnabled above.
+//
+// Sharpening is here for its preload rather than for a pass. sharpenApply runs
+// from the draw path, but the shader compiler can only be loaded from the frame
+// tick (sharpen.cpp records the loader-lock deadlock that forced that), so
+// without this the pass finds no compiler and quietly never builds.
 //
 // Order matters: battleShadowRestoreActive() reads g_battleAddrs, which the
 // game-hook fan-out sets. Both device-creation routes run the fan-out before
@@ -271,9 +276,25 @@ bool perfLogEnabled() {
 // shadows without their Present-driven half while the install still logs active.
 bool presentHookNeeded() {
   return menuTransitionTraceEnabled() ||
-    atfix::smaaEnabled() ||
+    atfix::smaaEnabled() || atfix::sharpenEnabled() ||
     atfix::presentTraceEnabled() || atfix::ssaaRequested() ||
     atfix::borderlessWindow() || perfLogEnabled();
+}
+
+// The factory hook carries two jobs and only one of them is a Present consumer.
+// On the D3D11CreateDevice route, tracedCreateSwapChain is the only place the
+// display-resolution policy can be applied, and that policy belongs to no
+// feature in presentHookNeeded above: with a blank ini it still moves the chain
+// off the game's 720p default onto the desktop mode. Gating the factory on the
+// Present predicate therefore made turning every Present consumer off also take
+// the resolution override away, while the device hooks kept resizing the
+// engine's internal targets to the render size -- exactly the backbuffer/target
+// mismatch tracedCreateSwapChain exists to prevent.
+//
+// hookSwapChain keeps the narrower predicate: Present is hooked only for a
+// consumer that reads it, whether or not the factory was intercepted.
+bool factoryHookNeeded() {
+  return presentHookNeeded() || atfix::resolutionOverrideNeeded();
 }
 
 // Replace the game's present interval for a session: 0 turns vsync off so an
@@ -456,7 +477,7 @@ HRESULT STDMETHODCALLTYPE tracedCreateSwapChain(
 }
 
 void hookFactoryForSwapChain(ID3D11Device* device) {
-  if (!device || !presentHookNeeded())
+  if (!device || !factoryHookNeeded())
     return;
   IDXGIDevice* dxgiDevice = nullptr;
   IDXGIAdapter* adapter = nullptr;
@@ -472,7 +493,7 @@ void hookFactoryForSwapChain(ID3D11Device* device) {
     static std::atomic<bool> reported{false};
     if (atfix::verboseLogging() ||
         !reported.exchange(true, std::memory_order_relaxed))
-      log("Failed to obtain DXGI factory for transition trace: ",
+      log("Failed to obtain DXGI factory for swap-chain interception: ",
         std::hex, result, std::dec);
   } else {
     std::lock_guard lock(presentHookMutex);

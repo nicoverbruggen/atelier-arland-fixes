@@ -10,6 +10,9 @@ namespace atfix {
 void hookDevice(ID3D11Device* pDevice);
 void hookContext(ID3D11DeviceContext* pContext);
 bool applyResolutionOverride(DXGI_SWAP_CHAIN_DESC* pDesc);
+/* lives in sync_fix.cpp: true when applyResolutionOverride would record or
+   rewrite anything, so the factory route knows it has a job of its own. */
+bool resolutionOverrideNeeded();
 bool arlandConfigBool(const char* section, const char* key, bool def);
 void traceTransitionD3DFrame(uint64_t intervalMicros);
 /* lives in sync_fix.cpp: reset the per-frame pre-UI SMAA latch (call at Present). */
