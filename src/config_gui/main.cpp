@@ -894,9 +894,12 @@ void loadFromIni() {
   }
 
   // Borderless wins when set; otherwise the game's own FullScreen decides.
-  const bool borderless = iniBool("Rendering", "Borderless", true);
+  // Both defaults describe a fresh install with neither file written yet, and
+  // both have to say the same thing as src/config.cpp and the game's own
+  // shipped setting: exclusive fullscreen, borderless off.
+  const bool borderless = iniBool("Rendering", "Borderless", false);
   const bool fullscreen =
-    GetPrivateProfileIntA("Window", "FullScreen", 0, g_settingsPath) != 0;
+    GetPrivateProfileIntA("Window", "FullScreen", 1, g_settingsPath) != 0;
   SendMessageW(g_hWinMode, CB_SETCURSEL,
     borderless ? 1 : (fullscreen ? 2 : 0), 0);
 
@@ -943,34 +946,22 @@ void loadFromIni() {
   updateRenderResolution();
 }
 
-// Put every setting back to a known-good starting point: the mod's own
-// defaults, plus 720p windowed.
+// Put every setting back to the mod's own defaults.
 //
 // Language is the one exception, and deliberately so. It is not tuning that can
 // be wrong -- it is what the player reads the game in, and resetting someone to
 // English because they wanted their graphics settings back would be a hostile
 // reading of "defaults". saveToIni writes it back unchanged from its control.
 //
-// Apart from the resolution and window mode, the values here are the same ones
-// default.ini ships and src/ parses, so a reset otherwise lands on a fresh
-// install's configuration. Those two deliberately differ from a fresh install,
-// which leaves the display keys blank (desktop resolution) with Borderless on;
-// the confirmation dialog states the difference.
+// Every other value here is the one default.ini ships and src/ parses, the
+// resolution and window mode included, so a reset lands exactly where a fresh
+// install starts: the display keys blank, which resolves to the desktop mode,
+// and the game's own exclusive fullscreen.
 void resetToDefaults() {
-  // 720p windowed: the safe floor. It is the one resolution every display this
-  // runs on can show, including a handheld, so a reset from a configuration
-  // that does not display correctly always lands somewhere visible.
-  const int count = (int)SendMessageW(g_hBase, CB_GETCOUNT, 0, 0);
-  int base = 0;   // Auto, if 720p somehow is not in the list
-  for (int i = 0; i < count; ++i) {
-    if ((LPARAM)SendMessageW(g_hBase, CB_GETITEMDATA, i, 0) ==
-        packRes(1280, 720)) {
-      base = i;
-      break;
-    }
-  }
-  SendMessageW(g_hBase, CB_SETCURSEL, base, 0);
-  SendMessageW(g_hWinMode, CB_SETCURSEL, 0, 0);   // Windowed
+  // Auto: the display keys blank, which is what a fresh install has and what
+  // src/config.cpp resolves to the desktop mode.
+  SendMessageW(g_hBase, CB_SETCURSEL, 0, 0);
+  SendMessageW(g_hWinMode, CB_SETCURSEL, 2, 0);   // Fullscreen, as it defaults
 
   SendMessageW(g_hFont, CB_SETCURSEL, 0, 0);      // replaced
   setSsIndex(0);                                  // supersampling off
@@ -2512,8 +2503,8 @@ LRESULT CALLBACK WndProc(HWND w, UINT msg, WPARAM wp, LPARAM lp) {
           // configuration.
           const int answer = MessageBoxW(w,
             L"Reset all of the mod's settings to their defaults? This "
-            L"will also set your game resolution back to 1280x720 in windowed "
-            L"mode.",
+            L"will also set your game resolution back to your desktop "
+            L"resolution in fullscreen.",
             L"Atelier Arland Fixes",
             MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2);
           if (answer != IDYES)

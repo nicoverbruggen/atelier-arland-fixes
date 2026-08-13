@@ -446,7 +446,12 @@ bool borderlessWindow() {
     const char* env = std::getenv("ARLAND_BORDERLESS");
     if (env)
       return env[0] != '0';
-    return arlandConfigBool("Rendering", "Borderless", true);
+    // Off by default. Borderless is the better window, and it is what puts the
+    // chain on the flip model, but it is still a window: the default should be
+    // the game's own exclusive fullscreen, which flips straight to the display
+    // without asking the compositor for anything. A player who wants borderless
+    // asks for it in the launcher and gets the flip-model chain with it.
+    return arlandConfigBool("Rendering", "Borderless", false);
   }();
   return enabled;
 }
