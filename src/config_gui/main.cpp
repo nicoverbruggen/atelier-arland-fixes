@@ -2151,14 +2151,10 @@ void createControls(HWND w) {
     page.heading(L"Startup");
     g_hSkipLogos = mkCheck(w, L"Skip the startup logos", 0, 0, 10,
       IDC_SKIPLOGOS);
-    page.checkRow(g_hSkipLogos,
-      L"The logos play while the game loads, so this shows a black screen "
-      L"for as long as loading takes rather than starting sooner.");
+    page.checkRow(g_hSkipLogos, nullptr);
     g_hSkipMovie = mkCheck(w, L"Skip the opening movie", 0, 0, 10,
       IDC_SKIPMOVIE);
-    page.checkRow(g_hSkipMovie,
-      L"Goes straight to the title screen. Only the first movie of the run is "
-      L"skipped, so the endings and the Movies gallery still play.");
+    page.checkRow(g_hSkipMovie, nullptr);
 
     // [Launcher] SkipLauncher. Read by the 32-bit msimg32 proxy rather than by
     // the DLL, and about the launch Steam performs rather than the window in
@@ -2201,7 +2197,8 @@ void createControls(HWND w) {
     g_hSharpen = mkCombo(w, 0, 0, 10, IDC_SHARPEN);
     comboFill(g_hSharpen, kSharpenItems, kSharpenCount);
     page.row(L"Sharpening:", g_hSharpen,
-      L"Sharpens the scene. Good with edge smoothing and supersampling.");
+      L"Sharpens the scene. High settings are only recommended with "
+      L"supersampling.");
 
     g_hOutline = mkCheck(w, L"Character outlines", 0, 0, 10, IDC_OUTLINE);
     page.checkRow(g_hOutline,
