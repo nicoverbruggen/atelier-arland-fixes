@@ -61,18 +61,6 @@ thread_local BYTE* g_restoreOutput = nullptr;
 thread_local int32_t g_restoreWidth = 0;
 thread_local int32_t g_restoreHeight = 0;
 
-// The buffer this substitution installed at output+8, and how many bytes it
-// really holds. Reported once to the caller and cleared (see the header): the
-// restore leaves the output object describing dims that no longer match this
-// buffer, so the size is only knowable here, at the moment of the allocation.
-thread_local uintptr_t g_installedPixels = 0;
-thread_local uint64_t g_installedBytes = 0;
-
-void noteInstalled(const void* buffer, int width, int height) {
-  g_installedPixels = reinterpret_cast<uintptr_t>(buffer);
-  g_installedBytes = uint64_t(uint32_t(width)) * uint32_t(height);
-}
-
 // Bilinear upscale of an 8bpp buffer by an integer factor. Smooths the baked
 // glyphs' hard edges: the engine then samples this denser bitmap onto the same
 // on-screen box, so the text keeps its exact typeface but reads smoother.
@@ -607,7 +595,6 @@ bool renderReplaced(BYTE* output, const char* utf8, uintptr_t pixels,
 
   free(reinterpret_cast<void*>(pixels));
   const uintptr_t newPixels = reinterpret_cast<uintptr_t>(buffer);
-  noteInstalled(buffer, newW, newH);
   std::memcpy(output + 8, &newPixels, sizeof(newPixels));
   std::memcpy(output, &newW, sizeof(newW));
   std::memcpy(output + 4, &newH, sizeof(newH));
@@ -675,7 +662,6 @@ bool renderUpscaled(BYTE* output, const char* utf8, uintptr_t pixels,
 
   free(reinterpret_cast<void*>(pixels));
   const uintptr_t newPixels = reinterpret_cast<uintptr_t>(buffer);
-  noteInstalled(buffer, newW, newH);
   std::memcpy(output + 8, &newPixels, sizeof(newPixels));
   std::memcpy(output, &newW, sizeof(newW));
   std::memcpy(output + 4, &newH, sizeof(newH));
@@ -716,10 +702,6 @@ bool hiResTextRerender(uintptr_t renderer, const char* utf8,
   // The stash describes the current string only. Otherwise it is cleared just
   // by hiResTextRestoreDims, from a consumer hook that may decline to install.
   g_restoreOutput = nullptr;
-  // Same for the installed-buffer record: it must describe this call or nothing,
-  // so that a caller reading it cannot pick up the previous string's buffer.
-  g_installedPixels = 0;
-  g_installedBytes = 0;
   if (!hiResTextEnabled() || !renderer || !utf8 || !alloc || !free)
     return false;
   bool fontReady = false;
@@ -771,16 +753,6 @@ bool hiResTextPendingDims(int* width, int* height) {
     return false;
   if (width) *width = g_restoreWidth;
   if (height) *height = g_restoreHeight;
-  return true;
-}
-
-bool hiResTextTakeInstalledBuffer(uintptr_t* pixels, uint64_t* bytes) {
-  if (!g_installedPixels || !g_installedBytes)
-    return false;
-  if (pixels) *pixels = g_installedPixels;
-  if (bytes) *bytes = g_installedBytes;
-  g_installedPixels = 0;
-  g_installedBytes = 0;
   return true;
 }
 

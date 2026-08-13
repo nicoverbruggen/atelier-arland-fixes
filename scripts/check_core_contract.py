@@ -109,6 +109,61 @@ def main():
             if not re.search(rf"\b{installer}\s*\(", MENU_CPP):
                 raise ValueError(f"menu installer no longer calls {installer}()")
 
+        # High-resolution text leaves a larger allocation behind after the
+        # output object's dimensions are restored. Its replay cache may use
+        # that larger capacity only while the allocation generation is live:
+        # the verified game free entry point invalidates it before reuse. This
+        # source contract prevents a future simplification from restoring the
+        # old pointer-equality-as-capacity bug.
+        if "installedTextBuffers" in MENU_CPP:
+            raise ValueError(
+                "text replay again carries output/pointer capacity records"
+            )
+        allocator = block(
+            MENU_CPP,
+            r"bool installTextBitmapAllocator\(.*?\) \{(.*?)\n\}",
+            "text bitmap allocator installer",
+        )
+        required_text_lifetime = (
+            "transaction.create(allocate",
+            "reinterpret_cast<void*>(&observedTextBufferAlloc)",
+            "transaction.create(release",
+            "reinterpret_cast<void*>(&trackedTextBufferFree)",
+            "transaction.enableAll()",
+            "transaction.commit()",
+            "gameAlloc = &trackedTextBufferAlloc",
+            "gameFree = &trackedTextBufferFree",
+        )
+        for fragment in required_text_lifetime:
+            if fragment not in allocator:
+                raise ValueError(
+                    "text-buffer lifetime installer is missing: " + fragment
+                )
+        tracked_free = block(
+            MENU_CPP,
+            r"void trackedTextBufferFree\(void\* buffer\) \{(.*?)\n\}",
+            "tracked text-buffer free",
+        )
+        forget_at = tracked_free.find("forgetTrackedTextBuffer(buffer)")
+        free_at = tracked_free.find("originalTextBufferFree(buffer)")
+        if forget_at < 0 or free_at < 0 or forget_at > free_at:
+            raise ValueError(
+                "text-buffer generation is not invalidated before game free"
+            )
+        observed_alloc = block(
+            MENU_CPP,
+            r"void observeTextBufferAllocation\(.*?\) \{(.*?)\n\}",
+            "observed text-buffer allocation",
+        )
+        if "slot.pixels.store(0" not in observed_alloc:
+            raise ValueError(
+                "allocator-side address reuse no longer invalidates live capacity"
+            )
+        if "trackedTextBufferCapacity(pixelsAddress)" not in MENU_CPP:
+            raise ValueError(
+                "text replay no longer consults the live allocation capacity"
+            )
+
         if "arland::initializeGameHooks();" not in MAIN_CPP:
             raise ValueError("D3D11 initialization no longer enters game hooks")
 
@@ -153,7 +208,8 @@ def main():
 
     print(
         "core contract ok: feature matrix, installer fan-out, "
-        "synchronization hook surface, and compiler portability agree"
+        "text-buffer lifetimes, synchronization hook surface, and compiler "
+        "portability agree"
     )
     return 0
 
