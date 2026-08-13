@@ -251,9 +251,8 @@ void applyBorderlessWindow(IDXGISwapChain* swapChain) {
 void maintainBorderlessWindow() {
   if (!borderlessWindow())
     return;
-  // Once a second rather than every frame. The check itself is cheap, but the
-  // restyle it can trigger is not something to risk at frame rate, and nothing
-  // that reverts the window needs correcting within 16ms.
+  // Every 60 Presents, not every frame. restyle returns immediately unless the
+  // game has reverted the window, so this normally costs one monitor query.
   static std::atomic<uint32_t> tick { 0 };
   if (tick.fetch_add(1, std::memory_order_relaxed) % 60 != 0)
     return;

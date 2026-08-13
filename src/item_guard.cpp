@@ -1301,9 +1301,17 @@ int STDMETHODCALLTYPE saveWriterDetour(uintptr_t self, uintptr_t stream) {
   {
     std::lock_guard<std::mutex> lock(g_itemTraceMutex);
     const size_t changed = reportShadowDivergence("save");
+    // Three outcomes, not two. reportShadowDivergence returns 0 both when the
+    // comparison passed and when there was nothing to compare against, so
+    // reporting only the count would print "exact match" for a session that
+    // never loaded a save and therefore never took a baseline -- the most
+    // reassuring line available for the case that checked nothing.
     log("ITEMSAVE pre-save comparison: unexpected_records=", changed,
-        changed ? " (game memory differs from tracked load/equip state)"
-                : " (exact match)");
+        !g_itemShadowReady
+          ? " (baseline_unavailable: no save was loaded this session, so"
+            " nothing was compared)"
+          : changed ? " (game memory differs from tracked load/equip state)"
+                    : " (exact match)");
   }
   return originalSaveWriter(self, stream);
 }

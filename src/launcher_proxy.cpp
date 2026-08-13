@@ -22,53 +22,8 @@
 #include <cstdint>
 #include <cstring>
 
-#include "path_util.h"
 
 namespace {
-
-void launcherLog(const char* message) {
-#ifdef ARLAND_LAUNCHER_DIAGNOSTIC
-  std::array<char, 32768> path = { };
-  const DWORD length = GetModuleFileNameA(nullptr, path.data(), path.size());
-  if (!length || length == path.size())
-    return;
-  if (!atfix::replaceFileName(path.data(), path.size(), "arland-launcher.log"))
-    return;
-  HANDLE file = CreateFileA(path.data(), FILE_APPEND_DATA,
-    FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_ALWAYS,
-    FILE_ATTRIBUTE_NORMAL, nullptr);
-  if (file == INVALID_HANDLE_VALUE)
-    return;
-  DWORD written = 0;
-  WriteFile(file, message, static_cast<DWORD>(std::strlen(message)),
-    &written, nullptr);
-  static constexpr char newline[] = "\r\n";
-  WriteFile(file, newline, sizeof(newline) - 1, &written, nullptr);
-  FlushFileBuffers(file);
-  CloseHandle(file);
-#else
-  (void)message;
-#endif
-}
-
-void launcherLogEntryWindows(const std::uint8_t* actual,
-                             const std::uint8_t* expected,
-                             std::size_t size) {
-#ifdef ARLAND_LAUNCHER_DIAGNOSTIC
-  char line[256] = {};
-  int used = wsprintfA(line, "entry actual=");
-  for (std::size_t i = 0; i < size && used + 3 < int(sizeof(line)); ++i)
-    used += wsprintfA(line + used, "%02x", unsigned(actual[i]));
-  used += wsprintfA(line + used, " expected=");
-  for (std::size_t i = 0; i < size && used + 3 < int(sizeof(line)); ++i)
-    used += wsprintfA(line + used, "%02x", unsigned(expected[i]));
-  launcherLog(line);
-#else
-  (void)actual;
-  (void)expected;
-  (void)size;
-#endif
-}
 
 using PFN_AlphaBlend = BOOL (WINAPI *)(
   HDC, int, int, int, int, HDC, int, int, int, int, BLENDFUNCTION);
@@ -277,7 +232,6 @@ void runOriginalEntryPoint() {
     // back in redirectedEntryPoint, whose failure path is this function, and
     // recurse until the stack runs out. With the restore refused there is no
     // way left to run the stock launcher; exit instead.
-    launcherLog("could not restore the launcher entry point; exiting");
     ExitProcess(1);
   }
   std::memcpy(g_entryPoint, g_entryOriginal.data(), g_entryOriginal.size());
@@ -288,7 +242,6 @@ void runOriginalEntryPoint() {
   // left writable is worth a line rather than a refusal.
   if (!VirtualProtect(g_entryPoint, g_entryOriginal.size(), oldProtect,
                       &ignored))
-    launcherLog("launcher entry bytes restored, but page protection was not");
   reinterpret_cast<void (*)()>(g_entryPoint)();
 }
 
@@ -305,21 +258,12 @@ void redirectedEntryPoint() {
   // same relationship our launcher gives it and the one Steam follows.
   if (!CreateProcessW(g_startTarget.data(), nullptr, nullptr, nullptr, FALSE,
       0, nullptr, g_gameDirectory.data(), &startup, &process)) {
-    launcherLog(g_startsGame
-      ? "the game failed to start; running the stock launcher"
-      : "configurator failed to start; running the stock launcher");
     runOriginalEntryPoint();
     return;
   }
   CloseHandle(process.hThread);
-  launcherLog(g_startsGame
-    ? "game started; holding this process open behind it"
-    : "configurator started; holding this process open behind it");
   WaitForSingleObject(process.hProcess, INFINITE);
   CloseHandle(process.hProcess);
-  launcherLog(g_startsGame
-    ? "game closed; ending the stock launcher"
-    : "configurator closed; ending the stock launcher");
   ExitProcess(0);
 }
 
@@ -335,7 +279,6 @@ bool armRedirect() {
 
   if (GetEnvironmentVariableW(L"ARLAND_NO_REDIRECT", nullptr, 0) != 0 ||
       GetLastError() != ERROR_ENVVAR_NOT_FOUND) {
-    launcherLog("redirect stood down by ARLAND_NO_REDIRECT");
     return false;
   }
 
@@ -351,13 +294,10 @@ bool armRedirect() {
   g_startsGame = skipLauncherRequested();
   if (g_startsGame) {
     if (!resolveGameExecutable(g_startTarget)) {
-      launcherLog("SkipLauncher is set but no game executable is installed "
-        "here; leaving the stock launcher alone");
       return false;
     }
   } else if (!pathInGameDirectory(L"arland-fix-launcher.exe", g_startTarget) ||
       GetFileAttributesW(g_startTarget.data()) == INVALID_FILE_ATTRIBUTES) {
-    launcherLog("no configurator installed; leaving the stock launcher alone");
     return false;
   }
 
@@ -384,9 +324,6 @@ bool armRedirect() {
   auto expectedEntry = kLauncherEntryExpected;
   relocateEntryWindow(base, expectedEntry);
   if (std::memcmp(g_entryPoint, expectedEntry.data(), expectedEntry.size())) {
-    launcherLogEntryWindows(g_entryPoint, expectedEntry.data(),
-                            expectedEntry.size());
-    launcherLog("launcher entry bytes are unknown; leaving it untouched");
     g_entryPoint = nullptr;
     return false;
   }
@@ -395,7 +332,6 @@ bool armRedirect() {
   DWORD oldProtect = 0;
   if (!VirtualProtect(g_entryPoint, g_entryOriginal.size(),
       PAGE_EXECUTE_READWRITE, &oldProtect)) {
-    launcherLog("entry point is not writable; leaving the stock launcher");
     return false;
   }
   g_entryPoint[0] = 0xe9;
@@ -406,9 +342,6 @@ bool armRedirect() {
   VirtualProtect(g_entryPoint, g_entryOriginal.size(), oldProtect, &ignored);
   FlushInstructionCache(GetCurrentProcess(), g_entryPoint,
     g_entryOriginal.size());
-  launcherLog(g_startsGame
-    ? "redirect armed at the launcher entry point (straight to the game)"
-    : "redirect armed at the launcher entry point");
   return true;
 }
 
@@ -425,9 +358,6 @@ BOOL CALLBACK loadSystemMsimg32(PINIT_ONCE, PVOID, PVOID*) {
     g_transparentBlt = reinterpret_cast<PFN_TransparentBlt>(
       GetProcAddress(module, "TransparentBlt"));
   }
-  launcherLog(module && g_alphaBlend && g_transparentBlt
-    ? "system msimg32 forwarding ready"
-    : "system msimg32 forwarding failed");
   return TRUE;
 }
 
@@ -455,7 +385,6 @@ extern "C" BOOL WINAPI TransparentBlt(
 BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, LPVOID) {
   if (reason == DLL_PROCESS_ATTACH) {
     DisableThreadLibraryCalls(instance);
-    launcherLog("msimg32 process attach");
     // Only armed here; it runs at the executable's entry point, once the
     // process (Steam's injections included) is fully assembled. Every other
     // host, ArlandDXEnv.exe included, is left completely alone and just gets
