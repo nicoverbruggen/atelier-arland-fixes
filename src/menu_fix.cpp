@@ -287,17 +287,9 @@ static_assert((kTrackedTextBufferSlots & (kTrackedTextBufferSlots - 1)) == 0,
 struct TrackedTextBuffer {
   std::atomic<uintptr_t> pixels = { 0 };
   uint64_t bytes = 0;
-  std::atomic<uintptr_t> retiredPixels = { 0 };
-  uint64_t retiredBytes = 0;
 };
 std::array<TrackedTextBuffer, kTrackedTextBufferSlots> trackedTextBuffers;
 std::mutex trackedTextBufferMutex;
-std::atomic<uint64_t> trackedTextBufferAllocations = { 0 };
-std::atomic<uint64_t> trackedTextBufferFrees = { 0 };
-std::atomic<uint64_t> trackedTextBufferReuses = { 0 };
-std::atomic<uint64_t> trackedTextBufferSmallerReuses = { 0 };
-std::atomic<uint64_t> trackedTextBufferUnexpectedLiveReuses = { 0 };
-std::atomic<uint64_t> trackedTextBufferCollisions = { 0 };
 
 std::array<size_t, 2> trackedTextBufferIndices(uintptr_t pixels) {
   uint64_t mixed = uint64_t(pixels >> 4);
@@ -321,8 +313,6 @@ void trackTextBufferAllocation(void* buffer, uint64_t bytes) {
   const auto indices = trackedTextBufferIndices(pixels);
   std::lock_guard lock(trackedTextBufferMutex);
   TrackedTextBuffer* empty = nullptr;
-  bool reused = false;
-  bool reusedSmaller = false;
   for (const size_t index : indices) {
     TrackedTextBuffer& slot = trackedTextBuffers[index];
     const uintptr_t current = slot.pixels.load(std::memory_order_acquire);
@@ -331,37 +321,16 @@ void trackTextBufferAllocation(void* buffer, uint64_t bytes) {
       // reached a lower-level route the detour did not see, replace the old
       // capacity with this request instead of leaving a potentially larger
       // stale value. Understating a duplicate is safe; retaining it is not.
-      const uint64_t previousBytes = slot.bytes;
-      slot.retiredBytes = previousBytes;
-      slot.retiredPixels.store(pixels, std::memory_order_release);
       slot.bytes = bytes;
-      trackedTextBufferUnexpectedLiveReuses.fetch_add(
-        1, std::memory_order_relaxed);
-      trackedTextBufferAllocations.fetch_add(1, std::memory_order_relaxed);
-      trackedTextBufferReuses.fetch_add(1, std::memory_order_relaxed);
-      if (bytes < previousBytes)
-        trackedTextBufferSmallerReuses.fetch_add(
-          1, std::memory_order_relaxed);
       return;
     }
     if (!current && !empty)
       empty = &slot;
-    if (slot.retiredPixels.load(std::memory_order_acquire) == pixels) {
-      reused = true;
-      reusedSmaller = bytes < slot.retiredBytes;
-    }
   }
-  if (!empty) {
-    trackedTextBufferCollisions.fetch_add(1, std::memory_order_relaxed);
+  if (!empty)
     return;
-  }
   empty->bytes = bytes;
   empty->pixels.store(pixels, std::memory_order_release);
-  trackedTextBufferAllocations.fetch_add(1, std::memory_order_relaxed);
-  if (reused)
-    trackedTextBufferReuses.fetch_add(1, std::memory_order_relaxed);
-  if (reusedSmaller)
-    trackedTextBufferSmallerReuses.fetch_add(1, std::memory_order_relaxed);
 }
 
 void forgetTrackedTextBuffer(void* buffer) {
@@ -381,60 +350,35 @@ void forgetTrackedTextBuffer(void* buffer) {
     TrackedTextBuffer& slot = trackedTextBuffers[index];
     if (slot.pixels.load(std::memory_order_acquire) != pixels)
       continue;
-    slot.retiredBytes = slot.bytes;
-    slot.retiredPixels.store(pixels, std::memory_order_release);
     slot.bytes = 0;
     slot.pixels.store(0, std::memory_order_release);
-    trackedTextBufferFrees.fetch_add(1, std::memory_order_relaxed);
     return;
   }
 }
 
 // The allocation hook does not track ordinary engine allocations. It only
-// notices when the allocator returns an address whose mod-owned generation was
-// tracked before. The retired-address check measures normal reuse; the live
-// check is the safety net for a free route below the hooked wrapper.
-void observeTextBufferAllocation(void* buffer, uint64_t bytes) {
+// invalidates a still-live mod-owned record if a free route below the hooked
+// wrapper lets the allocator return that address again.
+void observeTextBufferAllocation(void* buffer) {
   const uintptr_t pixels = reinterpret_cast<uintptr_t>(buffer);
-  if (!pixels || !bytes)
+  if (!pixels)
     return;
   const auto indices = trackedTextBufferIndices(pixels);
-  bool candidate = false;
-  for (const size_t index : indices) {
-    const TrackedTextBuffer& slot = trackedTextBuffers[index];
-    if (slot.pixels.load(std::memory_order_acquire) == pixels ||
-        slot.retiredPixels.load(std::memory_order_acquire) == pixels) {
-      candidate = true;
-      break;
-    }
-  }
-  if (!candidate)
+  if (trackedTextBuffers[indices[0]].pixels.load(std::memory_order_acquire) !=
+        pixels &&
+      trackedTextBuffers[indices[1]].pixels.load(std::memory_order_acquire) !=
+        pixels)
     return;
 
   std::lock_guard lock(trackedTextBufferMutex);
   for (const size_t index : indices) {
     TrackedTextBuffer& slot = trackedTextBuffers[index];
-    const uintptr_t current = slot.pixels.load(std::memory_order_acquire);
-    const uintptr_t retired =
-      slot.retiredPixels.load(std::memory_order_acquire);
-    if (current != pixels && retired != pixels)
+    if (slot.pixels.load(std::memory_order_acquire) != pixels)
       continue;
-
-    const uint64_t previousBytes = current == pixels
-      ? slot.bytes : slot.retiredBytes;
-    if (current == pixels) {
-      // The allocator has assigned the address to a new allocation, so the old
-      // generation is dead even if its free bypassed our wrapper.
-      slot.retiredBytes = slot.bytes;
-      slot.retiredPixels.store(pixels, std::memory_order_release);
-      slot.bytes = 0;
-      slot.pixels.store(0, std::memory_order_release);
-      trackedTextBufferUnexpectedLiveReuses.fetch_add(
-        1, std::memory_order_relaxed);
-    }
-    trackedTextBufferReuses.fetch_add(1, std::memory_order_relaxed);
-    if (bytes < previousBytes)
-      trackedTextBufferSmallerReuses.fetch_add(1, std::memory_order_relaxed);
+    // The allocator has assigned the address to a new allocation, so the old
+    // generation is dead even if its free bypassed our wrapper.
+    slot.bytes = 0;
+    slot.pixels.store(0, std::memory_order_release);
     return;
   }
 }
@@ -456,7 +400,7 @@ void* observedTextBufferAlloc(size_t bytes) {
   if (!originalTextBufferAlloc)
     return nullptr;
   void* buffer = originalTextBufferAlloc(bytes);
-  observeTextBufferAllocation(buffer, bytes);
+  observeTextBufferAllocation(buffer);
   return buffer;
 }
 
@@ -1351,20 +1295,7 @@ void cachedQueueDrain(void* manager) {
           " capacity_fallbacks=",
           deepMenu.renderBitmapCapacityFallbacks.load(std::memory_order_relaxed),
           " reallocations=",
-          deepMenu.renderBitmapReallocations.load(std::memory_order_relaxed),
-          " tracked_allocations=",
-          trackedTextBufferAllocations.load(std::memory_order_relaxed),
-          " tracked_frees=",
-          trackedTextBufferFrees.load(std::memory_order_relaxed),
-          " address_reuses=",
-          trackedTextBufferReuses.load(std::memory_order_relaxed),
-          " smaller_reuses=",
-          trackedTextBufferSmallerReuses.load(std::memory_order_relaxed),
-          " unexpected_live_reuses=",
-          trackedTextBufferUnexpectedLiveReuses.load(
-            std::memory_order_relaxed),
-          " tracking_collisions=",
-          trackedTextBufferCollisions.load(std::memory_order_relaxed));
+          deepMenu.renderBitmapReallocations.load(std::memory_order_relaxed));
         {
           std::lock_guard bitmapLock(renderBitmapMutex);
           atfix::log("MENU text-output unique=", renderOutputSignatures.size(),
@@ -2314,20 +2245,7 @@ uintptr_t scopedBucBalloonDtor(uintptr_t a, uintptr_t b) {
           bucStatsHitsBase,
         " misses=",
         deepMenu.renderBitmapMisses.load(std::memory_order_relaxed) -
-          bucStatsMissesBase,
-        " tracked_allocations=",
-        trackedTextBufferAllocations.load(std::memory_order_relaxed),
-        " tracked_frees=",
-        trackedTextBufferFrees.load(std::memory_order_relaxed),
-        " address_reuses=",
-        trackedTextBufferReuses.load(std::memory_order_relaxed),
-        " smaller_reuses=",
-        trackedTextBufferSmallerReuses.load(std::memory_order_relaxed),
-        " unexpected_live_reuses=",
-        trackedTextBufferUnexpectedLiveReuses.load(
-          std::memory_order_relaxed),
-        " tracking_collisions=",
-        trackedTextBufferCollisions.load(std::memory_order_relaxed));
+          bucStatsMissesBase);
     std::lock_guard lock(renderBitmapMutex);
     renderBitmapCache.clear();
   }
