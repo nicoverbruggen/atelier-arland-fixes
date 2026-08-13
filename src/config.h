@@ -59,7 +59,8 @@ bool configuredResolution(unsigned int* width, unsigned int* height);
 // Borderless windowed mode: [Rendering] Borderless. Runs the game as an
 // undecorated window filling its monitor instead of taking exclusive control of
 // the display -- instant alt-tab, and friendlier to compositors and multi-
-// monitor setups under Wine and Proton. On by default.
+// monitor setups under Wine and Proton. Off by default: the default is the
+// game's own exclusive fullscreen.
 bool borderlessWindow();
 
 // Whether extra diagnostic logging is enabled: [Diagnostics] VerboseLogging

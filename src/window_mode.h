@@ -16,7 +16,10 @@ namespace atfix {
 // decorations removed, sized to fill the monitor it is on: it looks like
 // fullscreen, alt-tabs instantly, and leaves the display mode alone.
 //
-// On by default; Borderless=false leaves the game's own fullscreen setting
+// Off by default, and the default is the game's own exclusive fullscreen, which
+// flips straight to the display without asking the compositor for anything.
+// Borderless is the better window and it is still a window, so it is offered
+// rather than assumed. Borderless=false leaves the game's own fullscreen setting
 // to be used as-is.
 
 // Force the swap chain to be created windowed and remember its window. Called

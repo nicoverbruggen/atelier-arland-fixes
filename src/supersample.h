@@ -22,9 +22,10 @@ namespace atfix {
 
 // Whether the machinery may be needed: a render resolution larger than the
 // display, or borderless, where fitting the render size inside the monitor goes
-// through the same redirect. Borderless defaults on, so this is true for most
-// installs; ssaaActive() is what says the pass really runs. Known before any
-// device exists, so the Present hook can be installed for it.
+// through the same redirect. Both are off in a default install, so this is
+// normally false and the machinery stays out of the way; ssaaActive() is what
+// says the pass really runs. Known before any device exists, so the Present hook
+// can be installed for it.
 bool ssaaRequested();
 
 // Capture a freshly-created swap chain's backbuffer and, if the render
