@@ -445,10 +445,17 @@ bool smaaRunPasses(ID3D11Device* dev, ID3D11DeviceContext* ctx,
   cb.rtMetrics[2] = float(cd.Width);
   cb.rtMetrics[3] = float(cd.Height);
   D3D11_MAPPED_SUBRESOURCE map = {};
-  if (SUCCEEDED(ctx->Map(g_cb, 0, D3D11_MAP_WRITE_DISCARD, 0, &map))) {
-    std::memcpy(map.pData, &cb, sizeof(cb));
-    ctx->Unmap(g_cb, 0);
+  const HRESULT mapResult =
+    ctx->Map(g_cb, 0, D3D11_MAP_WRITE_DISCARD, 0, &map);
+  if (FAILED(mapResult)) {
+    static std::atomic<bool> warned{false};
+    if (!warned.exchange(true, std::memory_order_relaxed))
+      log("SMAA: constant-buffer update failed (hr=0x", std::hex,
+          uint32_t(mapResult), std::dec, "); pass skipped");
+    return false;
   }
+  std::memcpy(map.pData, &cb, sizeof(cb));
+  ctx->Unmap(g_cb, 0);
 
   const UINT stride = 16, offset = 0;
   const float black[4] = {0, 0, 0, 0};

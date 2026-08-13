@@ -257,7 +257,7 @@ bool ensureScratch(ID3D11Device* device, const D3D11_TEXTURE2D_DESC& sd) {
 // game and this runs in the middle of its frame.
 struct StateGuard {
   ID3D11DeviceContext* c;
-  ID3D11RenderTargetView* rtv = nullptr;
+  ID3D11RenderTargetView* rtvs[D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT] = {};
   ID3D11DepthStencilView* dsv = nullptr;
   D3D11_VIEWPORT vp[D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE] = {};
   UINT vpCount = D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE;
@@ -276,7 +276,7 @@ struct StateGuard {
   D3D11_PRIMITIVE_TOPOLOGY topology = D3D11_PRIMITIVE_TOPOLOGY_UNDEFINED;
 
   explicit StateGuard(ID3D11DeviceContext* context) : c(context) {
-    c->OMGetRenderTargets(1, &rtv, &dsv);
+    c->OMGetRenderTargets(D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT, rtvs, &dsv);
     c->RSGetViewports(&vpCount, vp);
     c->VSGetShader(&vs, nullptr, nullptr);
     c->PSGetShader(&ps, nullptr, nullptr);
@@ -291,7 +291,8 @@ struct StateGuard {
   }
   ~StateGuard() {
     // THROUGH THE ORIGINAL, never through the vtable. See the bind below.
-    getContextProcs(c)->OMSetRenderTargets(c, 1, &rtv, dsv);
+    getContextProcs(c)->OMSetRenderTargets(
+      c, D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT, rtvs, dsv);
     if (vpCount) c->RSSetViewports(vpCount, vp);
     c->VSSetShader(vs, nullptr, 0);
     c->PSSetShader(ps, nullptr, 0);
@@ -303,7 +304,8 @@ struct StateGuard {
     c->OMSetBlendState(blend, factor, mask);
     c->OMSetDepthStencilState(depth, stencil);
     c->RSSetState(raster);
-    release(rtv); release(dsv); release(vs); release(ps); release(il);
+    for (auto*& rtv : rtvs) release(rtv);
+    release(dsv); release(vs); release(ps); release(il);
     release(samp); release(srv); release(cb); release(blend); release(depth);
     release(raster);
   }
@@ -374,44 +376,51 @@ bool sharpenApply(ID3D11DeviceContext* ctx, ID3D11Texture2D* target) {
       ctx->CopyResource(g_scratch, target);   // read from here, write to target
 
       D3D11_MAPPED_SUBRESOURCE mapped = {};
-      if (SUCCEEDED(ctx->Map(g_cb, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped))) {
+      const HRESULT mapResult =
+        ctx->Map(g_cb, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped);
+      if (FAILED(mapResult)) {
+        static std::atomic<bool> warned{false};
+        if (!warned.exchange(true, std::memory_order_relaxed))
+          log("SHARPEN: constant-buffer update failed (hr=0x", std::hex,
+              uint32_t(mapResult), std::dec, "); pass skipped");
+      } else {
         Params p = {};
         p.peak = kPeakFloor + amount * (kPeakCeiling - kPeakFloor);
         std::memcpy(mapped.pData, &p, sizeof(p));
         ctx->Unmap(g_cb, 0);
+        StateGuard restore(ctx);
+        // BOUND THROUGH THE UNHOOKED ORIGINAL, which is what SMAA does and for
+        // a reason this pass learned the hard way.
+        //
+        // ctx->OMSetRenderTargets goes through the mod's own detour, and that
+        // detour tells supersampling which target is bound. Binding a scratch
+        // here therefore told it the composite was no longer bound, so the
+        // composite's viewport correction did not fire on the draw that
+        // followed and the engine drew its 3840x2160 scene 1:1 into a
+        // 2560x1440 target -- a cropped picture, in an Escha run on 2026-08-08.
+        // The pass has always done this; it only became visible once sharpening
+        // started running inside the downscale, where the composite marker is
+        // live.
+        getContextProcs(ctx)->OMSetRenderTargets(ctx, 1, &rtv, nullptr);
+        D3D11_VIEWPORT vp = {};
+        vp.Width = float(td.Width);
+        vp.Height = float(td.Height);
+        vp.MaxDepth = 1.0f;
+        ctx->RSSetViewports(1, &vp);
+        ctx->IASetInputLayout(nullptr);
+        ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+        ctx->VSSetShader(g_vs, nullptr, 0);
+        ctx->PSSetShader(g_ps, nullptr, 0);
+        ctx->PSSetSamplers(0, 1, &g_sampler);
+        ctx->PSSetShaderResources(0, 1, &g_scratchSRV);
+        ctx->PSSetConstantBuffers(0, 1, &g_cb);
+        const FLOAT factor[4] = { 0, 0, 0, 0 };
+        ctx->OMSetBlendState(g_blend, factor, 0xffffffff);
+        ctx->OMSetDepthStencilState(g_depth, 0);
+        ctx->RSSetState(g_raster);
+        ctx->Draw(3, 0);
+        ran = true;
       }
-
-      StateGuard restore(ctx);
-      // BOUND THROUGH THE UNHOOKED ORIGINAL, which is what SMAA does and for a
-      // reason this pass learned the hard way.
-      //
-      // ctx->OMSetRenderTargets goes through the mod's own detour, and that
-      // detour tells supersampling which target is bound. Binding a scratch
-      // here therefore told it the composite was no longer bound, so the
-      // composite's viewport correction did not fire on the draw that followed
-      // and the engine drew its 3840x2160 scene 1:1 into a 2560x1440 target --
-      // a cropped picture, in an Escha run on 2026-08-08. The pass has always
-      // done this; it only became visible once sharpening started running
-      // inside the downscale, where the composite marker is live.
-      getContextProcs(ctx)->OMSetRenderTargets(ctx, 1, &rtv, nullptr);
-      D3D11_VIEWPORT vp = {};
-      vp.Width = float(td.Width);
-      vp.Height = float(td.Height);
-      vp.MaxDepth = 1.0f;
-      ctx->RSSetViewports(1, &vp);
-      ctx->IASetInputLayout(nullptr);
-      ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-      ctx->VSSetShader(g_vs, nullptr, 0);
-      ctx->PSSetShader(g_ps, nullptr, 0);
-      ctx->PSSetSamplers(0, 1, &g_sampler);
-      ctx->PSSetShaderResources(0, 1, &g_scratchSRV);
-      ctx->PSSetConstantBuffers(0, 1, &g_cb);
-      const FLOAT factor[4] = { 0, 0, 0, 0 };
-      ctx->OMSetBlendState(g_blend, factor, 0xffffffff);
-      ctx->OMSetDepthStencilState(g_depth, 0);
-      ctx->RSSetState(g_raster);
-      ctx->Draw(3, 0);
-      ran = true;
     }
     release(rtv);
   }

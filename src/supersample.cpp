@@ -28,6 +28,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <mutex>
 
 #include "config.h"
 #include "log.h"
@@ -352,8 +353,12 @@ ID3D11Texture2D* ssaaAcquireColor() {
 }
 
 void ssaaNoteSwapChain(IDXGISwapChain* swapChain) {
-  static std::atomic<bool> noted{false};
-  if (!swapChain || !ssaaRequested() || noted.exchange(true))
+  static std::mutex setupMutex;
+  static bool initialized = false;
+  if (!swapChain || !ssaaRequested())
+    return;
+  std::lock_guard<std::mutex> setupGuard(setupMutex);
+  if (initialized)
     return;
 
   ID3D11Texture2D* back = nullptr;
@@ -416,6 +421,9 @@ void ssaaNoteSwapChain(IDXGISwapChain* swapChain) {
   if (ok) {
     g_backbuffer = static_cast<const void*>(back);
     g_active.store(true, std::memory_order_relaxed);
+    // Publish completion only after every object exists. A failed or unsuitable
+    // first chain remains retryable when the game presents another one.
+    initialized = true;
     log("FIXES supersampling=initialized render=", std::dec,
         renderWidth, "x", renderHeight,
         " display=", backDesc.Width, "x", backDesc.Height,
@@ -513,10 +521,18 @@ void ssaaDownscale(IDXGISwapChain* swapChain) {
   params.ratio[1] = 1.0f / fit;
   params.samples = downscaleSamples();
   D3D11_MAPPED_SUBRESOURCE mapped = {};
-  if (SUCCEEDED(context->Map(g_cb, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped))) {
-    std::memcpy(mapped.pData, &params, sizeof(params));
-    context->Unmap(g_cb, 0);
+  const HRESULT mapResult =
+    context->Map(g_cb, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped);
+  if (FAILED(mapResult)) {
+    static std::atomic<bool> warned{false};
+    if (!warned.exchange(true, std::memory_order_relaxed))
+      log("SSAA: constant-buffer update failed (hr=0x", std::hex,
+          uint32_t(mapResult), std::dec, "); downscale skipped");
+    context->Release();
+    return;
   }
+  std::memcpy(mapped.pData, &params, sizeof(params));
+  context->Unmap(g_cb, 0);
 
   {
     // Same state discipline as the SMAA passes: everything the downscale binds

@@ -19,6 +19,9 @@ GAME_CPP = (ROOT / "src" / "game.cpp").read_text()
 MAIN_CPP = (ROOT / "src" / "main.cpp").read_text()
 MENU_CPP = (ROOT / "src" / "menu_fix.cpp").read_text()
 SYNC_CPP = (ROOT / "src" / "sync_fix.cpp").read_text()
+SHARPEN_CPP = (ROOT / "src" / "sharpen.cpp").read_text()
+SMAA_CPP = (ROOT / "src" / "smaa.cpp").read_text()
+SSAA_CPP = (ROOT / "src" / "supersample.cpp").read_text()
 
 
 FEATURES = (
@@ -185,6 +188,42 @@ def main():
         for hook in ("CreateBuffer", "CreateTexture2D", "CreateTexture3D"):
             if not re.search(rf"\b{hook}\s*\)", SYNC_CPP):
                 raise ValueError(f"required device hook is missing: {hook}")
+
+        # Fullscreen passes run inside the game's frame. Preserve every render
+        # target sharpening can displace, and never draw any pass after a
+        # failed WRITE_DISCARD map (which would reuse stale constants).
+        sharpen_state = (
+            "OMGetRenderTargets(D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT, rtvs",
+            "D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT, rtvs, dsv",
+            "for (auto*& rtv : rtvs) release(rtv)",
+        )
+        for fragment in sharpen_state:
+            if fragment not in SHARPEN_CPP:
+                raise ValueError(
+                    "sharpening no longer preserves every render target: "
+                    + fragment
+                )
+        for label, source in (
+            ("sharpening", SHARPEN_CPP),
+            ("SMAA", SMAA_CPP),
+            ("supersampling", SSAA_CPP),
+        ):
+            if "if (FAILED(mapResult))" not in source:
+                raise ValueError(
+                    f"{label} no longer skips the pass after a failed map"
+                )
+
+        # Swap-chain setup is allowed to see an unsuitable or transiently
+        # failing chain first. Completion must be published only on success.
+        if "noted.exchange(true)" in SSAA_CPP:
+            raise ValueError("supersampling setup is one-shot before success")
+        active_at = SSAA_CPP.find("g_active.store(true")
+        initialized_at = SSAA_CPP.find("initialized = true;", active_at)
+        if active_at < 0 or initialized_at < active_at:
+            raise ValueError(
+                "supersampling setup completion is not published after success"
+            )
+
         # MSVC has none of the GCC/Clang __builtin_* intrinsics, and the Linux
         # cross-build does, so a raw builtin compiles here and fails only on the
         # Windows CI job after a full build. util.h carries the portable
@@ -208,8 +247,8 @@ def main():
 
     print(
         "core contract ok: feature matrix, installer fan-out, "
-        "text-buffer lifetimes, synchronization hook surface, and compiler "
-        "portability agree"
+        "text-buffer lifetimes, synchronization hook surface, render-pass "
+        "safety, retryable SSAA setup, and compiler portability agree"
     )
     return 0
 

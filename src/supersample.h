@@ -27,10 +27,9 @@ namespace atfix {
 // device exists, so the Present hook can be installed for it.
 bool ssaaRequested();
 
-// Capture the swap chain's backbuffer and, if the render resolution really is
-// larger than it, allocate the render-resolution colour target. Call once, on
-// the freshly created swap chain, before anything can create a view over the
-// backbuffer.
+// Capture a freshly-created swap chain's backbuffer and, if the render
+// resolution really is larger than it, allocate the render-resolution colour
+// target. Unsuitable chains and failed setup attempts remain retryable.
 void ssaaNoteSwapChain(IDXGISwapChain* swapChain);
 
 // Whether supersampling is live for this session (set by ssaaNoteSwapChain).
