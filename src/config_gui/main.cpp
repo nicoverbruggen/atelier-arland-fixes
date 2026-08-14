@@ -2238,8 +2238,7 @@ void createControls(HWND w) {
       L"each frame instead of letting it fall and catching it, which is what "
       L"the game does on its own and what makes monsters vibrate on uneven "
       L"ground. Tick this to get the original behaviour back, which a bug "
-      L"report about field movement may need. Rorona and Meruru only; the "
-      L"defect was looked for in Totori and not found.");
+      L"report about field movement may need.");
 
     page.fullNote(
       L"These are diagnostics rather than settings. Turn verbose logging off "
