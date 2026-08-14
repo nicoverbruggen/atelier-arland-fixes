@@ -595,11 +595,18 @@ int STDMETHODCALLTYPE traitScanDetour(uintptr_t item, int32_t type) {
                       type, g_traitTable.recordLimit, caller);
       continue;
     }
-    // The engine compares three category fields per trait record, at +0x00,
-    // +0x0c and +0x18.
+    // The engine compares TWO category fields per trait record, at +0x00 and
+    // +0x0c. Its loop is `xor ecx,ecx / cmp [rax],edx / je hit / inc rcx /
+    // add rax,0xc / cmp rcx,2 / jl`, so rcx takes 0 and 1 and the field at
+    // +0x18 is never read. Byte-identical in both builds (totori-en 0x25b467,
+    // totori-ml 0x477d97).
+    //
+    // This said three, which made the scan accept a record the engine would
+    // reject. Not reachable from a healthy save, but the whole value of this
+    // guard is that it matches what the engine does.
     const uintptr_t record =
       g_traitTable.base + uintptr_t(index) * kRecordStride;
-    for (size_t field = 0; field < 3; ++field) {
+    for (size_t field = 0; field < 2; ++field) {
       int32_t recordType = 0;
       if (tryRead(record + field * 0x0c, recordType) && recordType == type)
         return int(i);

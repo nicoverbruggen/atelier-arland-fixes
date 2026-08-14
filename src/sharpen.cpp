@@ -139,8 +139,6 @@ bool compile(PFN_D3DCompile fn, const char* entry, const char* target,
 
 bool init(ID3D11Device* device) {
   if (g_ready) return true;
-  if (g_broken) return false;
-  g_broken = true;   // one attempt
 
   // THE COMPILER IS LOADED ELSEWHERE, deliberately. LoadLibrary inside a draw
   // detour takes the loader lock on whatever thread the engine is recording on,
@@ -151,8 +149,24 @@ bool init(ID3D11Device* device) {
   //
   // sharpenPreload() does it from the frame tick instead, where nothing is
   // holding a graphics lock.
+  //
+  // Tested BEFORE the one-attempt latch below, because "not preloaded yet" is
+  // true at most once and false forever after. sharpenPreload runs from
+  // Present, and every caller of sharpenApply runs earlier in the same frame,
+  // so the first pass a session asks for can arrive before the first Present
+  // has happened. Latching there turned a one-frame wait into sharpening being
+  // off for the rest of the process, with a log line that blamed the preload
+  // rather than the order.
   HMODULE compiler = g_compiler;
-  if (!compiler) { log("SHARPEN: d3dcompiler was not preloaded"); return false; }
+  if (!compiler) {
+    static std::atomic<bool> waited { false };
+    if (!waited.exchange(true, std::memory_order_relaxed))
+      log("SHARPEN: d3dcompiler is not loaded yet; the pass starts on a later"
+          " frame");
+    return false;
+  }
+  if (g_broken) return false;
+  g_broken = true;   // one attempt
   auto D3DCompile = reinterpret_cast<PFN_D3DCompile>(
     GetProcAddress(compiler, "D3DCompile"));
   if (!D3DCompile) { log("SHARPEN: no D3DCompile"); return false; }
@@ -334,10 +348,15 @@ float sharpenAmount() {
   return amount;
 }
 
-// Called from the hooked Present, off the recording threads. Idempotent.
+// Called from the hooked Present, off the recording threads. Idempotent, and
+// one attempt rather than one per frame: without the latch a system with no
+// d3dcompiler at all pays two failing LoadLibrary calls and one log line every
+// frame for the life of the process.
 void sharpenPreload() {
-  if (!sharpenEnabled() || g_compiler)
+  static bool attempted = false;
+  if (!sharpenEnabled() || g_compiler || attempted)
     return;
+  attempted = true;
   g_compiler = LoadLibraryA("d3dcompiler_47.dll");
   if (!g_compiler)
     g_compiler = LoadLibraryA("d3dcompiler.dll");

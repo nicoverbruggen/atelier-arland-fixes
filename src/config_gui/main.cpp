@@ -242,6 +242,11 @@ const ComboItem kFontItems[] = {
   { L"Original upscaled",                   "upscaled" },
   { L"Original",                            "original" },
 };
+// Named rather than written out at each use, like every other table here. A
+// literal that disagrees with its table is silent: comboFill shows the new
+// entry, comboValue clamps a selection past the count back to index 0, and
+// picking the new entry writes the FIRST entry's value into the ini.
+const int kFontCount = 3;
 // ShadowMultiplier's 1/2/4/8 scale (1 = off). The labels name what the number
 // means, since the group labels above them are written in plain language and a
 // bare "8" would say nothing on its own. The second column is the exact string
@@ -261,6 +266,7 @@ const ComboItem kShadowItems[] = {
   { L"Normal (1024 map)",    "1" }, { L"2x (2048 map)", "2" },
   { L"4x (4096 map)",        "4" }, { L"8x (8192 map)", "8" },
 };
+const int kShadowCount = 4;
 
 // Base (display / backbuffer) resolutions. w == 0 means "Auto" (blank in the
 // ini, which presents at the desktop resolution). 16:9 is fine for these games.
@@ -548,9 +554,13 @@ void logSaveFailure(const char* name, const char* path,
                     const WriteFailure& failure, bool verifiedOk) {
   if (!failure.failed)
     return;
+  // wsprintfA does no bounds checking, and the path is the one input here whose
+  // length the user controls. Everything else is a literal or a bounded field,
+  // and the worst case without this bound is 473 of 512 bytes. Capping the path
+  // stops that margin from depending on the strings above it staying short.
   char line[512];
   wsprintfA(line,
-    "[launcher] %s write %s at %s: error %lu, %s (path %s)\r\n",
+    "[launcher] %s write %s at %s: error %lu, %s (path %.200s)\r\n",
     name,
     verifiedOk ? "MISREPORTED (the value is on disk)" : "FAILED",
     failure.where, failure.error, writeErrorName(failure.error),
@@ -574,13 +584,14 @@ void iniWriteBool(const char* section, const char* key, bool on) {
 // ---- combo helpers ---------------------------------------------------------
 
 // One view at a time: each replaces what is drawn rather than adding to it.
-const ComboItem kDebugViewItems[5] = {
+const ComboItem kDebugViewItems[] = {
   { L"Off",                    "off" },
   { L"Wireframe",              "wireframe" },
   { L"SMAA edge detection",    "smaa-edges" },
   { L"SMAA blend weights",     "smaa-weights" },
   { L"Highlight scene target", "scene-target" },
 };
+const int kDebugViewCount = 5;
 
 void comboFill(HWND combo, const ComboItem* items, int count) {
   for (int i = 0; i < count; ++i)
@@ -869,7 +880,8 @@ void loadFromIni() {
   // next save, quietly turning the feature off for anyone who opened the
   // launcher.
   iniString("Rendering", "ShadowMultiplier", buf, sizeof(buf));
-  comboSelectByValue(g_hShadow, kShadowItems, 4, buf[0] ? buf : "2", 1);
+  comboSelectByValue(g_hShadow, kShadowItems, kShadowCount,
+                     buf[0] ? buf : "2", 1);
 
   // SMAA is on by default.
   SendMessageW(g_hSmaa, BM_SETCHECK,
@@ -988,7 +1000,7 @@ SaveOutcome saveToIni() {
   // Write only the known keys. WritePrivateProfileStringA leaves every other
   // line in the file untouched, so anything unrecognized is preserved.
   iniWrite("Rendering", "Font",
-    comboValue(g_hFont, kFontItems, 3), g_iniPath);
+    comboValue(g_hFont, kFontItems, kFontCount), g_iniPath);
 
   // Base resolution -> DisplayWidth/DisplayHeight. "Auto" writes them blank
   // (never "0"); an empty string keeps the key present with no value, which the
@@ -1025,7 +1037,7 @@ SaveOutcome saveToIni() {
   }
 
   iniWrite("Rendering", "ShadowMultiplier",
-    comboValue(g_hShadow, kShadowItems, 4), g_iniPath);
+    comboValue(g_hShadow, kShadowItems, kShadowCount), g_iniPath);
   iniWriteBool("Rendering", "SMAA", isChecked(g_hSmaa));
   iniWrite("Rendering", "Sharpen",
     comboValue(g_hSharpen, kSharpenItems, kSharpenCount), g_iniPath);
@@ -1058,7 +1070,7 @@ SaveOutcome saveToIni() {
   // default.ini, so the key is written only when a view is actually selected
   // and deleted when it is not. An ordinary user's ini never gains the section.
   int debugViewSel = (int)SendMessageW(g_hDebugView, CB_GETCURSEL, 0, 0);
-  if (debugViewSel < 0 || debugViewSel > 4)
+  if (debugViewSel < 0 || debugViewSel >= kDebugViewCount)
     debugViewSel = 0;
   iniWrite("Debug", "View",
     debugViewSel ? kDebugViewItems[debugViewSel].value : nullptr, g_iniPath);
@@ -2168,7 +2180,7 @@ void createControls(HWND w) {
     page.under(g_hRendLbl);
 
     g_hShadow = mkCombo(w, 0, 0, 10, IDC_SHADOW);
-    comboFill(g_hShadow, kShadowItems, 4);
+    comboFill(g_hShadow, kShadowItems, kShadowCount);
     page.row(L"Shadow detail:", g_hShadow,
       L"Larger shadow maps, which results in sharper shadow edges (less blocky shadows).");
 
@@ -2188,7 +2200,7 @@ void createControls(HWND w) {
 
     page.heading(L"Text");
     g_hFont = mkCombo(w, 0, 0, 10, IDC_FONT);
-    comboFill(g_hFont, kFontItems, 3);
+    comboFill(g_hFont, kFontItems, kFontCount);
     page.row(L"UI font:", g_hFont,
       L"Much of the text is easier to read if you enable high resolution fonts.");
 
@@ -2209,11 +2221,12 @@ void createControls(HWND w) {
     page.heading(L"View");
 
     g_hDebugView = mkCombo(w, 0, 0, 10, IDC_DEBUGVIEW);
-    comboFill(g_hDebugView, kDebugViewItems, 5);
+    comboFill(g_hDebugView, kDebugViewItems, kDebugViewCount);
     char debugViewValue[24] = {};
     if (!iniString("Debug", "View", debugViewValue, sizeof(debugViewValue)))
       lstrcpynA(debugViewValue, "off", sizeof(debugViewValue));
-    comboSelectByValue(g_hDebugView, kDebugViewItems, 5, debugViewValue, 0);
+    comboSelectByValue(g_hDebugView, kDebugViewItems, kDebugViewCount,
+                       debugViewValue, 0);
     page.row(L"Debug view", g_hDebugView,
       L"One at a time: each replaces what you see rather than adding to it.");
 

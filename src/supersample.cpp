@@ -518,6 +518,7 @@ void ssaaDownscale(IDXGISwapChain* swapChain) {
       log("SSAA: constant-buffer update failed (hr=0x", std::hex,
           uint32_t(mapResult), std::dec, "); downscale skipped");
     context->Release();
+    device->Release();
     return;
   }
   std::memcpy(mapped.pData, &params, sizeof(params));
