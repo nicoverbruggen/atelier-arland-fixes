@@ -7,11 +7,11 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parent.parent
-HOOK_H = (ROOT / "src" / "hook_util.h").read_text()
-HOOK_CPP = (ROOT / "src" / "hook_util.cpp").read_text()
-GATES = (ROOT / "src" / "fast_save_menu.cpp").read_text()
-PAGE_PATCH = (ROOT / "src" / "page_patch.h").read_text()
-MAIN = (ROOT / "src" / "main.cpp").read_text()
+HOOK_H = (ROOT / "src" / "core" / "hook_util.h").read_text()
+HOOK_CPP = (ROOT / "src" / "core" / "hook_util.cpp").read_text()
+GATES = (ROOT / "src" / "engines" / "phyre" / "fast_save_menu.cpp").read_text()
+PAGE_PATCH = (ROOT / "src" / "core" / "page_patch.h").read_text()
+MAIN = (ROOT / "src" / "core" / "main.cpp").read_text()
 
 
 def require(condition, message):

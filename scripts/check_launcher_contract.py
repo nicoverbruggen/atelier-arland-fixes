@@ -13,9 +13,9 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parent.parent
-GUI = (ROOT / "src" / "config_gui" / "main.cpp").read_text()
-PROXY = (ROOT / "src" / "launcher_proxy.cpp").read_text()
-INI_WRITES = (ROOT / "src" / "config_gui" / "ini_write_set.h").read_text()
+GUI = (ROOT / "src" / "launcher" / "launcher_gui.cpp").read_text()
+PROXY = (ROOT / "src" / "launcher" / "launcher_proxy.cpp").read_text()
+INI_WRITES = (ROOT / "src" / "launcher" / "ini_write_set.h").read_text()
 
 
 def fail(message):

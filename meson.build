@@ -21,7 +21,7 @@ version_rc = configure_file(
   output : 'version.rc',
   configuration : version_data)
 version_header = configure_file(
-  input : 'src/version.h.in',
+  input : 'src/core/version.h.in',
   output : 'version.h',
   configuration : version_data)
 resource_includes = include_directories('.')
@@ -33,7 +33,7 @@ resource_includes = include_directories('.')
 # value follows commits without a reconfigure; `fallback` covers a build with no
 # git (a source tarball) rather than failing.
 version_git_header = vcs_tag(
-  input : 'src/version_git.h.in',
+  input : 'src/core/version_git.h.in',
   output : 'version_git.h',
   # -c safe.directory="*" because the day-to-day build runs in a container
   # where the checkout is owned by a different uid, and git otherwise refuses
@@ -45,20 +45,21 @@ version_git_header = vcs_tag(
 
 if host_machine.cpu_family() == 'x86'
   shared_library('msimg32',
-    ['src/launcher_proxy.cpp', version_git_header,
+    ['src/launcher/launcher_proxy.cpp', version_git_header,
      windows.compile_resources(
-       'src/msimg32.rc',
+       'src/launcher/msimg32.rc',
        depend_files : version_rc,
        include_directories : resource_includes)],
     name_prefix : '',
-    vs_module_defs : 'src/msimg32.def',
+    vs_module_defs : 'src/launcher/msimg32.def',
     cpp_args : common_cpp_args,
     link_args : common_link_args,
     install : true)
 else
   # The bundled replacement fonts are embedded as C++ byte arrays generated at
   # build time from the vendored .ttf files (scripts/embed_font.py), so the large
-  # generated sources are not checked in. Declarations live in src/embedded_font.h.
+  # generated sources are not checked in. Declarations live in
+  # src/engines/phyre/embedded_font.h.
   py = find_program('python3')
   embed_font = files('scripts/embed_font.py')
   embedded_np = custom_target('embedded_font_np_semibold',
@@ -82,35 +83,40 @@ else
   # dxguid.lib explicitly; MinGW happens to resolve them elsewhere.
   dxguid_dep = cpp.find_library('dxguid')
 
+  # Split the same way as the Dusk project: src/core is engine-agnostic and
+  # src/engines/phyre is the PhyreEngine work all three Arland games share. There
+  # is no second engine here, and the shape is still worth mirroring: the two
+  # repositories carry about forty files in common, and identical paths are what
+  # make a drift between them visible in a diff rather than only in a review.
   sources = files(
-    'src/main.cpp',
-    'src/game.cpp',
-    'src/config.cpp',
-    'src/crash_log.cpp',
-    'src/module_lifetime.cpp',
-    'src/sharpen.cpp',
-    'src/pad_rescan.cpp',
-    'src/pad_notify_trace.cpp',
-    'src/smaa.cpp',
-    'src/field_physics.cpp',
-    'src/worldmap_fix.cpp',
-    'src/item_guard.cpp',
-    'src/stream_lifetime_fix.cpp',
-    'src/shop_fix.cpp',
-    'src/field_collision_fix.cpp',
-    'src/fast_save_menu.cpp',
-    'src/logo_skip.cpp',
-    'src/movie_skip.cpp',
-    'src/mix_card.cpp',
-    'src/supersample.cpp',
-    'src/font_hires.cpp',
-    'src/menu_fix.cpp',
-    'src/battle_shadow_restore.cpp',
-    'src/sync_fix.cpp',
-    'src/battle_shadows.cpp',
-    'src/window_background.cpp',
-    'src/window_title.cpp',
-    'src/hook_util.cpp',
+    'src/core/main.cpp',
+    'src/core/game.cpp',
+    'src/core/config.cpp',
+    'src/core/crash_log.cpp',
+    'src/core/module_lifetime.cpp',
+    'src/core/sharpen.cpp',
+    'src/core/pad_rescan.cpp',
+    'src/core/pad_notify_trace.cpp',
+    'src/core/smaa.cpp',
+    'src/engines/phyre/field_physics.cpp',
+    'src/engines/phyre/worldmap_fix.cpp',
+    'src/engines/phyre/item_guard.cpp',
+    'src/engines/phyre/stream_lifetime_fix.cpp',
+    'src/engines/phyre/shop_fix.cpp',
+    'src/engines/phyre/field_collision_fix.cpp',
+    'src/engines/phyre/fast_save_menu.cpp',
+    'src/engines/phyre/logo_skip.cpp',
+    'src/engines/phyre/movie_skip.cpp',
+    'src/core/mix_card.cpp',
+    'src/core/supersample.cpp',
+    'src/engines/phyre/font_hires.cpp',
+    'src/engines/phyre/menu_fix.cpp',
+    'src/engines/phyre/battle_shadow_restore.cpp',
+    'src/engines/phyre/sync_fix.cpp',
+    'src/engines/phyre/battle_shadows.cpp',
+    'src/core/window_background.cpp',
+    'src/engines/phyre/window_title.cpp',
+    'src/core/hook_util.cpp',
     'vendor/minhook/src/hde/hde64.c',
     'vendor/minhook/src/hook.c',
     'vendor/minhook/src/buffer.c',
@@ -121,30 +127,32 @@ else
     [sources, embedded_np, embedded_nunito, embedded_mgopen, embedded_fallback,
       version_git_header,
      windows.compile_resources(
-       'src/d3d11.rc',
+       'src/core/d3d11.rc',
        depend_files : version_rc,
        include_directories : resource_includes)],
     name_prefix : '',
-    vs_module_defs : 'src/d3d11.def',
-    include_directories : include_directories('src'),  # so generated fonts find embedded_font.h
+    vs_module_defs : 'src/core/d3d11.def',
+    # src/engines/phyre so the generated font sources, which emit
+    # `#include "embedded_font.h"`, resolve it where font_hires.cpp keeps it.
+    include_directories : include_directories('src', 'src/engines/phyre'),
     dependencies : dxguid_dep,
     cpp_args : common_cpp_args,
     link_args : common_link_args + (cpp.get_id() == 'gcc' ? ['-Wl,--file-alignment=4096'] : []),
     install : true)
 
-  # Standalone 64-bit GUI to view and edit arland-fix.ini (src/config_gui/).
+  # Standalone 64-bit GUI to view and edit arland-fix.ini (src/launcher/).
   # Own target, own sources; shares no object files with the DLL. The
   # win_subsystem kwarg selects the GUI subsystem (WinMain) for both MinGW
   # (-mwindows) and MSVC (/SUBSYSTEM:WINDOWS).
   executable('arland-fix-launcher',
-    ['src/config_gui/main.cpp', version_git_header,
+    ['src/launcher/launcher_gui.cpp', version_git_header,
      # Carries the ComCtl32 v6 manifest, which is what gets the themed common
      # controls rather than the flat 5.82 ones. See the manifest for the rest.
      windows.compile_resources(
-       'src/config_gui/arland-fix-launcher.rc',
+       'src/launcher/arland-fix-launcher.rc',
        depend_files : [
          version_rc,
-         files('src/config_gui/arland-fix-launcher.manifest'),
+         files('src/launcher/arland-fix-launcher.manifest'),
        ],
        include_directories : resource_includes)],
     win_subsystem : 'windows',

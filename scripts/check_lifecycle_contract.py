@@ -40,11 +40,11 @@ def before(body, first, second, message):
 
 def main():
     try:
-        main_cpp = (ROOT / "src" / "main.cpp").read_text()
-        crash = (ROOT / "src" / "crash_log.cpp").read_text()
-        pad = (ROOT / "src" / "pad_notify_trace.cpp").read_text()
-        log_h = (ROOT / "src" / "log.h").read_text()
-        lifetime = (ROOT / "src" / "module_lifetime.cpp").read_text()
+        main_cpp = (ROOT / "src" / "core" / "main.cpp").read_text()
+        crash = (ROOT / "src" / "core" / "crash_log.cpp").read_text()
+        pad = (ROOT / "src" / "core" / "pad_notify_trace.cpp").read_text()
+        log_h = (ROOT / "src" / "core" / "log.h").read_text()
+        lifetime = (ROOT / "src" / "core" / "module_lifetime.cpp").read_text()
         meson = (ROOT / "meson.build").read_text()
 
         for flag in (
@@ -55,7 +55,7 @@ def main():
                 raise ValueError(f"module retention lost {flag}")
         if "retained.store(true, std::memory_order_release)" not in lifetime:
             raise ValueError("module retention is not release-published")
-        if "src/module_lifetime.cpp" not in meson:
+        if "src/core/module_lifetime.cpp" not in meson:
             raise ValueError("module retention implementation is not built")
 
         install = function_body(

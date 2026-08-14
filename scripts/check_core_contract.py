@@ -14,15 +14,15 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parent.parent
-GAME_H = (ROOT / "src" / "game.h").read_text()
-GAME_CPP = (ROOT / "src" / "game.cpp").read_text()
-MAIN_CPP = (ROOT / "src" / "main.cpp").read_text()
-MENU_CPP = (ROOT / "src" / "menu_fix.cpp").read_text()
-SYNC_CPP = (ROOT / "src" / "sync_fix.cpp").read_text()
-SYNC_UPLOAD_POLICY = (ROOT / "src" / "sync_upload_policy.h").read_text()
-SHARPEN_CPP = (ROOT / "src" / "sharpen.cpp").read_text()
-SMAA_CPP = (ROOT / "src" / "smaa.cpp").read_text()
-SSAA_CPP = (ROOT / "src" / "supersample.cpp").read_text()
+GAME_H = (ROOT / "src" / "core" / "game.h").read_text()
+GAME_CPP = (ROOT / "src" / "core" / "game.cpp").read_text()
+MAIN_CPP = (ROOT / "src" / "core" / "main.cpp").read_text()
+MENU_CPP = (ROOT / "src" / "engines" / "phyre" / "menu_fix.cpp").read_text()
+SYNC_CPP = (ROOT / "src" / "engines" / "phyre" / "sync_fix.cpp").read_text()
+SYNC_UPLOAD_POLICY = (ROOT / "src" / "engines" / "phyre" / "sync_upload_policy.h").read_text()
+SHARPEN_CPP = (ROOT / "src" / "core" / "sharpen.cpp").read_text()
+SMAA_CPP = (ROOT / "src" / "core" / "smaa.cpp").read_text()
+SSAA_CPP = (ROOT / "src" / "core" / "supersample.cpp").read_text()
 
 
 FEATURES = (

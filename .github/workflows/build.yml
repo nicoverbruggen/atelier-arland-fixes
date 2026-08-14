@@ -40,7 +40,7 @@ jobs:
       # Watch for "--" in a comment, which XML forbids and which the repo's
       # prose style otherwise uses freely as an em dash.
       - name: Check the launcher manifest is well-formed XML
-        run: python -c "import xml.dom.minidom; xml.dom.minidom.parse('src/config_gui/arland-fix-launcher.manifest')"
+        run: python -c "import xml.dom.minidom; xml.dom.minidom.parse('src/launcher/arland-fix-launcher.manifest')"
       - run: meson compile -C build64
       - name: Check d3d11 proxy exports
         run: python scripts/check_exports.py build64/d3d11.dll

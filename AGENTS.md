@@ -17,13 +17,17 @@ The current tree contains:
 - SMAA anti-aliasing applied before UI composition, at a per-title draw boundary (Totori injects at a depth-state change, Rorona and Meruru at the scene render target);
 - high-resolution UI text rendered from bundled scalable fonts, on the English builds;
 - frame-rate-independent field movement in all three games and travel-map analog cursor movement in Totori and Meruru;
-- Rorona battle-shadow restoration, battle-state tracking with a battle-end watchdog, and the optional cut-in shadow/dim handling (all three games, both builds), all in `src/battle_shadow_restore.cpp`;
-- a per-game capability matrix (`src/game.cpp`) that centralizes feature availability and defaults;
+- Rorona battle-shadow restoration, battle-state tracking with a battle-end watchdog, and the optional cut-in shadow/dim handling (all three games, both builds), all in `src/engines/phyre/battle_shadow_restore.cpp`;
+- a per-game capability matrix (`src/core/game.cpp`) that centralizes feature availability and defaults;
 - crash post-mortem logging and log rotation.
 
 ## Repository layout
 
-- `src/` contains the project C++ source and headers, split by concern. The 64-bit game DLL: the D3D11 proxy layer is `sync_fix.cpp`, with the cut-in shadow feature carved into `battle_shadows.cpp` behind `sync_internal.h` (proxy vtable dispatch types in `d3d11_procs.h`); the executable-specific menu hooks are `menu_fix.cpp`, with the battle-shadow-restore subsystem carved into `battle_shadow_restore.cpp` behind `menu_internal.h`, both sharing the MinHook install helpers and per-game `Game` descriptor in `hook_util.{h,cpp}`; then the per-game capability matrix (`game.cpp`), `arland-fix.ini` config (`config.cpp`), SMAA post-process (`smaa.cpp`), high-resolution UI text (`font_hires.cpp`), crash logging (`crash_log.cpp`), guarded game-memory reads (`mem.h`), companion-file path building shared with the 32-bit DLL (`path_util.h`), the pipeline-state save and restore the post-process passes share (`pipeline_state.h`), and the DLL entry points (`main.cpp`). The 32-bit settings-launcher DLL is `launcher_proxy.cpp`. `.def` files export the DLL symbols.
+- `src/core/` — engine-agnostic: the DLL entry points (`main.cpp`), the per-game capability matrix (`game.cpp`), the `arland-fix.ini` layer (`config.cpp`), the MinHook install helpers and per-game `Game` descriptor (`hook_util.{h,cpp}`), the proxy vtable dispatch types (`d3d11_procs.h`), guarded game-memory reads (`mem.h`), companion-file path building shared with the 32-bit DLL (`path_util.h`), the pipeline-state save and restore the post-process passes share (`pipeline_state.h`), the page-patch transaction (`page_patch.h`), the SMAA, supersampling and sharpening passes, crash logging, and the controller and window corrections that name no game. `.def` files export the DLL symbols.
+- `src/engines/phyre/` — the PhyreEngine work all three Arland games share, which is everything carrying a per-build address: the D3D11 proxy layer (`sync_fix.cpp`), with the cut-in shadow feature carved into `battle_shadows.cpp` behind `sync_internal.h`; the executable-specific menu hooks (`menu_fix.cpp`), with the battle-shadow-restore subsystem carved into `battle_shadow_restore.cpp` behind `menu_internal.h`; high-resolution UI text (`font_hires.cpp`); and the field, save-menu, item, shop, stream, world-map and startup fixes.
+
+  Singular on purpose, and there is no dispatch layer: Rorona, Totori and Meruru are all PhyreEngine, so unlike the Dusk project there is only ever one module. The directory exists because the two repositories carry about forty files in common, and identical paths are what make a drift between them visible in a diff rather than only in a review.
+- `src/launcher/` — both launcher pieces, neither of which shares code with the game DLL: `launcher_gui.cpp` is the 64-bit `arland-fix-launcher.exe` settings window, and `launcher_proxy.cpp` the 32-bit `msimg32.dll` that redirects Koei Tecmo's own front-end to it.
 - `vendor/minhook/` contains the unmodified vendored MinHook dependency and its license; `vendor/stb/` holds stb_truetype; `vendor/font/` holds the bundled replacement fonts (`.ttf`) and the per-glyph fallback face.
 - `scripts/embed_font.py` compiles the vendored fonts into the DLL at build time; the generated sources live under the build directory and are not committed.
 - `.github/workflows/build.yml` builds and publishes both Windows DLLs.
@@ -68,7 +72,7 @@ A refactor, or a performance idea with no measured problem behind it, is not a f
 
 ## Configuration options
 
-`default.ini` ships in the release archive and repeats defaults that really live in `src/config.cpp` (and `src/game.cpp`'s feature table). When you add, rename, remove or re-default an option, update `default.ini` in the same change.
+`default.ini` ships in the release archive and repeats defaults that really live in `src/core/config.cpp` (and `src/core/game.cpp`'s feature table). When you add, rename, remove or re-default an option, update `default.ini` in the same change.
 
 `scripts/check_default_ini.py` enforces this and runs in CI: it checks that every option the code reads is documented, that nothing documented is unread, and that the literal defaults agree. If an option is deliberately kept out of `default.ini`, or its default cannot be read from a single call site (the per-game cut-in keys), add it to the allowlists at the top of that script rather than dropping the check.
 
@@ -103,6 +107,6 @@ Documentation must describe the current repository state. Do not narrate it usin
 
 Avoid overusing em-dashes in source comments and documentation. Prefer commas, parentheses, or separate sentences; occasional correct use is fine, but do not lean on them.
 
-**The code is the technical record.** There is no prose document describing how the fixes work, and adding one is not the default answer to "this needs explaining". A fix's header explains what the defect is, what the correction does, and why it takes that shape; the evidence that settled it belongs there too, next to the thing it justifies. A reader who opens `src/sharpen.h` should not need anything else to understand the pass.
+**The code is the technical record.** There is no prose document describing how the fixes work, and adding one is not the default answer to "this needs explaining". A fix's header explains what the defect is, what the correction does, and why it takes that shape; the evidence that settled it belongs there too, next to the thing it justifies. A reader who opens `src/core/sharpen.h` should not need anything else to understand the pass.
 
 That places a real obligation on comments. They carry what a separate document would have carried, so they are written for someone who can program but does not know this engine, and they record the reasoning rather than restating the code. A measurement that decided a design goes in the header that design lives in.

@@ -100,7 +100,7 @@ def parse_ini(path):
 def parse_source():
     """(section, key) -> default value from the source, or None if not a literal."""
     defaults = {}
-    for source in sorted((ROOT / "src").glob("*.cpp")):
+    for source in sorted(ROOT.glob("src/**/*.cpp")):
         text = source.read_text()
         for pattern in PATTERNS:
             for section, key, value in pattern.findall(text):
@@ -121,7 +121,7 @@ def parse_matrix_defaults():
     true, and an inverted descriptor flips that. A feature the matrix supports
     differently across games has no single correct value, so it is skipped.
     """
-    text = (ROOT / "src" / "game.cpp").read_text(encoding="utf-8")
+    text = (ROOT / "src" / "core" / "game.cpp").read_text(encoding="utf-8")
     rows = re.findall(
         r'\{\s*(?:"[A-Z_0-9]+"|nullptr),\s*(?:"(\w+)"|nullptr),\s*'
         r'(?:"(\w+)"|nullptr),\s*(true|false)\s*\}',
@@ -150,7 +150,7 @@ def parse_matrix_defaults():
 def parse_launcher():
     """(section, key) -> default value the settings launcher falls back to."""
     defaults = {}
-    text = (ROOT / "src" / "config_gui" / "main.cpp").read_text()
+    text = (ROOT / "src" / "launcher" / "launcher_gui.cpp").read_text()
     for pattern in LAUNCHER_PATTERNS:
         for match in pattern.finditer(text):
             defaults.setdefault(
