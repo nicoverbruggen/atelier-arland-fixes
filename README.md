@@ -41,14 +41,13 @@ If the game crashes, the mod appends a report to `arland-fix.log` that helps pin
 
 ### List of graphics enhancements
 
-These things were not part of the original games, but were added with the mod. Each one can be turned on or off in the launcher. Edge smoothing, anisotropic filtering and the shadow enhancements are on to begin with; supersampling and sharpening are optional.
+These things were not part of the original games, but were added with the mod. Each one can be turned on or off in the launcher. Edge smoothing and the shadow enhancements are on to begin with; supersampling and sharpening are optional.
 
 | Enhancement                                | Rorona | Totori | Meruru |
 |--------------------------------------------|:------:|:------:|:------:|
 | Edge smoothing (SMAA)                      |   ✓    |   ✓    |   ✓    |
 | Supersampling (internal render resolution) |   ✓    |   ✓    |   ✓    |
 | Sharpening                                 |   ✓    |   ✓    |   ✓    |
-| Anisotropic filtering                      |   ✓    |   ✓    |   ✓    |
 | Shadow enhancements                        |   ✓    |   ✓    |   ✓    |
 
 ## Installation on Windows

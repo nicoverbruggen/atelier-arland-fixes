@@ -13,7 +13,7 @@ The current tree contains:
 - old-Arland render-target and viewport/scissor correction;
 - old-Arland game-side 1440p/4K render-target and raster correction;
 - signature-gated launcher mode injection and an optional INI resolution override;
-- optional high-resolution shadow-map twins (`ShadowMultiplier`) and anisotropic filtering;
+- optional high-resolution shadow-map twins (`ShadowMultiplier`);
 - SMAA anti-aliasing applied before UI composition, at a per-title draw boundary (Totori injects at a depth-state change, Rorona and Meruru at the scene render target);
 - high-resolution UI text rendered from bundled scalable fonts, on the English builds;
 - frame-rate-independent field movement in all three games and travel-map analog cursor movement in Totori and Meruru;

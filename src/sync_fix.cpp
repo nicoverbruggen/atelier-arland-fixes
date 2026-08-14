@@ -1954,53 +1954,13 @@ HRESULT STDMETHODCALLTYPE ID3D11Device_CreatePixelShader(
     BytecodeLength, pClassLinkage, ppPixelShader);
 }
 
-// Anisotropic filtering. `[Rendering] AnisotropicFiltering` accepts a
-// maximum-anisotropy value (2/4/8/16); absent = 16, any other value = off.
-//
-// The default was 8x and is now 16x. On any GPU that runs these ports the two
-// are not measurably different, while either is visibly better than the
-// trilinear filtering the games ask for -- so there was no trade-off being
-// preserved by the lower number, only a smaller improvement.
-// ARLAND_ANISO overrides. Applied by upgrading the game's basic linear samplers
-// at creation, so all world/character/ground textures get sharper filtering at
-// oblique angles with no per-draw cost. Comparison/minimum/maximum filters
-// (shadow PCF etc.) are left untouched.
-UINT anisotropyLevel() {
-  static const UINT level = []() -> UINT {
-    unsigned long v = 0;
-    char value[16] = {};
-    const DWORD len = GetEnvironmentVariableA("ARLAND_ANISO", value, sizeof(value));
-    if (len && len < sizeof(value))
-      v = std::strtoul(value, nullptr, 10);
-    else
-      v = GetPrivateProfileIntA("Rendering", "AnisotropicFiltering", 16,
-        configPath() ? configPath() : "");
-    if (v == 2 || v == 4 || v == 8 || v == 16)
-      return UINT(v);
-    return 0;
-  }();
-  return level;
-}
-
-HRESULT STDMETHODCALLTYPE ID3D11Device_CreateSamplerState(
-        ID3D11Device*             pDevice,
-  const D3D11_SAMPLER_DESC*       pDesc,
-        ID3D11SamplerState**      ppSamplerState) {
-  auto procs = getDeviceProcs(pDevice);
-  const UINT aniso = anisotropyLevel();
-  D3D11_SAMPLER_DESC desc;
-  // Upgrade only the basic point/linear filters (enum 0x00..0x15) to
-  // anisotropic; leave anisotropic (0x55) and comparison/min/max (>= 0x80,
-  // e.g. shadow PCF) alone.
-  if (aniso && pDesc && pDesc->Filter <= D3D11_FILTER_MIN_MAG_MIP_LINEAR) {
-    desc = *pDesc;
-    desc.Filter = D3D11_FILTER_ANISOTROPIC;
-    desc.MaxAnisotropy = aniso;
-    pDesc = &desc;
-  }
-  return procs->CreateSamplerState(pDevice, pDesc, ppSamplerState);
-}
-
+// Sampler creation is deliberately NOT hooked. An earlier version upgraded the
+// games' basic point/linear samplers to D3D11_FILTER_ANISOTROPIC. The bound it
+// used starts at D3D11_FILTER_MIN_MAG_MIP_POINT, which is enum zero, so every
+// point sampler was upgraded too -- and point sampling is correct for a
+// colour-grading LUT, a gradient ramp or a dither table, where filtering smears
+// what the texture encodes rather than improving it. Nothing here can tell
+// those apart from ordinary content by descriptor alone.
 HRESULT STDMETHODCALLTYPE ID3D11Device_CreateDeferredContext(
         ID3D11Device*             pDevice,
         UINT                      Flags,
@@ -3792,15 +3752,12 @@ void hookDevice(ID3D11Device* pDevice) {
   HOOK_PROC(ID3D11Device, pDevice, procs, 6,  CreateTexture3D);
   HOOK_PROC(ID3D11Device, pDevice, procs, 12, CreateVertexShader);
   HOOK_PROC(ID3D11Device, pDevice, procs, 15, CreatePixelShader);
-  if (anisotropyLevel())
-    HOOK_PROC(ID3D11Device, pDevice, procs, 23, CreateSamplerState);
   if (ssaaRequested())
     HOOK_PROC(ID3D11Device, pDevice, procs, 9, CreateRenderTargetView);
 
   g_installedHooks |= HOOK_DEVICE;
   log("FIXES d3d11_device_hooks=",
-      allInstalled ? "active" : "partial_failure",
-      " anisotropic=", std::dec, anisotropyLevel());
+      allInstalled ? "active" : "partial_failure");
 }
 
 void hookContext(ID3D11DeviceContext* pContext) {

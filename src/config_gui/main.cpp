@@ -5,7 +5,7 @@
 // Tecmo's own launcher when the game is started from Steam.
 //
 // It reads and writes the same keys the DLL parses in src/config.cpp (and SMAA
-// in smaa.cpp, AnisotropicFiltering in sync_fix.cpp), using the exact same
+// in smaa.cpp), using the exact same
 // GetPrivateProfileStringA / WritePrivateProfileStringA API so the on-disk
 // format matches the mod. On save it touches only the known keys, so anything
 // else already in the file is preserved. It also writes the game's
@@ -350,8 +350,7 @@ const unsigned kMaxRenderHeight = 4320;
 // Only the two combinations anyone asks for are offered: the game as it shipped,
 // and both halves restored. The keys stay independent in the ini for anyone who
 // wants one half on its own. An ini holding a combination not listed here opens
-// on Enhanced and is normalised on the next save, the same way a hand-edited
-// AnisotropicFiltering is.
+// on Enhanced and is normalised on the next save.
 struct CutInMode {
   const wchar_t* label;
   bool shadows;   // [Battle] BattleCutInShadows
@@ -867,8 +866,6 @@ void loadFromIni() {
   // here would show Normal for a default install and then persist that on the
   // next save, quietly turning the feature off for anyone who opened the
   // launcher.
-  // Anisotropic filtering is not read here at all any more: it ships on at 16x
-  // and this window no longer offers it.
   iniString("Rendering", "ShadowMultiplier", buf, sizeof(buf));
   comboSelectByValue(g_hShadow, kShadowItems, 4, buf[0] ? buf : "2", 1);
 
@@ -1022,13 +1019,6 @@ SaveOutcome saveToIni() {
     iniWrite("Rendering", "RenderHeight", "", g_iniPath);
   }
 
-  // Normalised, not offered. The control is gone and the value is meant to be
-  // 16 for everyone, but an ini written before that change still says 8 and
-  // nothing else would ever raise it. Saving once migrates it; hand-editing
-  // still wins until the next save, which is the same deal every other key
-  // here gets.
-  iniWrite("Rendering", "AnisotropicFiltering", "16",
-    g_iniPath);
   iniWrite("Rendering", "ShadowMultiplier",
     comboValue(g_hShadow, kShadowItems, 4), g_iniPath);
   iniWriteBool("Rendering", "SMAA", isChecked(g_hSmaa));
@@ -1188,8 +1178,6 @@ bool seedIniDefaults() {
   WritePrivateProfileStringA("Rendering", "RenderWidth", "", g_iniPath);
   WritePrivateProfileStringA("Rendering", "RenderHeight", "", g_iniPath);
   WritePrivateProfileStringA("Rendering", "ShadowMultiplier", "2", g_iniPath);
-  WritePrivateProfileStringA("Rendering", "AnisotropicFiltering", "16",
-    g_iniPath);
   return true;
 }
 
