@@ -198,8 +198,16 @@ bool init(ID3D11Device* device) {
   cb.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
   if (FAILED(device->CreateBuffer(&cb, nullptr, &g_cb))) return false;
 
+  // Sharpen colour only. The shader returns alpha 1.0, so an ALL write mask
+  // replaces that channel across the whole target. In the Dusk project that
+  // produced large intermittent black polygons in later composition on
+  // Shallie. An RGB mask preserves alpha whatever the shader returns, which is
+  // the contract of a sharpening filter.
   D3D11_BLEND_DESC bd = {};
-  bd.RenderTarget[0].RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL;
+  bd.RenderTarget[0].RenderTargetWriteMask =
+    D3D11_COLOR_WRITE_ENABLE_RED |
+    D3D11_COLOR_WRITE_ENABLE_GREEN |
+    D3D11_COLOR_WRITE_ENABLE_BLUE;
   if (FAILED(device->CreateBlendState(&bd, &g_blend))) return false;
 
   D3D11_DEPTH_STENCIL_DESC dd = {};
