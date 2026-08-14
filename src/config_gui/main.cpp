@@ -376,17 +376,15 @@ int cutInIndex(bool shadows, bool dimming) {
   return 1;
 }
 
-// Window mode spans two files: Borderless in arland-fix.ini, FullScreen in the
-// game's own ArlandDX_Settings.ini. Borderless is a window as far as the game
-// is concerned, so it writes FullScreen=0 -- that way disabling the mod leaves
-// a sane windowed game rather than an unexpected mode change.
-struct WindowModeItem { const wchar_t* label; bool borderless; const char* fullscreen; };
+// Window mode is the game's own [Window] FullScreen in ArlandDX_Settings.ini.
+// The mod does not have a window mode of its own, so this control writes only
+// that file and disabling the mod leaves the choice standing.
+struct WindowModeItem { const wchar_t* label; const char* fullscreen; };
 const WindowModeItem kWindowModes[] = {
-  { L"Windowed",              false, "0" },
-  { L"Borderless Fullscreen", true,  "0" },
-  { L"Fullscreen",            false, "1" },
+  { L"Windowed",   "0" },
+  { L"Fullscreen", "1" },
 };
-const int kWindowModeCount = 3;
+const int kWindowModeCount = 2;
 
 // The game's own [Lang] Language value. Which of these an executable honours
 // depends on the build, so all four are offered and the game decides.
@@ -893,15 +891,11 @@ void loadFromIni() {
     SendMessageW(g_hSharpen, CB_SETCURSEL, index, 0);
   }
 
-  // Borderless wins when set; otherwise the game's own FullScreen decides.
-  // Both defaults describe a fresh install with neither file written yet, and
-  // both have to say the same thing as src/config.cpp and the game's own
-  // shipped setting: exclusive fullscreen, borderless off.
-  const bool borderless = iniBool("Rendering", "Borderless", false);
+  // The default describes a fresh install with the file not yet written, and
+  // has to say what the game itself ships: exclusive fullscreen.
   const bool fullscreen =
     GetPrivateProfileIntA("Window", "FullScreen", 1, g_settingsPath) != 0;
-  SendMessageW(g_hWinMode, CB_SETCURSEL,
-    borderless ? 1 : (fullscreen ? 2 : 0), 0);
+  SendMessageW(g_hWinMode, CB_SETCURSEL, fullscreen ? 1 : 0, 0);
 
   // The game's language lives entirely in its own settings file.
   {
@@ -961,7 +955,7 @@ void resetToDefaults() {
   // Auto: the display keys blank, which is what a fresh install has and what
   // src/config.cpp resolves to the desktop mode.
   SendMessageW(g_hBase, CB_SETCURSEL, 0, 0);
-  SendMessageW(g_hWinMode, CB_SETCURSEL, 2, 0);   // Fullscreen, as it defaults
+  SendMessageW(g_hWinMode, CB_SETCURSEL, 1, 0);   // Fullscreen, as it defaults
 
   SendMessageW(g_hFont, CB_SETCURSEL, 0, 0);      // replaced
   setSsIndex(0);                                  // supersampling off
@@ -1044,9 +1038,7 @@ SaveOutcome saveToIni() {
     int sel = (int)SendMessageW(g_hWinMode, CB_GETCURSEL, 0, 0);
     if (sel < 0 || sel >= kWindowModeCount)
       sel = 0;
-    const WindowModeItem& mode = kWindowModes[sel];
-    iniWriteBool("Rendering", "Borderless", mode.borderless);
-    iniWrite("Window", "FullScreen", mode.fullscreen,
+    iniWrite("Window", "FullScreen", kWindowModes[sel].fullscreen,
       g_settingsPath);
   }
   iniWrite("Lang", "Language",

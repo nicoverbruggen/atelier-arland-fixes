@@ -24,10 +24,10 @@ void smaaResetFrame();
 bool presentTraceEnabled();
 
 /* lives in sync_fix.cpp: record the identity of the surface the game composites
-   the finished frame into -- the render-resolution texture under supersampling
-   or borderless, the swap-chain backbuffer otherwise. Pre-UI SMAA locates the
-   scene/UI boundary by this identity, because the mod resizes the engine's
-   hard-coded auxiliary targets to the main render size and they are therefore
+   the finished frame into -- the render-resolution texture under supersampling,
+   the swap-chain backbuffer otherwise. Pre-UI SMAA locates the scene/UI
+   boundary by this identity, because the mod resizes the engine's hard-coded
+   auxiliary targets to the main render size and they are therefore
    indistinguishable from the scene target by dimensions. Call once per swap
    chain, after ssaaNoteSwapChain. */
 void noteSceneAnchor(IDXGISwapChain* swapChain);

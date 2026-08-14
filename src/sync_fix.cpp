@@ -545,56 +545,22 @@ bool applyResolutionOverride(DXGI_SWAP_CHAIN_DESC* pDesc) {
   UINT height = 0;
   if (!displayResolution(&width, &height))
     return false;
-  // Borderless covers the whole monitor, and a monitor is not always the shape
-  // of the resolution chosen for it -- a Steam Deck is 1280x800, 16:10, while
-  // every resolution offered here is 16:9. Presenting a 16:9 backbuffer into a
-  // 16:10 window makes DXGI stretch it to fit, which is a vertically squashed
-  // picture, so instead the CHAIN takes the monitor's size and the game keeps
-  // rendering at the chosen one. supersample.cpp then fits one inside the other
-  // with black bars rather than distorting it.
-  if (borderlessWindow() && pDesc->OutputWindow) {
-    if (HMONITOR monitor = MonitorFromWindow(pDesc->OutputWindow,
-          MONITOR_DEFAULTTONEAREST)) {
-      MONITORINFO info = { };
-      info.cbSize = sizeof(info);
-      if (GetMonitorInfoW(monitor, &info)) {
-        const UINT monitorWidth = info.rcMonitor.right - info.rcMonitor.left;
-        const UINT monitorHeight = info.rcMonitor.bottom - info.rcMonitor.top;
-        // Compared as a cross product so no division rounds the answer away.
-        if (monitorWidth && monitorHeight &&
-            uint64_t(monitorWidth) * height != uint64_t(monitorHeight) * width) {
-          static std::atomic<uint32_t> reportedAspectFit{0};
-          if (logFirstOrVerbose(reportedAspectFit))
-            log("Aspect fit: presenting at the monitor's ", std::dec,
-                monitorWidth, "x", monitorHeight, " and rendering at ",
-                width, "x", height, ", letterboxed rather than stretched");
-          width = monitorWidth;
-          height = monitorHeight;
-        }
-      }
-    }
-  }
-
-  // Borderless gets a FLIP-model swap chain.
+  // The swap effect is left as the game asked for it, and that has a cost worth
+  // knowing before someone changes it here. These games ask for
+  // DXGI_SWAP_EFFECT_DISCARD, the blt model. In exclusive fullscreen that flips
+  // straight to the display, but a windowed blt chain is composited: every
+  // present copies the backbuffer into the compositor's surface, and a frame
+  // that misses vblank waits for the next one, so the rate halves rather than
+  // degrading. A player who picks Windowed is on that path.
   //
-  // These games ask for DXGI_SWAP_EFFECT_DISCARD, the blt model. In exclusive
-  // fullscreen that flips straight to the display, but a windowed blt chain is
-  // composited: every present COPIES the backbuffer into DWM's surface, and a
-  // frame that misses its vblank waits for the next one. That does not slow
-  // down gently -- it halves, 90 to 45 or 60 to 30, which is the doubled frame
-  // time borderless was reported to have.
+  // FLIP_DISCARD is the fix for it, but do not set it here without settling one
+  // thing first. A flip-model backbuffer is unbound after every present, so
+  // something has to bind it each frame. That used to be the supersampling
+  // pass, which was armed whether or not supersampling was configured. It is
+  // now armed only by a real render/display difference, so what decides the
+  // question is whether these games rebind their own backbuffer view every
+  // frame, and nothing here establishes that.
   //
-  // The flip model lets the compositor take the buffer directly (an independent
-  // flip), with no copy and no half-rate lock. It requires a non-multisampled
-  // backbuffer and at least two buffers, both set here. Nothing in these games
-  // asks for a multisampled swap chain, so forcing a single sample here takes
-  // nothing away.
-  //
-  // The catch that makes this safe: a flip-model backbuffer is unbound from the
-  // pipeline after every present, so anything that binds it once and assumes it
-  // stays bound would draw nowhere. That is why supersample.cpp is made to own
-  // the final pass whenever borderless is on -- it binds the backbuffer itself,
-  // every frame, so the requirement is met by construction rather than by hope.
   // Seed the main render size from the configuration rather than waiting to
   // recognise it from a texture. It is known here -- it is what the ini says --
   // and until it is set, the auxiliary-target branch in CreateTexture2D is
@@ -613,18 +579,6 @@ bool applyResolutionOverride(DXGI_SWAP_CHAIN_DESC* pDesc) {
         log("Main render size seeded from the configuration: ", std::dec,
             seedWidth, "x", seedHeight);
     }
-  }
-
-  if (borderlessWindow()) {
-    pDesc->SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
-    if (pDesc->BufferCount < 2)
-      pDesc->BufferCount = 2;
-    pDesc->SampleDesc.Count = 1;
-    pDesc->SampleDesc.Quality = 0;
-    if (verboseLogging())
-      log("Borderless: flip-model swap chain (", std::dec, pDesc->BufferCount,
-          " buffers), so presents are an independent flip rather than a"
-          " composited copy");
   }
 
   pDesc->BufferDesc.Width = width;
@@ -668,9 +622,9 @@ void noteViewportExtent(UINT width, UINT height) {
 // ---- scene-target identity -------------------------------------------------
 // The one surface the games composite the finished frame into. supersample.h
 // states the architectural fact this rests on: these games bind the swap-chain
-// backbuffer itself as their colour render target. Under supersampling or
-// borderless, every RTV over that backbuffer is redirected to the mod's
-// render-resolution texture, so that texture is the composite target instead.
+// backbuffer itself as their colour render target. Under supersampling, every
+// RTV over that backbuffer is redirected to the mod's render-resolution
+// texture, so that texture is the composite target instead.
 //
 // SMAA has to identify this surface to find the scene/UI boundary, and it used
 // to do so by dimensions. That cannot work in this mod: CreateTexture2D
@@ -746,9 +700,9 @@ void noteSceneAnchor(IDXGISwapChain* swapChain) {
     return;
   void* found = nullptr;
   const char* which = nullptr;
-  // Supersampling/borderless: the render-resolution stand-in is what the game
-  // actually renders into. Ask first, because in that case the backbuffer is
-  // touched only by the downscale.
+  // Supersampling: the render-resolution stand-in is what the game actually
+  // renders into. Ask first, because in that case the backbuffer is touched
+  // only by the downscale.
   if (ID3D11Texture2D* ssaa = atfix::ssaaAcquireColor()) {
     found = ssaa;
     which = "render-resolution texture";
@@ -772,7 +726,7 @@ void noteSceneAnchor(IDXGISwapChain* swapChain) {
     // all three do contain one. supersample.cpp records where that call is and
     // what the measurement does and does not establish; the same reasoning
     // covers it, because it holds a view over the real backbuffer for the
-    // process lifetime whenever borderless or supersampling is on.
+    // process lifetime whenever supersampling is on.
     ID3D11Texture2D* tex = static_cast<ID3D11Texture2D*>(found);
     tex->AddRef();
     if (ID3D11Texture2D* prev =
@@ -1179,7 +1133,7 @@ std::atomic<void*> g_traceBackbuffer{nullptr};
 // texture is cached per format and intentionally never released.
 // Per-Present content marker for the trace. The wiring log proved the
 // conversation backdrop is captured by a fullscreen draw FROM the swap-chain
-// backbuffer, whose only writer under borderless is the mod's own blit. The
+// backbuffer, whose only writer under supersampling is the mod's own blit. The
 // wiring being right leaves the CONTENT the backbuffer holds when the capture
 // executes, which no event line can carry. Called at the top of the Present
 // hook, before the blit, so back_px is what this frame's deferred

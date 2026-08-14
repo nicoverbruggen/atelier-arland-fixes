@@ -21,11 +21,16 @@ namespace atfix {
 // backbuffer is touched only by the downscale below.
 
 // Whether the machinery may be needed: a render resolution larger than the
-// display, or borderless, where fitting the render size inside the monitor goes
-// through the same redirect. Both are off in a default install, so this is
-// normally false and the machinery stays out of the way; ssaaActive() is what
-// says the pass really runs. Known before any device exists, so the Present hook
-// can be installed for it.
+// display. Off in a default install, so this is normally false and the
+// machinery stays out of the way; ssaaActive() is what says the pass really
+// runs. Known before any device exists, so the Present hook can be installed
+// for it.
+//
+// Note what this predicate cannot answer, because letterboxing needs it: a
+// render size that is SMALLER on one axis and equal on the other -- 1600x900 in
+// a 1600x1200 chain -- is not larger, so the pass never installs and nothing
+// says so. An aspect mismatch has to become its own reason to arm before the
+// fit in ssaaDownscale can reach a non-16:9 fullscreen frame.
 bool ssaaRequested();
 
 // Capture a freshly-created swap chain's backbuffer and, if the render

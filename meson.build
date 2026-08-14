@@ -108,7 +108,6 @@ else
     'src/battle_shadow_restore.cpp',
     'src/sync_fix.cpp',
     'src/battle_shadows.cpp',
-    'src/window_mode.cpp',
     'src/window_background.cpp',
     'src/window_title.cpp',
     'src/hook_util.cpp',

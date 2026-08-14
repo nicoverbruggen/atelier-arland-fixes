@@ -15,7 +15,6 @@
 #include "version.h"
 #include "version_git.h"
 #include "window_background.h"
-#include "window_mode.h"
 #include "window_title.h"
 
 #include <psapi.h>
@@ -261,9 +260,9 @@ bool perfLogEnabled() {
 }
 
 // Present must be hooked whenever the transition trace, the frame-atlas cache,
-// the per-frame battle ticks, SMAA, sharpening, the supersampling downscale,
-// borderless mode or the frame-time log needs it. The first three arrive
-// through menuTransitionTraceEnabled above.
+// the per-frame battle ticks, SMAA, sharpening, the supersampling downscale or
+// the frame-time log needs it. The first three arrive through
+// menuTransitionTraceEnabled above.
 //
 // Sharpening is here for its preload rather than for a pass. sharpenApply runs
 // from the draw path, but the shader compiler can only be loaded from the frame
@@ -278,7 +277,7 @@ bool presentHookNeeded() {
   return menuTransitionTraceEnabled() ||
     atfix::smaaEnabled() || atfix::sharpenEnabled() ||
     atfix::presentTraceEnabled() || atfix::ssaaRequested() ||
-    atfix::borderlessWindow() || perfLogEnabled();
+    perfLogEnabled();
 }
 
 // The factory hook carries two jobs and only one of them is a Present consumer.
@@ -386,7 +385,6 @@ HRESULT STDMETHODCALLTYPE tracedPresent(
     }
   }
 
-  atfix::maintainBorderlessWindow();   // re-applies only if the game restyled
   atfix::noteSceneAnchor(swapChain);         // re-anchor: survives ResizeBuffers
   atfix::notePresentBackbuffer(swapChain);   // ARLAND_PRESENT_TRACE diagnostic
   // Loading the shader compiler from a draw or bind detour deadlocks on the
@@ -463,14 +461,12 @@ HRESULT STDMETHODCALLTYPE tracedCreateSwapChain(
   // asked for.
   if (desc) {
     atfix::applyResolutionOverride(desc);
-    atfix::prepareBorderlessSwapChain(desc);
   }
   const HRESULT result = originalCreateSwapChain(
     factory, device, desc, swapChain);
   if (SUCCEEDED(result) && swapChain && *swapChain) {
     atfix::ssaaNoteSwapChain(*swapChain);
     atfix::noteSceneAnchor(*swapChain);
-    atfix::applyBorderlessWindow(*swapChain);
     hookSwapChain(*swapChain);
   }
   return result;
@@ -619,9 +615,7 @@ DLLEXPORT HRESULT __stdcall D3D11CreateDeviceAndSwapChain(
   DXGI_SWAP_CHAIN_DESC swapChainDesc = { };
   if (pSwapChainDesc && arland::initializeGameHooks()) {
     swapChainDesc = *pSwapChainDesc;
-    const bool resized = atfix::applyResolutionOverride(&swapChainDesc);
-    atfix::prepareBorderlessSwapChain(&swapChainDesc);
-    if (resized || atfix::borderlessWindow())
+    if (atfix::applyResolutionOverride(&swapChainDesc))
       pSwapChainDesc = &swapChainDesc;
   }
 
@@ -640,7 +634,6 @@ DLLEXPORT HRESULT __stdcall D3D11CreateDeviceAndSwapChain(
       // owns every one of them but the downscale's own.
       atfix::ssaaNoteSwapChain(*ppSwapChain);
       atfix::noteSceneAnchor(*ppSwapChain);
-      atfix::applyBorderlessWindow(*ppSwapChain);
       atfix::hookSwapChain(*ppSwapChain);
     }
   }

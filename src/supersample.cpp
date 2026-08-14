@@ -278,12 +278,6 @@ float downscaleSamples() {
 
 bool ssaaRequested() {
   static const bool requested = [] {
-    // Borderless can need this pass even with no supersampling configured: the
-    // monitor may not be the shape of the chosen resolution, and fitting one
-    // inside the other goes through the same redirect. The monitor is not known
-    // here, so borderless arms the machinery and ssaaNoteSwapChain decides.
-    if (borderlessWindow())
-      return true;
     UINT renderWidth = 0, renderHeight = 0;
     if (!renderResolution(&renderWidth, &renderHeight))
       return false;
@@ -381,12 +375,7 @@ void ssaaNoteSwapChain(IDXGISwapChain* swapChain) {
   const bool differentShape =
     uint64_t(renderWidth) * backDesc.Height !=
     uint64_t(backDesc.Width) * renderHeight;
-  // Borderless takes this path even when neither applies. Its swap chain is
-  // flip-model (see applyResolutionOverride), and a flip-model backbuffer is
-  // unbound after every present -- so something has to bind it each frame. This
-  // pass does, which is what makes that swap-chain change safe. At matching size
-  // and shape it degenerates to a 1:1 copy: one fullscreen pass, no filtering.
-  if (!larger && !differentShape && !borderlessWindow()) {
+  if (!larger && !differentShape) {
     back->Release();
     return;
   }
