@@ -162,6 +162,36 @@ const char* kSmaaPrefix =
 
 // ---- resource state --------------------------------------------------------
 std::atomic<bool> g_init{false};
+
+// Claimed for the WHOLE pass, not just its setup. g_init is published by an
+// exchange before initShared has built anything, so a second recording thread
+// could see it set, skip the block, find g_broken still clear, and go on to
+// copy into a null g_sceneTex and bind half-built state. The same gap let
+// initSized free those resources while another thread had them bound, which is
+// not a first-frame case: it recurs on any size or format change. This engine
+// records on several deferred contexts (see sharpen.h), so both are reachable.
+//
+// Refuses rather than waits, which is the sibling project's reasoning and holds
+// here: a lock taken inside a D3D11 detour is a deadlock waiting for the right
+// pair of threads, and declining costs one frame of antialiasing on one target.
+std::atomic<bool> g_passBusy{false};
+
+// RAII because the pass has eight exits and a missed release would wedge edge
+// smoothing off for the rest of the session.
+struct PassClaim {
+  bool held;
+  PassClaim() {
+    bool expected = false;
+    held = g_passBusy.compare_exchange_strong(expected, true,
+                                              std::memory_order_acquire);
+  }
+  ~PassClaim() {
+    if (held) g_passBusy.store(false, std::memory_order_release);
+  }
+  PassClaim(const PassClaim&) = delete;
+  PassClaim& operator=(const PassClaim&) = delete;
+};
+
 bool g_broken = false;
 UINT g_width = 0, g_height = 0;
 DXGI_FORMAT g_format = DXGI_FORMAT_UNKNOWN;
@@ -446,6 +476,12 @@ bool smaaRunPasses(ID3D11Device* dev, ID3D11DeviceContext* ctx,
                    ID3D11Texture2D* color,
                    ID3D11RenderTargetView* colorRTV,
                    bool allowDebug) {
+  // Before anything reads or writes shared state, which includes the device
+  // claim below as well as the shaders and the sized targets.
+  PassClaim claim;
+  if (!claim.held)
+    return false;
+
   D3D11_TEXTURE2D_DESC cd = {};
   color->GetDesc(&cd);
   if (cd.SampleDesc.Count != 1)
