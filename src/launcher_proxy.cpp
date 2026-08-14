@@ -77,22 +77,29 @@ bool hostExeName(std::array<wchar_t, 32768>& path, const wchar_t** name) {
 //    executable's entry point instead, by which time the process is fully
 //    assembled.
 //
+//    The same rule applies to DECIDING what to start. Reading which target the
+//    settings ask for means profile reads, file-attribute queries and, on the
+//    KTGL games, profile writes, and DllMain holds the loader lock. All of it
+//    therefore happens at the entry point too, in resolveStartTarget.
+//    armRedirect verifies the entry window and splices; nothing else.
+//
 //  - The stock launcher process must stay alive while ours is open, rather than
 //    being terminated the moment its replacement starts. It is the process
 //    Steam launched and is counting, and the game is started from our launcher
 //    underneath it. Waiting costs nothing -- this process has no window and no
 //    work of its own once its entry point belongs to us.
 //
-// Nothing here is destructive if the install is partial: with no
-// arland-fix-launcher.exe next to it the redirect is never armed and the stock
-// launcher comes up exactly as before.
+// Nothing here is destructive if the install is partial. The entry point is
+// restored before anything is decided, so with no arland-fix-launcher.exe next
+// to it the stock launcher runs from its own unmodified entry bytes.
 //
 // ARLAND_NO_REDIRECT stands the redirect down. Our launcher sets it on the
 // original launcher and settings editor when its own buttons open them, which
 // is what stops those buttons from being bounced straight back here.
 
 // What the redirect starts: our launcher normally, the game itself when
-// SkipLauncher is set. `g_startsGame` only picks the wording in the log.
+// SkipLauncher is set. Both are resolved at the entry point rather than at
+// arm time; see redirectedEntryPoint.
 std::array<wchar_t, 32768> g_startTarget = { };
 bool g_startsGame = false;
 std::array<wchar_t, 32768> g_gameDirectory = { };
@@ -221,19 +228,15 @@ bool resolveGameExecutable(std::array<wchar_t, 32768>& out) {
   return false;
 }
 
-// Put the executable's own entry point back and run it, for the case where the
-// target cannot be started after all. The launcher then comes up as if the mod
-// were not installed.
-void runOriginalEntryPoint() {
+// Put the executable's own five entry bytes back, so the image is the one that
+// shipped. Called first thing from redirectedEntryPoint, before anything that
+// could fail, which is what makes every path below it able to fall back to the
+// stock launcher without a second protection change.
+bool restoreEntryPoint() {
   DWORD oldProtect = 0;
   if (!VirtualProtect(g_entryPoint, g_entryOriginal.size(),
-      PAGE_EXECUTE_READWRITE, &oldProtect)) {
-    // The entry point still holds the redirect jump, so calling it would land
-    // back in redirectedEntryPoint, whose failure path is this function, and
-    // recurse until the stack runs out. With the restore refused there is no
-    // way left to run the stock launcher; exit instead.
-    ExitProcess(1);
-  }
+      PAGE_EXECUTE_READWRITE, &oldProtect))
+    return false;
   std::memcpy(g_entryPoint, g_entryOriginal.data(), g_entryOriginal.size());
   FlushInstructionCache(GetCurrentProcess(), g_entryPoint,
     g_entryOriginal.size());
@@ -243,11 +246,52 @@ void runOriginalEntryPoint() {
   // turn a cosmetic failure into a launcher that does nothing.
   DWORD ignored = 0;
   VirtualProtect(g_entryPoint, g_entryOriginal.size(), oldProtect, &ignored);
+  return true;
+}
+
+// Run the launcher as if the mod were not installed. Only valid once
+// restoreEntryPoint has succeeded: while the jump is still there this would
+// re-enter redirectedEntryPoint and recurse until the stack runs out.
+void runOriginalEntryPoint() {
   reinterpret_cast<void (*)()>(g_entryPoint)();
+}
+
+// Which target to start, resolved here rather than at arm time.
+//
+// ALL OF THIS IS FILE WORK: one or two profile reads and up to seven
+// file-attribute queries. armRedirect runs from DllMain, so doing it there put
+// every one of those under the loader lock. Nothing about them needs to happen
+// that early -- their only ordering requirement is that they precede the target
+// starting, and this does.
+bool resolveStartTarget() {
+  g_startsGame = skipLauncherRequested();
+  if (g_startsGame)
+    return resolveGameExecutable(g_startTarget);
+  return pathInGameDirectory(L"arland-fix-launcher.exe", g_startTarget) &&
+         GetFileAttributesW(g_startTarget.data()) != INVALID_FILE_ATTRIBUTES;
 }
 
 // Stands in for the launcher's entry point once the redirect is armed.
 void redirectedEntryPoint() {
+  // RESTORED FIRST, before anything that can fail or take time. Two things
+  // follow from that. The image spends the shortest possible time carrying the
+  // jump, and from here on the stock launcher is reachable by a plain call --
+  // there is no way back into this function, so a failure below is a fallback
+  // rather than a recursion.
+  //
+  // Exiting is the only thing left if the restore itself fails, because the
+  // jump is then still live and calling it comes straight back here.
+  if (!restoreEntryPoint())
+    ExitProcess(1);
+
+  // No target: the mod is partially installed, or the game folder does not hold
+  // what SkipLauncher asked for. The launcher comes up exactly as it would
+  // without the mod.
+  if (!resolveStartTarget()) {
+    runOriginalEntryPoint();
+    return;
+  }
+
   STARTUPINFOW startup = { };
   startup.cb = sizeof(startup);
   PROCESS_INFORMATION process = { };
@@ -290,17 +334,9 @@ bool armRedirect() {
   std::memcpy(g_gameDirectory.data(), path.data(),
     directoryLength * sizeof(wchar_t));
 
-  // Where the redirect goes. SkipLauncher asks for the game itself; without it
-  // (the default) this is our launcher, exactly as before.
-  g_startsGame = skipLauncherRequested();
-  if (g_startsGame) {
-    if (!resolveGameExecutable(g_startTarget)) {
-      return false;
-    }
-  } else if (!pathInGameDirectory(L"arland-fix-launcher.exe", g_startTarget) ||
-      GetFileAttributesW(g_startTarget.data()) == INVALID_FILE_ATTRIBUTES) {
-    return false;
-  }
+  // Where the redirect goes is decided at the entry point, not here. See
+  // resolveStartTarget: all of it is profile and file-system work, and this
+  // function runs under the loader lock.
 
   auto* base = reinterpret_cast<std::uint8_t*>(GetModuleHandleW(nullptr));
   if (!base)

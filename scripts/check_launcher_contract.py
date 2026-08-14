@@ -131,46 +131,101 @@ def main():
             if token not in PROXY:
                 raise ValueError(f"launcher entry verification is not ASLR-aware: {token}")
 
+        # armRedirect runs from DllMain, so it holds the loader lock. Deciding
+        # what to start means profile reads and file-attribute queries, and none
+        # of that belongs there: it is the heaviest thing the proxy does and it
+        # has to happen before the executable's entry point either way. Pinned
+        # here because the pull to "just check the file exists first" is real and
+        # the cost of giving in to it is invisible until a prefix deadlocks.
+        arm = required(
+            PROXY, r"bool armRedirect\(\) \{(.*?)\n\}", "armRedirect"
+        ).group(1)
+        for banned in (
+            "PrivateProfile",
+            "GetFileAttributes",
+            "EnumDisplaySettings",
+            "CreateFile",
+            "skipLauncherRequested",
+            "resolveGameExecutable",
+        ):
+            if banned in arm:
+                raise ValueError(
+                    "armRedirect holds the loader lock and must not touch the "
+                    "file system: " + banned
+                )
+
+        # The five entry bytes go back before anything that can fail, so every
+        # path after it reaches the stock launcher by a plain call. A restore
+        # that cannot report its own failure is the dangerous one: the jump is
+        # still live, and calling it comes straight back into the redirect.
+        restore = required(
+            PROXY, r"bool restoreEntryPoint\(\) \{(.*?)\n\}", "restoreEntryPoint"
+        ).group(1)
+        if "if (!VirtualProtect" not in restore or "return false" not in restore:
+            raise ValueError("restoreEntryPoint does not report a failed restore")
+
+        redirected = required(
+            PROXY,
+            r"void redirectedEntryPoint\(\) \{(.*?)\n\}",
+            "redirectedEntryPoint",
+        ).group(1)
+        if ("if (!restoreEntryPoint())" not in redirected
+                or "ExitProcess(1)" not in redirected):
+            raise ValueError("entry restore failure can recurse into the redirect")
+        if redirected.index("restoreEntryPoint()") > redirected.index(
+                "resolveStartTarget()"):
+            raise ValueError(
+                "the entry point is restored after the file work rather than "
+                "before it"
+            )
+
+        # runOriginalEntryPoint is call-only now: the restore belongs to its
+        # caller and happens once. A protection change back in here would mean
+        # two restores and the recursion hazard returning with them.
         original = required(
             PROXY,
             r"void runOriginalEntryPoint\(\) \{(.*?)\n\}",
             "runOriginalEntryPoint",
         ).group(1)
-        if "if (!VirtualProtect" not in original or "ExitProcess(1)" not in original:
-            raise ValueError("entry restore failure can recurse into the redirect")
-        # And the restore has to end by actually running what it restored. That
-        # is the whole point of the function and it was unpinned until the
-        # diagnostic removal in 04b929f deleted a log line that was the entire
-        # body of an unbraced `if`, leaving this call as the new body: a
-        # successful restore then returned from the launcher's entry point
-        # instead of calling it.
+        if "VirtualProtect" in original:
+            raise ValueError(
+                "runOriginalEntryPoint restores again; the restore belongs to "
+                "its caller"
+            )
+        if "reinterpret_cast<void (*)()>(g_entryPoint)()" not in original:
+            raise ValueError(
+                "runOriginalEntryPoint never calls the entry point it stands for"
+            )
+
+        # And every fallback has to actually be reached. This was unpinned until
+        # the diagnostic removal in 04b929f deleted a log line that was the whole
+        # body of an unbraced `if`, leaving the call as the new body: the path
+        # then returned from the launcher's entry point instead of calling it.
         #
         # Indentation cannot tell the two apart, which is why the defect was
-        # invisible -- the orphaned call kept the indent it always had, so it
-        # reads as unguarded either way. The statement BEFORE it does tell them
-        # apart: a real statement ends in `;` or `}`, and the tail of an
-        # unbraced condition does not.
-        lines = original.splitlines()
-        call = next(
-            (i for i, line in enumerate(lines)
-             if "reinterpret_cast<void (*)()>(g_entryPoint)()" in line),
-            None,
-        )
-        if call is None:
+        # invisible -- the orphaned call keeps the indent it always had. The
+        # statement BEFORE it does tell them apart: a real one ends in `;`, `}`
+        # or the `{` that opens the block.
+        lines = redirected.splitlines()
+        calls = [i for i, line in enumerate(lines)
+                 if "runOriginalEntryPoint();" in line]
+        if not calls:
             raise ValueError(
-                "runOriginalEntryPoint never calls the entry point it restored"
+                "redirectedEntryPoint never falls back to the stock launcher"
             )
-        preceding = ""
-        for line in reversed(lines[:call]):
-            stripped = line.strip()
-            if stripped and not stripped.startswith("//"):
-                preceding = stripped
-                break
-        if not preceding.endswith((";", "}")):
-            raise ValueError(
-                "the restored entry point is only called conditionally, so a "
-                "successful restore never runs it: " + preceding
-            )
+        for call in calls:
+            preceding = ""
+            for line in reversed(lines[:call]):
+                stripped = line.strip()
+                if stripped and not stripped.startswith("//"):
+                    preceding = stripped
+                    break
+            if not preceding.endswith((";", "}", "{")):
+                raise ValueError(
+                    "a fallback to the stock launcher is the body of an unbraced "
+                    "condition, so it does not run when it should: " + preceding
+                )
+
 
         if "LastWrite" in GUI or "verifyWrite(" in GUI:
             raise ValueError("GUI reverted to last-key-only save verification")
