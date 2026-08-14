@@ -182,7 +182,7 @@ struct GameExecutables {
 };
 
 // The three games, under the same executable names the mod's own launcher
-// matches on (kGames in src/config_gui/main.cpp). Each ships as two builds, an
+// matches on (kGames in src/launcher/launcher_gui.cpp). Each ships as two builds, an
 // English one and a multilingual one carrying Japanese, Simplified Chinese and
 // Traditional Chinese, normally installed side by side.
 constexpr std::array<GameExecutables, 3> SupportedGames = {{

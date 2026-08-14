@@ -4,7 +4,7 @@
 // has and starts the game, and it is what msimg32.dll opens in place of Koei
 // Tecmo's own launcher when the game is started from Steam.
 //
-// It reads and writes the same keys the DLL parses in src/config.cpp (and SMAA
+// It reads and writes the same keys the DLL parses in src/core/config.cpp (and SMAA
 // in smaa.cpp), using the exact same
 // GetPrivateProfileStringA / WritePrivateProfileStringA API so the on-disk
 // format matches the mod. On save it touches only the known keys, so anything
@@ -925,7 +925,7 @@ void loadFromIni() {
     GetPrivateProfileIntA("Graphics", "Outline", 1, g_settingsPath) != 0
       ? BST_CHECKED : BST_UNCHECKED, 0);
 
-  // [Battle]: cut-in defaults match src/game.cpp. Both features ship off, which
+  // [Battle]: cut-in defaults match src/core/game.cpp. Both features ship off, which
   // is BattleCutInShadows=false with BattleCutInDimming=true: the dimming key is
   // the inverse one, so true is the game's original dimming.
   SendMessageW(g_hBCutIn, CB_SETCURSEL,
@@ -966,7 +966,7 @@ void loadFromIni() {
 // and the game's own exclusive fullscreen.
 void resetToDefaults() {
   // Auto: the display keys blank, which is what a fresh install has and what
-  // src/config.cpp resolves to the desktop mode.
+  // src/core/config.cpp resolves to the desktop mode.
   SendMessageW(g_hBase, CB_SETCURSEL, 0, 0);
   SendMessageW(g_hWinMode, CB_SETCURSEL, 1, 0);   // Fullscreen, as it defaults
 
@@ -1183,7 +1183,7 @@ bool hasUnsavedChanges() {
 
 // Create arland-fix.ini with the defaults, for a folder that has one of the
 // DLLs but has never run the game. These are the same keys and values
-// src/config.cpp writes in configPath() when it creates the file itself, and
+// src/core/config.cpp writes in configPath() when it creates the file itself, and
 // scripts/check_default_ini.py checks both against default.ini, so the two
 // cannot drift apart quietly. The cut-in keys are deliberately absent here as
 // well: featureEnabled() seeds those lazily from the per-game matrix, which
@@ -2645,7 +2645,7 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int) {
   // or copying the launcher into a folder before ever running the game, left
   // the launcher refusing to open at all, and the only way back in was to
   // launch the game once so the DLL could seed the file. Create it instead,
-  // with the same keys src/config.cpp seeds in configPath(), so a launcher-made
+  // with the same keys src/core/config.cpp seeds in configPath(), so a launcher-made
   // file and a DLL-made one are the same file. Only a failure to write it is
   // worth stopping for, and that is a real problem the user can act on.
   if (GetFileAttributesA(g_iniPath) == INVALID_FILE_ATTRIBUTES &&
