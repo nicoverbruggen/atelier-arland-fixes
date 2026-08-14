@@ -61,6 +61,7 @@ enum : int {
   IDC_SKIPLAUNCHER,  // start the game from Steam without stopping here
   IDC_VERBOSE,
   IDC_DEBUGVIEW,     // [Debug] the one developer view that is active
+  IDC_FIELDGROUNDRAY,// [Debug] the field ground ray, on unless turned off here
   IDC_START,
   IDC_OPENENV,       // Koei Tecmo's own settings editor
   IDC_OPENLAUNCHER,  // Koei Tecmo's own launcher
@@ -107,6 +108,7 @@ int  g_descCount = 0;
 HWND g_pageCtrls[4][40] = {};   // which controls belong to which tab page
 int  g_pageCount[4] = {};
 HWND g_hDebugView = nullptr;
+HWND g_hFieldGroundRay = nullptr;
 HWND g_hStart = nullptr;   // focused at startup; see createControls
 
 // Adds or removes the Debug entry on the tab strip. Defined with the rest of
@@ -931,6 +933,8 @@ void loadFromIni() {
   // [Diagnostics].
   SendMessageW(g_hVerbose, BM_SETCHECK,
     iniBool("Diagnostics", "VerboseLogging", false) ? BST_CHECKED : BST_UNCHECKED, 0);
+  SendMessageW(g_hFieldGroundRay, BM_SETCHECK,
+    iniBool("Debug", "FieldJitterFix", true) ? BST_UNCHECKED : BST_CHECKED, 0);
 
 
   // Last, once every quality control holds its loaded value.
@@ -966,6 +970,7 @@ void resetToDefaults() {
   SendMessageW(g_hSkipLauncher, BM_SETCHECK, BST_UNCHECKED, 0);
   SendMessageW(g_hVerbose, BM_SETCHECK, BST_UNCHECKED, 0);
   SendMessageW(g_hDebugView, CB_SETCURSEL, 0, 0);
+  SendMessageW(g_hFieldGroundRay, BM_SETCHECK, BST_UNCHECKED, 0);
   syncDebugTab(false);
   updateRenderResolution();
 }
@@ -1057,6 +1062,11 @@ SaveOutcome saveToIni() {
     debugViewSel = 0;
   iniWrite("Debug", "View",
     debugViewSel ? kDebugViewItems[debugViewSel].value : nullptr, g_iniPath);
+  // The box disables, so a tick writes the key and an empty box removes it.
+  // A normal install therefore carries no [Debug] key for this at all and the
+  // shipped default is the one that applies.
+  iniWrite("Debug", "FieldJitterFix",
+    isChecked(g_hFieldGroundRay) ? "0" : nullptr, g_iniPath);
 
   // Flush the cache so each file is on disk before we report success.
   iniWrite(nullptr, nullptr, nullptr, g_iniPath);
@@ -1122,7 +1132,7 @@ void reportSaveFailure(HWND owner, SaveOutcome outcome) {
 struct UiState {
   int font, base, ss, shadow, winMode, lang;
   int smaa, sharpen, outline, cutIn, skipLauncher, verbose;
-  int skipLogos, skipMovie, debugView;
+  int skipLogos, skipMovie, debugView, fieldGroundRay;
 };
 UiState g_savedState;
 
@@ -1147,6 +1157,7 @@ UiState currentState() {
   // was missed: the control exists on every launch, hidden or not, and reads
   // the same either way.
   s.debugView = (int)SendMessageW(g_hDebugView, CB_GETCURSEL, 0, 0);
+  s.fieldGroundRay = isChecked(g_hFieldGroundRay);
   return s;
 }
 
@@ -2219,6 +2230,17 @@ void createControls(HWND w) {
       L"\u2022  Highlight scene target tints the surface the antialiasing pass "
       L"picked, at the moment it picks it. Green over the world but not the "
       L"HUD means it found the right surface at the right time.");
+    page.heading(L"Field movement");
+    g_hFieldGroundRay = mkCheck(w,
+      L"Disable the field jitter fix", 0, 0, 10, IDC_FIELDGROUNDRAY);
+    page.checkRow(g_hFieldGroundRay,
+      L"The fix is on in a normal install. It places a character on the ground "
+      L"each frame instead of letting it fall and catching it, which is what "
+      L"the game does on its own and what makes monsters vibrate on uneven "
+      L"ground. Tick this to get the original behaviour back, which a bug "
+      L"report about field movement may need. Rorona and Meruru only; the "
+      L"defect was looked for in Totori and not found.");
+
     page.fullNote(
       L"These are diagnostics rather than settings. Turn verbose logging off "
       L"to hide this tab.");

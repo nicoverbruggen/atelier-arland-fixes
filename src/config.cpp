@@ -299,6 +299,16 @@ bool verboseLogging() {
   return on;
 }
 
+bool fieldJitterFix() {
+  static const bool on = [] {
+    const char* env = std::getenv("ARLAND_FIELD_JITTER_FIX");
+    if (env)
+      return env[0] != '0';
+    return arlandConfigBool("Debug", "FieldJitterFix", true);
+  }();
+  return on;
+}
+
 // Stands the whole mod down: it still loads, and still forwards Direct3D,
 // because the game imports this DLL by name and would not start otherwise --
 // but it installs no hooks, detours nothing, and overrides no resolution. The

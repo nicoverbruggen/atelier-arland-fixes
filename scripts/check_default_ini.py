@@ -26,10 +26,13 @@ SECTIONS = ("Rendering", "Battle", "Debug", "Field", "Menus", "Startup",
 
 # Options the code reads that are deliberately kept out of default.ini. [Debug]
 # View is a developer view selector with no meaning to a player; the launcher
-# only offers it when verbose logging is on. It is listed here rather than left
-# out of SECTIONS, so that the exclusion is a decision on the record instead of
-# a section nobody thought to check.
-UNDOCUMENTED = {("Debug", "View")}
+# only offers it when verbose logging is on. [Debug] FieldJitterFix is the same
+# shape: it is on in every install, and the only reason to turn it off is to
+# reproduce the field-movement defect it corrects for a bug report. Neither is a
+# preference, so neither belongs on the option surface. They are listed here
+# rather than left out of SECTIONS, so that the exclusion is a decision on the
+# record instead of a section nobody thought to check.
+UNDOCUMENTED = {("Debug", "View"), ("Debug", "FieldJitterFix")}
 
 # Features seeded through featureEnabled() have no literal default at a call
 # site: the value comes from the per-game capability matrix, inverted for the
