@@ -71,8 +71,8 @@ enum : int {
   IDC_REPOLINK,
 };
 
-// Absolute path to the arland-fix.ini we edit. Resolved at startup, changeable
-// via Browse.
+// Absolute path to the arland-fix.ini we edit, in the game folder. Resolved
+// once at startup by resolveGameFolder and not changed afterwards.
 char g_iniPath[MAX_PATH] = {};        // arland-fix.ini, beside this exe
 char g_settingsPath[MAX_PATH] = {};   // ArlandDX_Settings.ini, same folder
 char g_gameExePath[MAX_PATH] = {};    // an installed game exe, for the icon
@@ -247,10 +247,6 @@ const ComboItem kFontItems[] = {
 // entry, comboValue clamps a selection past the count back to index 0, and
 // picking the new entry writes the FIRST entry's value into the ini.
 const int kFontCount = 3;
-// ShadowMultiplier's 1/2/4/8 scale (1 = off). The labels name what the number
-// means, since the group labels above them are written in plain language and a
-// bare "8" would say nothing on its own. The second column is the exact string
-// written to the ini and must not change.
 // Sharpening strength, written as the percentage the DLL reads. Four presets
 // rather than a free number: Low/Medium/High is what games that name this
 // setting at all use, and the whole range is already bounded in the shader.
@@ -262,6 +258,10 @@ const ComboItem kSharpenItems[] = {
 };
 const int kSharpenCount = 4;
 
+// ShadowMultiplier's 1/2/4/8 scale (1 = off). The labels name what the number
+// means, since the group labels above them are written in plain language and a
+// bare "8" would say nothing on its own. The second column is the exact string
+// written to the ini and must not change.
 const ComboItem kShadowItems[] = {
   { L"Normal (1024 map)",    "1" }, { L"2x (2048 map)", "2" },
   { L"4x (4096 map)",        "4" }, { L"8x (8192 map)", "8" },
@@ -1350,7 +1350,6 @@ bool resolveGameFolder() {
 }
 
 
-// Let the user pick a game folder; we edit the arland-fix.ini inside it.
 // ---- window construction ---------------------------------------------------
 
 // The font goes on at creation, not in a sweep afterwards.
@@ -1963,8 +1962,6 @@ struct Layout {
     y += height + S(12);
   }
 
-  // A line belonging to the control above it, so it starts at the control
-  // column rather than the label margin.
   // A line belonging to the control above it. It reads as the last line of that
   // control's description, so it sits in the description's own column -- and
   // the row above must have been closed without one for the two to meet.
@@ -2320,13 +2317,6 @@ void createControls(HWND w) {
       L"Extra detail in arland-fix.log. Crash reports are always written.");
   }
 
-  // Bottom left, away from Save/Close so it cannot be hit by accident: saves
-  // first, then launches. Disabled when no game was recognised in this folder.
-  //
-  // It is also the default button and takes focus at startup: most of the time
-  // this window is opened on the way into the game, not to change something, so
-  // Enter should start playing. That matters most on a controller or a
-  // handheld, where the alternative is driving a cursor across the window.
   // Grow the window if the tallest page outran the space set aside for it.
   //
   // The alternative is what the fixed layout did: clip the last row, with
@@ -2370,10 +2360,17 @@ void createControls(HWND w) {
     }
   }
 
+  // The bottom row, placed against the measured button height and the window's
+  // own edges rather than at literal coordinates, so it stays on the same
+  // baseline as the tab control above it whatever the font does.
   //
-  // Placed against the measured button row and the window's own edges rather
-  // than at literal coordinates, so the row stays on the same baseline as the
-  // tab control above it whatever the font does to the button height.
+  // Play with mod is bottom left, away from Close so it cannot be hit by
+  // accident: it saves first, then launches, and is disabled when no game was
+  // recognised in this folder. It is also the default button and takes focus at
+  // startup, because most of the time this window is opened on the way into the
+  // game rather than to change something, so Enter should start playing. That
+  // matters most on a controller or a handheld, where the alternative is
+  // driving a cursor across the window.
   const int buttonH = buttonHeight();
   const int closeW = S(90);
   const int wideW = S(150);
@@ -2462,9 +2459,8 @@ LRESULT CALLBACK WndProc(HWND w, UINT msg, WPARAM wp, LPARAM lp) {
     case WM_CTLCOLORBTN:
     case WM_CTLCOLORSTATIC: {
       // One background for the whole window, so there is no on-the-page versus
-      // off-the-page distinction to get wrong. Checkboxes answer here through
-      // WM_CTLCOLORBTN rather than WM_CTLCOLORSTATIC, which is why both are
-      // handled together.
+      // off-the-page distinction to get wrong.
+      //
       // The game name lies on top of the tab control's own header strip, which
       // is not the window background, so it takes no background of its own.
       if ((HWND)lp == g_hGameLabel) {

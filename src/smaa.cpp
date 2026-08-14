@@ -3,7 +3,7 @@
 // SMAA (Enhanced Subpixel Morphological Anti-Aliasing, Jimenez et al.) as a
 // post-process over the finished 3D scene before the games draw their UI.
 // SMAA works on the finished image, so it smooths edges that multisampling
-// cannot — texture-interior and alpha-test edges — as well as ordinary
+// cannot -- texture-interior and alpha-test edges -- as well as ordinary
 // silhouettes. It runs the standard three
 // passes (edge detection -> blending-weight calculation -> neighborhood
 // blending) with the reference shader and its two precomputed lookup textures.
@@ -42,12 +42,14 @@ using PFN_D3DCompile = HRESULT (WINAPI*)(LPCVOID, SIZE_T, LPCSTR,
   const D3D_SHADER_MACRO*, ID3DInclude*, LPCSTR, LPCSTR, UINT, UINT,
   ID3DBlob**, ID3DBlob**);
 
-// SMAA constant buffer (matches the vendored wrapper's SMAAShaderConstants). The
-// size is load-bearing outside this file: the pass maps through the hooked
-// context, so sync_fix.cpp's constant-buffer capture sees this buffer, and
-// battle_shadows.cpp's Totori dim-hold table matches a buffer by size alone. 64
-// is not in that table; 80, 96, 112, 144, 160, 224, 304, 320 and 416 are, so
-// growing this struct into any of those puts it in front of that patch.
+// SMAA constant buffer (matches the vendored wrapper's SMAAShaderConstants).
+// Other files depend on its size: the pass maps through the hooked context, so
+// sync_fix.cpp's constant-buffer capture sees this buffer, and
+// battle_shadows.cpp's per-game dim-hold tables match a buffer by size alone.
+//
+// 64 is in neither table. Growing this struct to 80, 96, 112, 144, 160, 224,
+// 304, 320, 416 or 432 would put it in front of that patch: all but 432 are in
+// Totori's table, and 304 and 432 are in Rorona and Meruru's.
 struct SmaaConstants {
   float subsampleIndices[4] = {0, 0, 0, 0};
   float rtMetrics[4] = {0, 0, 0, 0};   // 1/w, 1/h, w, h

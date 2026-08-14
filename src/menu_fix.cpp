@@ -1354,8 +1354,8 @@ void cachedQueueDrain(void* manager) {
 }
 
 // Display-only English typo corrections, applied at render time. Only the pointer
-// handed to the renderer (and the cache/re-render derived from it) changes — the
-// game's own string data is untouched — so a fix shows in every UI-font mode.
+// handed to the renderer (and the cache/re-render derived from it) changes -- the
+// game's own string data is untouched -- so a fix shows in every UI-font mode.
 // Gated per game so a match can't fire on another title's text. Extend this table
 // as typos are found. Exact-match; if a target turns out to be embedded in a
 // larger string, switch that entry to a substring rewrite.
@@ -1761,7 +1761,7 @@ uintptr_t cachedAtlasLock(uintptr_t texture, uintptr_t output,
   // MODE, not a cube face: 0 maps a staging copy of the texture for reading,
   // while non-zero maps the texture itself for CPU WRITING (mode 3 is a
   // WRITE_DISCARD of its dynamic resource). Snapshotting a write mapping copies
-  // a freshly discarded — i.e. uninitialized — buffer, and the read that follows
+  // a freshly discarded -- i.e. uninitialized -- buffer, and the read that follows
   // is then served that garbage: sampling one byte in four of it at a fixed row
   // stride is what produced the striped glyph. The first candidate lock of each
   // atlas is a mode-3 write, so the poisoning happened at snapshot birth, which
@@ -2123,8 +2123,8 @@ bool installHiResTextConsumer(BYTE* base, const Game& game) {
 }
 
 bool installTextBitmapAllocator(BYTE* base, const Game& game) {
-  // Resolve the engine's aligned text-buffer allocator/free — the pair the
-  // renderText path uses for the output object's `+8` pixel buffer — so a
+  // Resolve the engine's aligned text-buffer allocator/free -- the pair the
+  // renderText path uses for the output object's `+8` pixel buffer -- so a
   // feature can grow/replace that buffer and have the engine free it correctly.
   // English-build-only (the RVAs are per-build). It rides on the hi-res text
   // consumer: the fan-out installs it only after that consumer succeeded, so the
@@ -2203,8 +2203,8 @@ bool installTextBitmapAllocator(BYTE* base, const Game& game) {
 // Cross-frame text-bitmap cache scope for Meruru's animated-portrait field
 // conversations (BUC, "bust-up conversation"). The balloon's per-frame
 // callback pump re-runs the slow EN text-render path with identical text
-// every frame — the same CPU-side glyph/atlas cost the menu fix removes from
-// menu rebuilds, but paid continuously — which drops the field-map framerate
+// every frame -- the same CPU-side glyph/atlas cost the menu fix removes from
+// menu rebuilds, but paid continuously -- which drops the field-map framerate
 // for the duration of the conversation. Hooking the BalloonBucMode ctor/dtor
 // raises bucBalloonCount while any balloon is alive, which activates the
 // text-bitmap replay cache (see textBitmapCacheEnabled) and suspends its
@@ -2495,7 +2495,7 @@ void traceMenuPresent(uint64_t durationMicros, uint64_t intervalMicros) {
     }
   }
   // Manual correlation marker: press F7/F8/F9 while a cut-in is on screen. Uses
-  // the currently-down bit (0x8000) with our own edge detection — Wine does not
+  // the currently-down bit (0x8000) with our own edge detection -- Wine does not
   // reliably implement GetAsyncKeyState's "recently pressed" low bit. The ms
   // timestamp matches against the ms on each SHADOW window line.
   const char* sceneTrace = std::getenv("ARLAND_SCENE_TRACE");

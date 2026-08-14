@@ -130,7 +130,7 @@ std::atomic<uint64_t> g_transitionShadowFlushBytes = 0;
 //              overview brightness. Identified by shape (uniform RGB, w=1,
 //              s dropped below 1) rather than the per-launch pointer.
 //   gate-hold: the 880-byte receiver material gates shadow RECEPTION on the
-//              VS's `diffuse` at byte 832 (a name collision — the PS RDEF
+//              VS's `diffuse` at byte 832 (a name collision -- the PS RDEF
 //              calls byte 832 `shadowLPos`, but the VS reads cb0[52] as
 //              diffuse). The receiver VS computes gate = 2.5 -
 //              2*min(diffuse.w, diffuse.x); the PS samples the shadow map
@@ -1877,7 +1877,7 @@ HRESULT STDMETHODCALLTYPE ID3D11Device_CreateBuffer(
 
   // Gate/dim-hold write path: a constant buffer created WITH initial data
   // (transient per-frame cb pattern) bypasses both the Map and
-  // UpdateSubresource hooks — patch the initial payload too. The 880 receiver
+  // UpdateSubresource hooks -- patch the initial payload too. The 880 receiver
   // gate needed this on Rorona; Totori's D3D11 material pattern makes it
   // plausible for its dim-carrying layouts as well.
   D3D11_SUBRESOURCE_DATA gateInit;
@@ -2534,7 +2534,7 @@ void STDMETHODCALLTYPE ID3D11DeviceContext_ClearDepthStencilView(
   auto procs = getContextProcs(pContext);
   procs->ClearDepthStencilView(pContext, pDSV, ClearFlags, Depth, Stencil);
   // Shadow-res twin: keep the enlarged caster map in lockstep with the
-  // engine's own (untouched) map — the engine clears its map at the start of
+  // engine's own (untouched) map -- the engine clears its map at the start of
   // every shadow pass.
   if (shadowMapResolution() > 1024 && pDSV) {
     ID3D11DepthStencilView* twinDsv = getShadowResTwinDsv(pDSV);
@@ -3076,7 +3076,7 @@ void STDMETHODCALLTYPE ID3D11DeviceContext_OMSetRenderTargets(
 
   // Shadow-res twin: redirect the depth-only caster pass onto the enlarged
   // twin DSV so casters render at high resolution. Only depth-only binds are
-  // redirected — if a color RTV is bound alongside (never observed) the
+  // redirected -- if a color RTV is bound alongside (never observed) the
   // sizes could not match, so we fail safe to the engine's own
   // 1024 pass and log it.
   ID3D11DepthStencilView* shadowTwinDsv = nullptr;
@@ -3151,7 +3151,7 @@ void STDMETHODCALLTYPE ID3D11DeviceContext_UpdateSubresource(
         // pData is const (DEFAULT buffer), so patch a copy and pass that on.
         if (cutinDimHoldEnabled() && dimHoldEligibleSize(desc.ByteWidth)) {
           // Totori's largest dim-carrying layout is 13024 bytes (skinned toon
-          // VS $Params) — too big for the stack; a thread-local scratch keeps
+          // VS $Params) -- too big for the stack; a thread-local scratch keeps
           // the substitution allocation-free per call.
           static thread_local std::vector<uint8_t> dimHoldScratch;
           dimHoldScratch.assign(static_cast<const uint8_t*>(pData),

@@ -1,41 +1,16 @@
 // SPDX-License-Identifier: MIT
 //
-// Field-map character jitter: the probe that identified the cause, and the four
-// pieces of the fix for it. See field_physics.h.
+// Field-map character movement: the addresses, and how each correction is
+// applied.
 //
-// The first two are a rescale of the engine constant behind the jitter, which
-// makes it mean a speed instead of a per-frame distance, and a resting
-// stabilizer that holds the character still while it is genuinely at rest. The
-// rescale alone keeps ground contact but leaves a small sawtooth, because
-// gravity goes on integrating while resting; the stabilizer is what removes the
-// motion. Between them they cover the player standing still.
+// See field_physics.h for what the two defects are, what each correction does
+// about them, why the ground ray runs after the engine's update rather than
+// before, and which switch turns which one off. None of that is repeated here.
 //
-// The other two exist because neither of those reaches a character that is
-// MOVING, which is every roaming monster on a slope. The engine holds a
-// character up by cancelling its vertical velocity on any frame it has ground
-// contact, and it keeps the grounded flag alive for 0.0666667 seconds after
-// contact is lost -- without stopping gravity for that window. So a character
-// whose contact flickers free-falls while the engine still considers it
-// grounded, and the whole accumulated drop is corrected in one frame when
-// contact returns. Fall, fall, fall, jump, about fifteen times a second. The
-// amplitude is set by a wall-clock constant, so it is the same at any frame
-// rate and only its appearance changes: a fast buzz at high refresh, bumpy
-// walking at 60.
-//
-// The ground ray is the fix, and it runs before the update integrates anything:
-// cast down from the feet, and where ground is found, put the character on it
-// and take its vertical velocity away. What is left is one gravity step per
-// frame, about a hundred times smaller than the bounce it replaces, with
-// nothing accumulating behind it. The grace hold is the weaker fallback for
-// frames where the ray finds nothing.
-//
-// All four are on by default, each behind its own env switch that turns it off,
-// so they can be A/B'd against vanilla and against each other at runtime.
-//
-// The probe (ARLAND_FIELD_TRACE=1) wraps the controller's per-frame update and,
-// on each ground-contact change, dumps the frames either side of it. That is how
-// the cause was measured, and it is kept because it is how any future build gets
-// re-checked.
+// What is here and not there: the per-build address packs, the prologue windows
+// each one is verified against, the query descriptor read out of the engine's
+// own construction of it, and the reasons the guards are shaped the way they
+// are.
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 
@@ -474,10 +449,12 @@ uint32_t g_graceHeld = 0;         // frames held, for the report
 
 // THE GRACE HOLD. The engine keeps the grounded flag set for a fixed 0.0666667
 // seconds after ground contact is lost, and gives that grace period its own
-// timer at +0xb8. This holds the character's fall for the duration; it does not
-// create the window, which is the engine's own. What it does not do is stop applying gravity for the duration. So a
-// character inside the window is, by the engine's own bookkeeping, standing on
-// the ground and falling at the same time.
+// timer at +0xb8. What it does not do is stop applying gravity for that window.
+// So a character inside it is, by the engine's own bookkeeping, standing on the
+// ground and falling at the same time.
+//
+// This holds the fall for the duration of the window. It does not create the
+// window, which is the engine's own.
 //
 // That is the whole of the monster vibration. Contact flickers off, the
 // character free-falls for the grace period, contact returns, and the whole
@@ -493,9 +470,11 @@ uint32_t g_graceHeld = 0;         // frames held, for the report
 // of two at 60 fps and seven at 200, so the correction is largest exactly where
 // the defect is most visible.
 //
-// The timer is not pinned here, unlike the resting stabilizer below. A
-// character that really has walked off a ledge must still start falling when
-// the grace period expires, and pinning the timer would hold it in the air.
+// The timer is deliberately NOT pinned here. A character that really has walked
+// off a ledge must still start falling when the grace period expires, and
+// pinning the timer would hold it in the air. The ground ray does pin it, and
+// can afford to: it only holds the timer down while it is actually finding
+// ground underfoot, and releases it the moment the ray misses.
 constexpr float kGraceHoldMaxSpeed = 8.0f;
 
 void applyGraceHold(uintptr_t self) {

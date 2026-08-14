@@ -194,7 +194,7 @@ const uintptr_t kBtlCharaVtableRvasMeruruMulti[] = {
 // outside the hook installers. Selected once at detection time. Rorona gets the
 // full v0.3 caster restoration (casterRestore); Meruru's engine revision
 // registers battle casters natively (per-character model-build path calls
-// ShadowCharacterBuild — a call site Rorona lacks), so Meruru only needs the
+// ShadowCharacterBuild -- a call site Rorona lacks), so Meruru only needs the
 // battle state tracking that drives the cut-in gate/dim patches in sync_fix.
 struct BattleBuildAddrs {
   const uintptr_t* btlCharaVtables;
@@ -295,7 +295,7 @@ constexpr BattleBuildAddrs kMeruruAddrsMulti = {
 // is NO global scene-manager/active-helper slot (field and battle each render
 // their own helper), and caster registration is native and healthy (probe:
 // config byte 1, helper context live before the BtlChara ctors, registry
-// fills) — so like Meruru, Totori only needs battle-state tracking for the
+// fills) -- so like Meruru, Totori only needs battle-state tracking for the
 // cut-in gate/dim patches. managerSlot/helperSlotOffset/initFlagOffset are 0:
 // no such structures exist; the global-slot code paths treat 0 as absent.
 // battlePublishRet/fieldReentryRet are the only two static ShadowHelperInit
@@ -384,7 +384,7 @@ const BattleStateEntry kBattleStatesMulti[] = {
   {0x78b940, "DeadBoss"}, {0x78ba80, "ResultStart"}, {0x78b170, "ResultCountExp"},
   {0x78b230, "ResultDropItem"}, {0x78b2a8, "ResultLevelUp"},
 };
-// Meruru (A13V) battle states, both builds, located via MSVC RTTI — Meruru
+// Meruru (A13V) battle states, both builds, located via MSVC RTTI -- Meruru
 // ships full .?AVGmStateBtl*@@ type descriptors, so each vtable was resolved
 // from its complete-object locator (the locator method reproduced all 23
 // Rorona EN entries above exactly before being applied to Meruru). Same state
@@ -547,8 +547,8 @@ size_t dispatchBattleCharaShadows(uintptr_t helper, uintptr_t scene) {
 
 // ==== C2: registration + tactical + traced hooks ====
 
-// Scan an object's memory for a std::vector<BtlChara*> — a (begin,end) pair
-// whose first element carries a known BtlChara-family vtable — recursing one
+// Scan an object's memory for a std::vector<BtlChara*> -- a (begin,end) pair
+// whose first element carries a known BtlChara-family vtable -- recursing one
 // pointer level. Every access is VirtualQuery-guarded so wild members are safe.
 size_t scanForBattleCharaVectors(uintptr_t obj, size_t window, int depth,
                                  std::unordered_set<uintptr_t>& seen,
@@ -635,7 +635,7 @@ uintptr_t* globalActiveHelperSlot() {
 
 // Register the located battle party as shadow casters. For each BtlChara in the
 // game-mode's character vector, call ShadowCharacterBuild(helper, scene,
-// [chara+0x18]) — the same registration the field path performs per character —
+// [chara+0x18]) -- the same registration the field path performs per character --
 // so the renderer that already binds the battle depth targets has casters to
 // draw. Runs once per battle. Every access is VirtualQuery-guarded.
 void registerBattleCharaShadows() {
@@ -709,7 +709,7 @@ void registerBattleCharaShadows() {
 }
 
 // Cut-in probe: during WaitAction the engine clears bit 0x10000 at
-// +0xc0 of selected registered shadow nodes — its per-node caster kill-switch
+// +0xc0 of selected registered shadow nodes -- its per-node caster kill-switch
 // for the action camera. Re-set the bit on our registered battle casters so
 // the engine itself rebuilds their caster state. Runs on the game's render
 // thread; every access is VirtualQuery-guarded.
@@ -766,7 +766,7 @@ void restoreBattleSnodeFlags(const char* site) {
 // ---- tactical-scene caster clear (stray-shadow fix, engine-cooperative) ----
 // The engine clears the juggled non-focus battlers' caster flags only ~0.25 s
 // AFTER the cut-in hide starts (deferred with the visual cross-fade) and
-// restores them INSTANTLY at exit — vanilla's dim fade covers both stale
+// restores them INSTANTLY at exit -- vanilla's dim fade covers both stale
 // windows by closing the reception gate. When the mod holds brightness/
 // reception from the first fade frame (to remove the visible dim ride-down),
 // that cover is gone, so the mod front-runs the engine instead: hooks on the
@@ -837,11 +837,11 @@ uintptr_t tracedDeferredHideArm(uintptr_t obj, uintptr_t target,
   const uintptr_t result = originalDeferredHideArm(obj, target, fade, d);
   // Force-expiry fix (static RE 2026-07-23). The battle caster registry at
   // helper+0x48 holds model LOCATOR ROOTS, not the drawable shadow leaves, so
-  // clearing their +0xC2 never affected the shadow map — the shadow pass walks
+  // clearing their +0xC2 never affected the shadow map -- the shadow pass walks
   // straight through a cleared root to the leaves, which keep casting. A
   // non-focus battler hidden mid-cut-in therefore keeps its shadow until the
   // engine's own alpha-fade expiry (~0.25 s) recursively hides the whole model
-  // subtree, including the shadow leaves — that lag is the stray shadow. The
+  // subtree, including the shadow leaves -- that lag is the stray shadow. The
   // fix forces that expiry to happen on the next frame: when a hide (target 0)
   // latches on this Model (fade-pending == 1, i.e. the arm did not early-out)
   // during a cinematic state, zero the fade duration. The engine's own visTick
@@ -850,7 +850,7 @@ uintptr_t tracedDeferredHideArm(uintptr_t obj, uintptr_t target,
   // there are ZERO manual node writes and the focus actor is untouched (the
   // enumerator never arms it). Cost: the hidden battler pops rather than fading,
   // off-camera and cosmetically negligible.
-  // inActionCutin() (NOT arlandInCinematicBattle) — restricted to the mid-
+  // inActionCutin() (NOT arlandInCinematicBattle) -- restricted to the mid-
   // battle action cut-ins, excluding the result/victory teardown states where
   // force-expiring would hit the field transition (black-screen risk).
   // Offsets come from the per-build table, never hardcoded: Totori's Model puts
@@ -926,7 +926,7 @@ uintptr_t tracedShadowHelperInit(uintptr_t helper, uintptr_t id,
     ? caller - uintptr_t(gameBase) : 0;
   const uintptr_t result = originalShadowHelperInit(
     helper, id, resource, config);
-  // Any shadow-helper init is a scene (re)build — field re-entry OR
+  // Any shadow-helper init is a scene (re)build -- field re-entry OR
   // battle setup. Bump the generation so the D3D layer drops cross-scene
   // caches (light-VP, proxy pairings, recordings) that reference freed
   // geometry from the previous scene.
@@ -1161,10 +1161,10 @@ bool installRoronaBattleShadowRestore(BYTE* base, const Game& game) {
 
 // Meruru (A13V) battle wiring. Unlike Rorona, Meruru's engine revision already
 // registers battle casters natively (its per-character model-build path calls
-// ShadowCharacterBuild into the gameMode+0x68 helper — a call site absent from
+// ShadowCharacterBuild into the gameMode+0x68 helper -- a call site absent from
 // Rorona), so the overview has shadows without any caster restoration and none
 // of the v0.3 hook set is installed (casterRestore=false in the address pack).
-// What Meruru lacks — identically to Rorona — is shadows during the attack
+// What Meruru lacks -- identically to Rorona -- is shadows during the attack
 // cut-in, where the designed scene-dim closes the ground receiver's shadow-
 // reception gate. The fix is the game-agnostic dim/gate hold in sync_fix.cpp,
 // which fires on arlandInCinematicBattle(); all it needs from this side is
@@ -1174,11 +1174,11 @@ bool installRoronaBattleShadowRestore(BYTE* base, const Game& game) {
 // The hooked prologue is byte-identical across Rorona EN, both Meruru builds,
 // and both Totori builds; the RVAs are per-build (Meruru EN 0x17b540, Meruru
 // multilingual 0x168b20, Totori EN 0x1a8930, Totori multilingual 0x3c4e40),
-// each confirmed as the target of the two known call sites. Totori reuses the identical mechanism — its
-// fighting shadows are natively healthy (2026-07-23 probe), so like Meruru it
-// only needs the state tracking for the cut-in patches.
+// each confirmed as the target of the two known call sites. Totori reuses the
+// identical mechanism. Its fighting shadows are natively healthy, so like
+// Meruru it only needs the state tracking for the cut-in patches.
 // Tactical-scene hooks (see the caster-clear block above). Installed only when
-// a cut-in hold is enabled — they exist to protect it from stray shadows.
+// a cut-in hold is enabled -- they exist to protect it from stray shadows.
 // hideAll's prologue is byte-identical across all six builds;
 // showAll differs per engine generation.
 bool installTacticalSceneHooks(BYTE* base, const Game& game) {
@@ -1226,7 +1226,7 @@ bool installTacticalSceneHooks(BYTE* base, const Game& game) {
     return false;
   g_tacticalHooksActive.store(true, std::memory_order_release);
   // Per-actor deferred-hide front-run: fixes the mid-cut-in stray shadow of a
-  // battler hidden during the close-up (see tracedDeferredHideArm — force-
+  // battler hidden during the close-up (see tracedDeferredHideArm -- force-
   // expiry, engine-native, zero manual node writes). Validated in Rorona,
   // Meruru, and both Totori builds; ARLAND_CUTIN_ACTOR_CLEAR=0 remains the kill
   // switch for an A/B. On Totori a hidden battler's shadow now goes at fade
@@ -1772,7 +1772,7 @@ const char* currentBattleState() {
   return battleStateName(g_lastBattleStateVt.load(std::memory_order_acquire));
 }
 
-// The cinematic states in which the Event system drives characters — the attack
+// The cinematic states in which the Event system drives characters -- the attack
 // cut-in (WaitAction / skill states) and the victory sequence. During these we
 // re-scan for character/model objects and register any not yet casting.
 bool isCinematicState(const char* name) {
@@ -1792,7 +1792,7 @@ bool isCinematicState(const char* name) {
   return false;
 }
 
-// The mid-battle ACTION cut-ins only — the subset of cinematic states in which
+// The mid-battle ACTION cut-ins only -- the subset of cinematic states in which
 // a non-focus battler can be hidden and leave a stray shadow. Deliberately
 // EXCLUDES the result/victory/teardown states (ResultStart..LvUp, DeadBoss,
 // AfterBattle): during the battle→field transition those states overlap with
@@ -1857,8 +1857,8 @@ void arlandCutinShadowMapCleared() {
 
 // ==== G: frame tick + battleFrameTick ====
 
-// Is the battle game-mode still a live battle (party vector — gameMode +
-// partyVectorOffset, 0x658 Rorona / 0x648 Meruru — still holds BtlChara
+// Is the battle game-mode still a live battle (party vector -- gameMode +
+// partyVectorOffset, 0x658 Rorona / 0x648 Meruru -- still holds BtlChara
 // objects)? Used to detect battle exit so we can un-publish the battle helper
 // before the field renders through a freed pointer.
 bool battleGameModeLive(uintptr_t gameMode) {
@@ -1911,7 +1911,7 @@ void battleShadowFrameTick() {
 
   // Self-healing battle-end watchdog: while battle tracking is active (or a
   // helper publish is outstanding), watch the battle game-mode. When it stops
-  // looking live for several consecutive frames, the battle is over — restore
+  // looking live for several consecutive frames, the battle is over -- restore
   // any published helper and stand the tracking down. This must run whether or
   // not a helper was published: on Meruru nothing is published, and returning
   // from battle to an already-loaded field never re-runs the field

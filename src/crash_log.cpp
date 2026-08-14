@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 //
 // Crash logger: a last-chance unhandled-exception filter that appends a
-// post-mortem to arland-fix.log before the process dies — exception code,
+// post-mortem to arland-fix.log before the process dies -- exception code,
 // faulting access, registers, and every stack value that looks like a return
 // address, each resolved to module+RVA so a crash inside the game or this mod
 // can be mapped straight back to a function. Best-effort by design: it only
@@ -110,7 +110,7 @@ const char* mainExeName() {
 }
 
 // Bucket a (lowercased) module basename into a coarse category, so a crash can
-// be triaged at a glance — most importantly, whether the fault sits on the
+// be triaged at a glance -- most importantly, whether the fault sits on the
 // audio path (XAudio2), which the mod's D3D11 layer cannot fix but this report
 // can confirm (the signature Totori "battle screech" crash). AUDIO/MOD/GAME are
 // checked before the broader GRAPHICS/SYSTEM buckets so they win ties.
@@ -248,12 +248,12 @@ LONG WINAPI crashFilter(EXCEPTION_POINTERS* pointers) {
       ++logged;
     }
     // Even when the immediate faulting frame is generic (a CRT/system return
-    // address), an audio module up the stack points at the XAudio2 path — the
+    // address), an audio module up the stack points at the XAudio2 path -- the
     // signature Totori in-battle "screech" crash the D3D11 layer cannot fix.
     if (audioInStack ||
         (record && std::strcmp(classifyModule(faultName, moduleHandleOf(
           reinterpret_cast<uintptr_t>(record->ExceptionAddress))), "AUDIO") == 0))
-      log("CRASH hint: audio module (XAudio2) implicated — this is an "
+      log("CRASH hint: audio module (XAudio2) implicated -- this is an "
         "audio-path fault, not a rendering fault");
   }
   log("CRASH end of report");

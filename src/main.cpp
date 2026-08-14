@@ -298,7 +298,7 @@ bool factoryHookNeeded() {
 
 // Replace the game's present interval for a session: 0 turns vsync off so an
 // external limiter (MangoHud's fps_limit) can pace frames itself, 2/3 present
-// every Nth refresh. Diagnostic only — needed because the games expose no vsync
+// every Nth refresh. Diagnostic only -- needed because the games expose no vsync
 // setting, so measuring behaviour at a frame rate that is not a divisor of the
 // display refresh is otherwise impossible. Unset leaves the game's own value,
 // which is what every normal run uses: presenting unsynchronized is what tears,
@@ -319,7 +319,7 @@ HRESULT STDMETHODCALLTYPE tracedPresent(
   const int64_t previous = previousPresentNanos.exchange(
     startedNanos, std::memory_order_relaxed);
   // Passive crash probe: record process memory every ~10s so the runaway-
-  // allocation hang in dense battles (the KTGL sound reclaim-starvation leak —
+  // allocation hang in dense battles (the KTGL sound reclaim-starvation leak --
   // see the crash analysis below) leaves a trail in arland-fix.log
   // even though it hangs rather than throwing an exception the post-mortem could
   // catch. Opt-in via [Diagnostics] VerboseLogging so the default log stays quiet.
@@ -395,7 +395,7 @@ HRESULT STDMETHODCALLTYPE tracedPresent(
   atfix::ssaaDownscale(swapChain);    // supersampling: render res -> backbuffer
   const HRESULT result = originalPresent(
     swapChain, presentInterval(syncInterval), flags);
-  // Record a lost device once — the post-mortem a present-time hang/TDR leaves.
+  // Record a lost device once -- the post-mortem a present-time hang/TDR leaves.
   // Kept as a passive diagnostic: it names the fault when a transition-teardown
   // race removes the device.
   if (result == DXGI_ERROR_DEVICE_REMOVED || result == DXGI_ERROR_DEVICE_RESET) {

@@ -8,7 +8,7 @@
 
 namespace atfix {
 
-// Supersampling (SSAA): the game renders the whole frame — scene and UI — at
+// Supersampling (SSAA): the game renders the whole frame -- scene and UI -- at
 // [Rendering] RenderWidth/Height and the finished image is downscaled once into
 // the DisplayWidth/Height backbuffer just before Present.
 //

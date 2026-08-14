@@ -4,7 +4,7 @@
 // font blitted 1:1, so on-screen text is low-resolution. For each string this
 // substitutes a kScale× bitmap into the engine's per-string output object, keeping
 // the normalized used/pot metrics so the on-screen quad is unchanged in size and
-// position — only its texel density increases. Two modes, selected by
+// position -- only its texel density increases. Two modes, selected by
 // [Rendering] Font / ARLAND_UIFONT: "replaced" (the default) re-renders the string
 // from a bundled scalable font (per game: National Park, Nunito, or Cosmetica
 // Medium), falling back to "upscaled" for glyphs it

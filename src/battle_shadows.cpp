@@ -49,12 +49,12 @@ bool cutinDimHoldEnabled() {
   return enabled;
 }
 
-// Either cut-in mechanism active — arms the shared constant-buffer capture path.
+// Either cut-in mechanism active -- arms the shared constant-buffer capture path.
 bool cutinShadowsEnabled() {
   return cutinGateHoldEnabled() || cutinDimHoldEnabled();
 }
 
-// Shared dim-hold value predicate: a float4 (s,s,s,~1) with s in (0.5,0.98) —
+// Shared dim-hold value predicate: a float4 (s,s,s,~1) with s in (0.5,0.98) --
 // the faded cut-in value. Match and write are split so callers can interpose
 // settle gating between them.
 // `components` is 4 for a float4 field and 3 for a float3. The alpha test is
@@ -122,7 +122,7 @@ constexpr DimHoldField kDimFieldsClassic[] = {
 
 // Totori's battle arenas render with the FIELDMAP shader family (runtime
 // CUTIN_CB trace 2026-07-23: the dim flowed through (304,16) fieldmap fog,
-// (48,32), (80,0), (32,0) — not the btl_field layouts the static analysis
+// (48,32), (80,0), (32,0) -- not the btl_field layouts the static analysis
 // predicted for battle). (304,16)/(144,0)/(160,16) also FEED THE RECEPTION
 // GATE (the fog VS computes 2.7-2*min(diffuse...), closing below 0.85), so on
 // Totori the dim-hold doubles as the gate-hold and is settle-gated (see
@@ -201,7 +201,7 @@ float gateHoldSettleRamp(float s);   // defined below with gateHoldPatch
 // Rewrite a matching light-intensity `diffuse` to full brightness in place.
 // Returns true if it patched. On Totori the dim field doubles as the fieldmap
 // reception gate, so the hold is settle-gated there (same stray-shadow cover
-// logic as gateHoldPatch); Rorona/Meruru keep the instant hold — their gate
+// logic as gateHoldPatch); Rorona/Meruru keep the instant hold -- their gate
 // lives in the separate 880 receiver and carries its own settle gating.
 //
 // The mod's own post-process constant buffers reach here too, because both
@@ -251,7 +251,7 @@ bool dimHoldPatch(void* data, uint32_t size) {
 // designed cover for those stale-caster frames; holding it open during the
 // fade is what exposed stray floor shadows for hidden/"sky"-parked
 // characters. Fix: only hold the gate once the observed dim value has been
-// bit-identical for >= 100 ms — entry-side that is after the fade bottoms out
+// bit-identical for >= 100 ms -- entry-side that is after the fade bottoms out
 // (casters already cleared by then), and exit-side the value starts moving on
 // the first frame, releasing the hold so the vanilla covered window returns.
 // Returns the hold strength for the observed dim value s: 0 while the value
@@ -260,7 +260,7 @@ bool dimHoldPatch(void* data, uint32_t size) {
 // of popping (visible as a hard brightness step in capture analysis).
 float gateHoldSettleRamp(float s) {
   // When the tactical caster-clear hooks are active, the mod front-runs the
-  // engine's late cut-in caster disable — there are no stale casters for a
+  // engine's late cut-in caster disable -- there are no stale casters for a
   // held-open gate to expose, so the hold engages immediately and the visible
   // dim ride-down disappears entirely. Settle+ramp remains the fallback for
   // builds where those hooks did not install.
@@ -376,7 +376,7 @@ bool isShadowSrvLocked(ID3D11ShaderResourceView* srv) {
       texture->GetDesc(&desc);
       // The shadow SRV bound at draw time is either the engine's own 1024
       // map (vanilla / redirect not engaged) or our tagged enlarged twin
-      // (redirect engaged) — accept both; nothing else qualifies.
+      // (redirect engaged) -- accept both; nothing else qualifies.
       shadow = desc.Format == DXGI_FORMAT_R24G8_TYPELESS &&
         ((desc.Width == 1024 && desc.Height == 1024) ||
          isShadowResResized(resource));
@@ -388,7 +388,7 @@ bool isShadowSrvLocked(ID3D11ShaderResourceView* srv) {
   return shadow;
 }
 
-// Draw-time gate-hold — the load-bearing piece of the cut-in shadow fix,
+// Draw-time gate-hold -- the load-bearing piece of the cut-in shadow fix,
 // independent of the (engine-internal) write path. At every draw during a
 // cinematic battle state whose VS cb0 is an 880-byte receiver material with
 // the shadow SRV bound, record a 16-byte BOX UpdateSubresource over bytes

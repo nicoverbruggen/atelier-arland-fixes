@@ -5,7 +5,7 @@
 // into the engine's per-string output object, so menus, save slots, and labels
 // read crisply. Two modes, selected by [Rendering] Font (see config.cpp):
 //
-//   "replaced" (the default) — re-render the string from a bundled scalable font
+//   "replaced" (the default) -- re-render the string from a bundled scalable font
 //     (a per-game face baked into the DLL: National Park SemiBold for Rorona,
 //     Nunito for Totori, Cosmetica Medium for Meruru; a loose
 //     arland-hires-font.ttf overrides them) via a
@@ -15,7 +15,7 @@
 //     shapes, music and the Greek tier markers); only when neither has it (the
 //     game's custom button-prompt icons) does the whole string fall back to the
 //     upscaled path, so nothing is left as raw baked art.
-//   "upscaled" — keep the engine's own baked glyphs but filter-upscale them
+//   "upscaled" -- keep the engine's own baked glyphs but filter-upscale them
 //     (bilinear + SDF coverage-steepen by default; bilinear+unsharp or lanczos+
 //     unsharp via ARLAND_HIRES_FILTER). Preserves the engine's exact layout and
 //     any icon glyphs; only the resolution increases.
@@ -86,7 +86,7 @@ void bilinearUpscale(const unsigned char* src, int sw, int sh,
   }
 }
 
-// Lanczos-2 separable upscale — a sharper, less-blurry resample than bilinear
+// Lanczos-2 separable upscale -- a sharper, less-blurry resample than bilinear
 // (windowed sinc). Can slightly ring on high-contrast edges; the result is
 // clamped. Opt-in via ARLAND_HIRES_FILTER=lanczos (heavier than bilinear).
 float sincf(float x) {
@@ -170,7 +170,7 @@ void unsharpSharpen(unsigned char* buf, int w, int h, float amount) {
 // Pseudo-SDF edge steepen: a glyph bitmap is an alpha-COVERAGE mask, so its edges
 // are an implicit distance field. After a smooth upscale the 0→255 ramp across an
 // edge is a few px wide (soft); this contrast-stretches the coverage around the
-// 50% midpoint (127.5) to re-crisp the edge while KEEPING it anti-aliased — the
+// 50% midpoint (127.5) to re-crisp the edge while KEEPING it anti-aliased -- the
 // transition band stays ~255/strength alpha levels wide. Cheap, per-pixel.
 void alphaSteepen(unsigned char* buf, int w, int h, float strength) {
   if (strength <= 1.0f)
@@ -385,7 +385,7 @@ void decodeUtf8Lines(const char* s, std::vector<int>& out) {
         cp == 0x202F || cp == 0x205F || cp == 0xFEFF ||
         (cp >= 0x2000 && cp <= 0x200B))
       cp = ' ';
-    // Fold the full-width ASCII block (U+FF01..FF5E) to plain ASCII — the game
+    // Fold the full-width ASCII block (U+FF01..FF5E) to plain ASCII -- the game
     // renders dates/numbers with full-width digits (１２３ etc.), which a Latin
     // replacement font otherwise can't resolve.
     else if (cp >= 0xFF01 && cp <= 0xFF5E)
@@ -407,7 +407,7 @@ void decodeUtf8Lines(const char* s, std::vector<int>& out) {
 }
 
 // Glyph atlas cache: rasterize each (glyph, size) once, then compose strings by
-// blitting cached glyphs (fast — the "cache the alphabet" idea).
+// blitting cached glyphs (fast -- the "cache the alphabet" idea).
 struct CachedGlyph {
   std::vector<unsigned char> bitmap;
   int w = 0, h = 0, xoff = 0, yoff = 0;
@@ -515,7 +515,7 @@ bool renderReplaced(BYTE* output, const char* utf8, uintptr_t pixels,
       // Neither the bundled font nor the fallback face has this codepoint (the
       // game's custom button-prompt icons, and the Japanese labels left in the
       // English builds). Bail so the caller upscales the baked bitmap of the whole
-      // string instead — the icon stays intact, the rest still smooths.
+      // string instead -- the icon stays intact, the rest still smooths.
       static std::atomic<uint32_t> missingGlyphLogs{0};
       if (verboseLogging() &&
           missingGlyphLogs.fetch_add(1, std::memory_order_relaxed) < 32)
