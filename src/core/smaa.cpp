@@ -200,6 +200,32 @@ ID3D11ShaderResourceView* g_weightSRV = nullptr;
 
 template <typename T> void release(T*& p) { if (p) { p->Release(); p = nullptr; } }
 
+ID3D11Device* g_ownerDevice = nullptr;
+
+// One device owns everything this pass creates. Handing a second device the
+// first one's shaders, states or textures is undefined, so the first device to
+// arrive claims the pass and any other is refused. Ported from the Dusk
+// project, which carries the same guard in all three of its passes.
+//
+// The AddRef is what makes the pointer comparison sound. A released device can
+// be replaced at the same address by a new one, and the comparison would then
+// accept a stranger. Holding a reference keeps the address meaningful for as
+// long as the pass can be called, which is the life of the process.
+bool acceptsDevice(ID3D11Device* device) {
+  if (!g_ownerDevice) {
+    g_ownerDevice = device;
+    g_ownerDevice->AddRef();
+    return true;
+  }
+  if (g_ownerDevice == device)
+    return true;
+  static std::atomic<bool> warned{false};
+  if (!warned.exchange(true, std::memory_order_relaxed))
+    log("SMAA: a second D3D11 device reached the shared pass; refusing it so"
+        " resources from the first device are never bound across devices");
+  return false;
+}
+
 bool compile(PFN_D3DCompile D3DCompile, const char* entry, const char* target,
              ID3DBlob** blob) {
   std::string src;
@@ -423,6 +449,11 @@ bool smaaRunPasses(ID3D11Device* dev, ID3D11DeviceContext* ctx,
   D3D11_TEXTURE2D_DESC cd = {};
   color->GetDesc(&cd);
   if (cd.SampleDesc.Count != 1)
+    return false;
+
+  // Both entry points reach the shared resources through here, so the ownership
+  // check belongs here rather than at each caller.
+  if (!dev || !acceptsDevice(dev))
     return false;
 
   if (!g_init.exchange(true)) {

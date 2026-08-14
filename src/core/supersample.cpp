@@ -186,6 +186,32 @@ bool compile(PFN_D3DCompile D3DCompile, const char* entry, const char* target,
   return true;
 }
 
+ID3D11Device* g_ownerDevice = nullptr;
+
+// One device owns everything this pass creates. Handing a second device the
+// first one's shaders, states or textures is undefined, so the first device to
+// arrive claims the pass and any other is refused. Ported from the Dusk
+// project, which carries the same guard in all three of its passes.
+//
+// The AddRef is what makes the pointer comparison sound. A released device can
+// be replaced at the same address by a new one, and the comparison would then
+// accept a stranger. Holding a reference keeps the address meaningful for as
+// long as the pass can be called, which is the life of the process.
+bool acceptsDevice(ID3D11Device* device) {
+  if (!g_ownerDevice) {
+    g_ownerDevice = device;
+    g_ownerDevice->AddRef();
+    return true;
+  }
+  if (g_ownerDevice == device)
+    return true;
+  static std::atomic<bool> warned{false};
+  if (!warned.exchange(true, std::memory_order_relaxed))
+    log("SSAA: a second D3D11 device reached the shared downscale pass;"
+        " refusing it so resources are never bound across devices");
+  return false;
+}
+
 bool initPass(ID3D11Device* device) {
   HMODULE compiler = LoadLibraryA("d3dcompiler_47.dll");
   if (!compiler) compiler = LoadLibraryA("d3dcompiler.dll");
@@ -383,6 +409,8 @@ void ssaaNoteSwapChain(IDXGISwapChain* swapChain) {
   ID3D11Device* device = nullptr;
   back->GetDevice(&device);
   if (!device) { back->Release(); return; }
+  // Claims the device for the pass, since this is where its targets are made.
+  if (!acceptsDevice(device)) { device->Release(); back->Release(); return; }
 
   g_displayWidth = backDesc.Width;
   g_displayHeight = backDesc.Height;
@@ -456,6 +484,7 @@ void ssaaDownscale(IDXGISwapChain* swapChain) {
   g_color->GetDevice(&device);
   if (device) device->GetImmediateContext(&context);
   if (!context) { if (device) device->Release(); return; }
+  if (!acceptsDevice(device)) { context->Release(); device->Release(); return; }
 
   // The rest of the picture, a few hundred frames in. "Supersampling is on but
   // the edges are still jagged" cannot be answered from the lines above, because

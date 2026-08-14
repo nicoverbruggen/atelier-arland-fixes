@@ -60,6 +60,32 @@ DXGI_FORMAT g_scratchFormat = DXGI_FORMAT_UNKNOWN;
 
 struct Params { float peak; float pad[3]; };
 
+ID3D11Device* g_ownerDevice = nullptr;
+
+// One device owns everything this pass creates. Handing a second device the
+// first one's shaders, states or scratch texture is undefined, so the first
+// device to arrive claims the pass and any other is refused. Ported from the
+// Dusk project, which carries the same guard in all three of its passes.
+//
+// The AddRef is what makes the pointer comparison sound. A released device can
+// be replaced at the same address by a new one, and the comparison would then
+// accept a stranger. Holding a reference keeps the address meaningful for as
+// long as the pass can be called, which is the life of the process.
+bool acceptsDevice(ID3D11Device* device) {
+  if (!g_ownerDevice) {
+    g_ownerDevice = device;
+    g_ownerDevice->AddRef();
+    return true;
+  }
+  if (g_ownerDevice == device)
+    return true;
+  static std::atomic<bool> warned{false};
+  if (!warned.exchange(true, std::memory_order_relaxed))
+    log("SHARPEN: a second D3D11 device reached the shared pass; refusing it"
+        " so resources from the first device are never bound across devices");
+  return false;
+}
+
 // HOW HARD 100% IS ALLOWED TO BE. The shader multiplies its headroom weight by
 // this, so it is the strongest the filter can ever pull a neighbour.
 //
@@ -392,6 +418,10 @@ bool sharpenApply(ID3D11DeviceContext* ctx, ID3D11Texture2D* target) {
     return false;
 
   std::lock_guard<atfix::mutex> guard(g_mutex);
+  if (!acceptsDevice(device)) {
+    release(device);
+    return false;
+  }
   t_inSharpen = true;
   bool ran = false;
   if (init(device) && ensureScratch(device, td)) {
