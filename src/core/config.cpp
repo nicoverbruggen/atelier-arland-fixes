@@ -217,12 +217,68 @@ bool displayResolution(UINT* width, UINT* height) {
   return true;
 }
 
+// The largest 16:9 box that fits inside the given size, keeping whichever axis
+// is already the constraint and shrinking the other.
+//
+// WHY THE RENDER SIZE IS CORRECTED RATHER THAN THE CAMERA. Both engines treat
+// 16:9 as a fact rather than something to derive. PhyreEngine forces a camera's
+// aspect to 1.7777778 when it finds anything else -- read at Ayesha `0x2fec00`
+// and Meruru `0x237d30` as a compare-then-store -- and KTGL lays its interface
+// out in a fixed 1920x1080 canvas whose camera aspect no code computes from the
+// swap chain. Handing either of them a 4:3 frame does not make them render 4:3;
+// it makes them render their 16:9 picture stretched across it. Rendering 16:9
+// and putting black around it tells the engine nothing it does not already
+// believe, which is why this is the safer half to change.
+//
+// Even dimensions, because an odd render size lands the downscale on a
+// half-texel offset. Sizes already 16:9 come back untouched.
+void fitToSixteenNine(UINT* width, UINT* height) {
+  if (!width || !height || !*width || !*height)
+    return;
+  const uint64_t wide = uint64_t(*width) * 9;
+  const uint64_t tall = uint64_t(*height) * 16;
+  if (wide == tall)
+    return;
+
+  UINT fittedWidth = *width;
+  UINT fittedHeight = *height;
+  if (wide > tall)
+    fittedWidth = UINT(uint64_t(*height) * 16 / 9);   // wider than 16:9: bars left and right
+  else
+    fittedHeight = UINT(uint64_t(*width) * 9 / 16);   // taller than 16:9: bars top and bottom
+  fittedWidth &= ~1u;
+  fittedHeight &= ~1u;
+
+  // A panel that is ALMOST 16:9 is left alone. 1366x768 is the case that
+  // matters: it is off by 0.05%, the correction takes two pixels off the width,
+  // and the reward is a two-pixel black bar down each side plus a fit pass
+  // running all frame to place it. Below one percent on either axis the
+  // stretch is not visible and the correction costs more than it fixes.
+  const UINT lostWidth = *width - fittedWidth;
+  const UINT lostHeight = *height - fittedHeight;
+  if (uint64_t(lostWidth) * 100 < *width &&
+      uint64_t(lostHeight) * 100 < *height)
+    return;
+
+  *width = fittedWidth;
+  *height = fittedHeight;
+}
+
 bool renderResolution(UINT* width, UINT* height) {
   // The internal render size: RenderWidth/Height, falling back to the display
-  // resolution. When larger than display, the frame is supersampled down at
-  // present.
-  if (!readResPair("RenderWidth", "RenderHeight", width, height))
-    return displayResolution(width, height);
+  // resolution corrected to 16:9. When larger than display, the frame is
+  // supersampled down at present; when a different SHAPE, it is fitted and the
+  // remainder becomes bars.
+  //
+  // The correction applies only to the fallback. An explicit RenderWidth and
+  // RenderHeight is a deliberate choice and is left exactly as written, which
+  // is also the escape hatch if this correction is ever unwanted.
+  if (!readResPair("RenderWidth", "RenderHeight", width, height)) {
+    if (!displayResolution(width, height))
+      return false;
+    fitToSixteenNine(width, height);
+    return true;
+  }
 
   // 8K is where this stops buying anything. These are 2010-era assets: past
   // roughly 8K there is no sub-pixel detail left for more samples to resolve,
@@ -432,10 +488,22 @@ void logConfiguration() {
     log("CONFIG using display ", std::dec, displayWidth, "x", displayHeight);
   else
     log("CONFIG using display (the game's own, no override)");
-  if (haveRender && haveDisplay &&
-      (renderWidth > displayWidth || renderHeight > displayHeight))
+  // Three states, not two. A render size that is neither larger than the
+  // display nor the same SHAPE as it is the letterbox case, and reporting that
+  // as "same as display" is how a log comes to contradict the frame: this line
+  // said exactly that while the render was 1600x900 inside a 1600x1200 chain.
+  const bool larger = haveRender && haveDisplay &&
+    (renderWidth > displayWidth || renderHeight > displayHeight);
+  const bool differentShape = haveRender && haveDisplay &&
+    uint64_t(renderWidth) * displayHeight !=
+    uint64_t(displayWidth) * renderHeight;
+  if (larger)
     log("CONFIG using render ", std::dec, renderWidth, "x", renderHeight,
         " (supersampling)");
+  else if (differentShape)
+    log("CONFIG using render ", std::dec, renderWidth, "x", renderHeight,
+        " (16:9 inside a ", displayWidth, "x", displayHeight,
+        " display; the remainder becomes bars)");
   else
     log("CONFIG using render (same as display, no supersampling)");
   const UIFontMode font = uiFontMode();

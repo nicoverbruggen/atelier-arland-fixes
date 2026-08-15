@@ -310,7 +310,17 @@ bool ssaaRequested() {
     UINT displayWidth = 0, displayHeight = 0;
     if (!displayResolution(&displayWidth, &displayHeight))
       return true;   // display falls back to the game's own, compared later
-    return renderWidth > displayWidth || renderHeight > displayHeight;
+    // Two reasons, the same two ssaaNoteSwapChain uses against the real
+    // backbuffer. Larger is supersampling. A different SHAPE is a 16:9 frame on
+    // a panel that is not, which needs fitting rather than stretching -- and
+    // that case is smaller on one axis and equal on the other, so the size test
+    // alone answers false and the pass never installs.
+    const bool larger =
+      renderWidth > displayWidth || renderHeight > displayHeight;
+    const bool differentShape =
+      uint64_t(renderWidth) * displayHeight !=
+      uint64_t(displayWidth) * renderHeight;
+    return larger || differentShape;
   }();
   return requested;
 }

@@ -280,6 +280,31 @@ const ResItem kBaseItems[] = {
 };
 const int kBaseCount = 5;
 
+// What the DLL will do with a resolution whose shape is not 16:9: render 16:9
+// and paint the remainder black. Naming it in the list matters because the
+// alternative reading of a smaller picture is that something is broken --
+// somebody has to be told the bars are deliberate before they see them.
+//
+// Which word is which: a display TALLER than 16:9 (4:3, 5:4, 16:10) gets bands
+// above and below, which is letterboxing. One WIDER than it (21:9) gets them at
+// the sides, which is pillarboxing. Using one word for both would be wrong half
+// the time on exactly the displays this is for.
+const wchar_t* aspectNote(unsigned w, unsigned h) {
+  if (!w || !h)
+    return nullptr;
+  const unsigned long long wide = (unsigned long long)w * 9;
+  const unsigned long long tall = (unsigned long long)h * 16;
+  if (wide == tall)
+    return nullptr;
+  // The same one-percent tolerance the DLL applies, so the list cannot promise
+  // bars that renderResolution will decline to produce: 1366x768 is off 16:9 by
+  // 0.05% and is left alone.
+  const unsigned long long diff = wide > tall ? wide - tall : tall - wide;
+  if (diff * 100 < tall)
+    return nullptr;
+  return wide > tall ? L"pillarboxed" : L"letterboxed";
+}
+
 // The largest mode the display reports. The base resolution is what gets
 // presented, so offering more than the panel has is offering a worse picture:
 // the extra pixels are only scaled away again. Rendering higher than the screen
@@ -834,8 +859,11 @@ void loadFromIni() {
       } else {
         // Fits this display but is not one of the listed resolutions, so add it
         // and keep it selectable.
-        wchar_t label[32];
-        wsprintfW(label, L"%u x %u", dispW, dispH);
+        wchar_t label[64];
+        if (const wchar_t* note = aspectNote(dispW, dispH))
+          wsprintfW(label, L"%u x %u  (%s)", dispW, dispH, note);
+        else
+          wsprintfW(label, L"%u x %u", dispW, dispH);
         baseSel = (int)SendMessageW(g_hBase, CB_ADDSTRING, 0, (LPARAM)label);
         SendMessageW(g_hBase, CB_SETITEMDATA, baseSel, packRes(dispW, dispH));
       }
@@ -2114,8 +2142,13 @@ void createControls(HWND w) {
       wchar_t label[96];
       if (kBaseItems[i].w)
         lstrcpynW(label, kBaseItems[i].label, 96);
-      else if (curW && curH)
-        wsprintfW(label, L"%s  (%u x %u)", kBaseItems[i].label, curW, curH);
+      else if (curW && curH) {
+        if (const wchar_t* note = aspectNote(curW, curH))
+          wsprintfW(label, L"%s  (%u x %u, %s)", kBaseItems[i].label,
+                    curW, curH, note);
+        else
+          wsprintfW(label, L"%s  (%u x %u)", kBaseItems[i].label, curW, curH);
+      }
       else
         wsprintfW(label, L"%s  (desktop resolution)", kBaseItems[i].label);
       int idx = (int)SendMessageW(g_hBase, CB_ADDSTRING, 0, (LPARAM)label);

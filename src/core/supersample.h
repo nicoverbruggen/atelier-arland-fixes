@@ -26,11 +26,12 @@ namespace atfix {
 // runs. Known before any device exists, so the Present hook can be installed
 // for it.
 //
-// Note what this predicate cannot answer, because letterboxing needs it: a
-// render size that is SMALLER on one axis and equal on the other -- 1600x900 in
-// a 1600x1200 chain -- is not larger, so the pass never installs and nothing
-// says so. An aspect mismatch has to become its own reason to arm before the
-// fit in ssaaDownscale can reach a non-16:9 fullscreen frame.
+// It answers on two grounds, the same two ssaaNoteSwapChain applies to the real
+// backbuffer: a render size LARGER than the display, which is supersampling,
+// and a render size of a different SHAPE, which is a 16:9 frame on a panel that
+// is not one. The second matters because it is smaller on one axis and equal on
+// the other -- 1600x900 in a 1600x1200 chain -- so a size test alone answers
+// false and the fit never installs.
 bool ssaaRequested();
 
 // Capture a freshly-created swap chain's backbuffer and, if the render
