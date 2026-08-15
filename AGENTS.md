@@ -97,6 +97,22 @@ Write in the present tense about what the code does now. Do not narrate the repo
 
 When changing existing code, change the comments the change makes wrong and leave the rest alone. A fix is not an invitation to rewrite the commentary around it, and a diff that reworks neighbouring prose hides what actually changed.
 
+### How much a comment says
+
+The everyday style is already right: half of all comment blocks are three lines and nine in ten are ten lines or under. What follows is about the few that carry an essay.
+
+**One explanation, one place.** A mechanism is explained in the header of the file that implements it. Everywhere else names it and stops. When a passage explains a mechanism and then says "See `supersample.h`", the text above the pointer is a second copy: keep the pointer and delete the copy. Before deleting, check the fact really does exist at the destination, and move it there when it does not.
+
+**A comment answers what a reader asks where it sits.** At the capability matrix a reader asks what the table is, how to read a cell, and what to do when adding a row. They do not ask how supersampling identifies the composite. Explaining another file's mechanism is the sign that the text is in the wrong file.
+
+**A file header is different, and may be long.** The code is the technical record, so the header of the file that owns a fix carries what a separate document would: the defect, the correction, why it takes that shape, and the measurement that settled it. `src/core/sharpen.h` is the model.
+
+**Where that header goes: the `.h`, whenever the file has one.** A reader looking for what a fix is and why it takes its shape opens the header and finds it there every time, without having to guess which of the pair holds it. A `.cpp` that has a `.h` beside it does not open with an essay.
+
+**What is left in the `.cpp` is what cannot live anywhere else.** A comment whose meaning comes from its position: why this branch is written the way it is, where this offset was read from, what an earlier attempt did at this exact line and why it broke. These are the bulk of the commentary and they are not surplus. Do not move them into a header, where they lose the thing that makes them mean anything, and do not delete them to make a file look tidier.
+
+**Do not trim by the ruler.** Length finds candidates. It does not judge them. A long block that is entirely about the thing its file implements is doing its job.
+
 ## Attribution and documentation
 
 Philip Rebohle created the original `atelier-sync-fix` synchronization implementation. TellowKrinkle supplied the earlier Map/Unmap coherence work and the old-Arland resolution correction. Yuri Hime's Atelier Graphics Tweak and the linked Steam investigations are prior work identifying the broad font-atlas transfer problem; AGT's unsafe upload-suppression implementation is not included. Nico, the author of this repository, led the Arland menu-hitch investigation, the `.PSSG` and bounded atlas-read cache research, and the launcher analysis. MinHook is by Tsuda Kageyu and contributors.
@@ -108,5 +124,7 @@ Documentation must describe the current repository state. Do not narrate it usin
 Avoid overusing em-dashes in source comments and documentation. Prefer commas, parentheses, or separate sentences; occasional correct use is fine, but do not lean on them.
 
 **The code is the technical record.** There is no prose document describing how the fixes work, and adding one is not the default answer to "this needs explaining". A fix's header explains what the defect is, what the correction does, and why it takes that shape; the evidence that settled it belongs there too, next to the thing it justifies. A reader who opens `src/core/sharpen.h` should not need anything else to understand the pass.
+
+The earlier `TECHNICAL.md` is why. It grew to 913 lines that nothing verified, and by the time it was removed it still carried a section for a borderless-window feature that no longer existed. A description of the code that lives away from the code goes stale silently, and nothing in a build can tell you it has.
 
 That places a real obligation on comments. They carry what a separate document would have carried, so they are written for someone who can program but does not know this engine, and they record the reasoning rather than restating the code. A measurement that decided a design goes in the header that design lives in.
