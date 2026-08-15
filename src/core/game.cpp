@@ -65,6 +65,9 @@ const Descriptor& descriptor(Feature f) {
     /* FastSaveMenu       */ { "ARLAND_SAVE_MENU_GATES", "Menus", "FastSaveMenu", false },
     // No ini key: a correction is not a setting. See pad_rescan.h.
     /* PadRescanBackoff   */ { "ARLAND_PAD_RESCAN", nullptr, nullptr, false },
+    // Keyless: a defect correction rather than a setting. ARLAND_TALK_ANCHOR=0
+    // turns it off for a diagnostic run.
+    /* TalkAnchorHold     */ { "ARLAND_TALK_ANCHOR", nullptr, nullptr, false },
   };
   return table[static_cast<int>(f)];
 }
@@ -99,11 +102,18 @@ constexpr Support X = Support::OnByDefault;
 //
 // BattleCutInDimming is an inverse key: true is the game's original dimming.
 // See the descriptor above.
+//
+// TalkAnchorHold is Unsupported on Totori for want of an address, not because
+// the defect is absent. Rorona and Meruru name the conversation state
+// `nspFM::clsFMStateTalk` and its update sits in vtable slot 2 with the same
+// prologue as Ayesha's. Totori calls the class `FieldMapStateCharaTalk` and
+// lays the vtable out differently -- slots 1 and 2 are a getter and a setter --
+// so its update has to be derived separately before the row can change.
 constexpr Support kMatrix[3][static_cast<int>(Feature::Count)] = {
-  //           Sync Menu Atls Frme Res  ShMl Bat  CutS CutD Logo Movi Card Snap Pull Save Pad
-  /* Rorona */ { X,   X,   X,   X,   X,   X,   X,   O,   O,   O,   O,   X,   X,   X,   X,   X },
-  /* Totori */ { X,   X,   X,   X,   X,   X,   U,   O,   O,   O,   O,   X,   X,   X,   X,   X },
-  /* Meruru */ { X,   X,   X,   O,   X,   X,   U,   O,   O,   O,   O,   X,   X,   X,   X,   X },
+  //           Sync Menu Atls Frme Res  ShMl Bat  CutS CutD Logo Movi Card Snap Pull Save Pad  Talk
+  /* Rorona */ { X,   X,   X,   X,   X,   X,   X,   O,   O,   O,   O,   X,   X,   X,   X,   X,   X },
+  /* Totori */ { X,   X,   X,   X,   X,   X,   U,   O,   O,   O,   O,   X,   X,   X,   X,   X,   U },
+  /* Meruru */ { X,   X,   X,   O,   X,   X,   U,   O,   O,   O,   O,   X,   X,   X,   X,   X,   X },
 };
 
 int titleRow(Title t) {

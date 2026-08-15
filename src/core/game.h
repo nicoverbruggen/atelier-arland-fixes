@@ -37,6 +37,7 @@ enum class Feature : uint8_t {
   FieldCharacterPull,  // stop character separation pulling bodies together
   FastSaveMenu,        // drop the hardcoded waits before the save slots view
   PadRescanBackoff,    // rate-limit the controller rescan while no pad is present
+  TalkAnchorHold,      // hold a talking character at its conversation anchor
   Count,
 };
 

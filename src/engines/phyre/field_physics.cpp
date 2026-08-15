@@ -14,6 +14,7 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 
+#include <array>
 #include <atomic>
 #include <cmath>
 #include <cstdint>
@@ -22,6 +23,7 @@
 
 #include "field_physics.h"
 #include "../../core/config.h"
+#include "../../core/game.h"
 #include "../../core/log.h"
 #include "../../core/mem.h"
 
@@ -65,18 +67,22 @@ constexpr float kMinThreshold = 0.0005f;
 // with exactly one reader, the collision resolver, and no writer anywhere in
 // the image. The resolver is verified before the threshold is trusted, since
 // neither is meaningful without the other.
+// nspFM::clsFMStateTalk::update, vtable slot 2. Zero means the build has no
+// derived address and the hold declines: Totori names the class
+// FieldMapStateCharaTalk and orders its vtable differently.
 struct FieldPhysicsAddrs {
   uintptr_t update;
   uintptr_t collisionResolver;
   uintptr_t moveThreshold;
+  uintptr_t talkUpdate;
 };
 
-constexpr FieldPhysicsAddrs kRoronaEn    { 0x553330, 0x551f40, 0x10a85a8 };
-constexpr FieldPhysicsAddrs kRoronaMulti { 0x569200, 0x567e10, 0x10e56a8 };
-constexpr FieldPhysicsAddrs kTotoriEn    { 0x41bff0, 0x41ac00, 0x0ca93b8 };
-constexpr FieldPhysicsAddrs kTotoriMulti { 0x6995f0, 0x698200, 0x1008968 };
-constexpr FieldPhysicsAddrs kMeruruEn    { 0x5053d0, 0x504040, 0x0fa3478 };
-constexpr FieldPhysicsAddrs kMeruruMulti { 0x5049c0, 0x503630, 0x1009048 };
+constexpr FieldPhysicsAddrs kRoronaEn    { 0x553330, 0x551f40, 0x10a85a8, 0x368040 };
+constexpr FieldPhysicsAddrs kRoronaMulti { 0x569200, 0x567e10, 0x10e56a8, 0x37d610 };
+constexpr FieldPhysicsAddrs kTotoriEn    { 0x41bff0, 0x41ac00, 0x0ca93b8, 0 };
+constexpr FieldPhysicsAddrs kTotoriMulti { 0x6995f0, 0x698200, 0x1008968, 0 };
+constexpr FieldPhysicsAddrs kMeruruEn    { 0x5053d0, 0x504040, 0x0fa3478, 0x34c4f0 };
+constexpr FieldPhysicsAddrs kMeruruMulti { 0x5049c0, 0x503630, 0x1009048, 0x348b60 };
 
 const FieldPhysicsAddrs* addressesFor(const Game& game) {
   const bool english = game.exeBuild == BuildEnglish;
@@ -508,6 +514,102 @@ void applyGraceHold(uintptr_t self) {
   ++g_graceHeld;
 }
 
+// ---- conversation anchor hold ----------------------------------------------
+//
+// A character the player has walked into shimmers while a conversation is open.
+// Its scene node has two writers that disagree once a frame: the actor writes
+// the whole local transform, which is the conversation anchor and where the
+// character is meant to stand, and the controller update writes the translation
+// from the controller's own position and then reads its position back out of
+// the node. Whichever wrote last is drawn, so they alternate at the refresh
+// rate.
+//
+// Diagnosed on Ayesha, where the two writers were caught with a page-protection
+// write watch on the node. The same repair is ported here because the engine is
+// the same: the node layout is identical -- the translation write
+// `movdqa [r9+0x140], xmm1` appears exactly once in all six Arland builds and
+// in Ayesha -- and the controller carries its node at the same +0x20.
+//
+// The anchor wins, because a character in a conversation stands where the
+// conversation puts them. So the node is put back to what it held before the
+// controller update ran, and the controller's own copy follows it.
+constexpr uintptr_t kNodeMatrixOffset = 0x110;
+constexpr size_t kNodeMatrixSize = 64;
+
+std::atomic<uint64_t> g_talkSeenMs{0};
+
+bool talkAnchorEnabled() {
+  static const bool on = [] {
+    const bool wanted =
+      featureSupport(Feature::TalkAnchorHold) != Support::Unsupported &&
+      featureEnabled(Feature::TalkAnchorHold);
+    log("FIXES talk_anchor=", wanted ? "on" : "off");
+    return wanted;
+  }();
+  return on;
+}
+
+// A timestamp rather than a flag, because the order of the talk update and the
+// controller update within a frame is not known and a stale flag would either
+// miss the opening frames or hold past the last.
+bool conversationOnScreen() {
+  const uint64_t seen = g_talkSeenMs.load(std::memory_order_relaxed);
+  return seen != 0 && GetTickCount64() - seen <= 100;
+}
+
+using TalkUpdateProc = BYTE (STDMETHODCALLTYPE*)(uintptr_t, float);
+TalkUpdateProc originalTalkUpdate = nullptr;
+
+BYTE STDMETHODCALLTYPE tracedTalkUpdate(uintptr_t self, float dt) {
+  g_talkSeenMs.store(GetTickCount64(), std::memory_order_relaxed);
+  return originalTalkUpdate(self, dt);
+}
+
+// Byte-identical in Rorona and Meruru, both builds each, and to Ayesha's.
+constexpr std::array<BYTE, 16> kTalkUpdateExpected = {
+  0x40, 0x53, 0x48, 0x83, 0xec, 0x30, 0x48, 0x8b,
+  0xd9, 0x0f, 0x29, 0x74, 0x24, 0x20, 0x48, 0x8b
+};
+
+uintptr_t nodeOf(uintptr_t self) {
+  uintptr_t node = 0;
+  std::memcpy(&node, reinterpret_cast<const void*>(self + kNodeOffset),
+              sizeof(node));
+  return node;
+}
+
+void holdNodeAcrossUpdate(uintptr_t self, bool capture,
+                          std::array<float, 16>& matrix, bool& have) {
+  const uintptr_t node = nodeOf(self);
+  if (!node)
+    return;
+  const uintptr_t at = node + kNodeMatrixOffset;
+  if (capture) {
+    have = readableRange(at, kNodeMatrixSize);
+    if (have)
+      std::memcpy(matrix.data(), reinterpret_cast<const void*>(at),
+                  kNodeMatrixSize);
+    return;
+  }
+  if (!have || !writableRange(at, kNodeMatrixSize))
+    return;
+  // Whether the update actually moved the node, not merely whether the hold
+  // ran. It runs every frame of every conversation and writes the same bytes
+  // back when there was no disagreement, so counting engagements says nothing
+  // about whether anything was corrected. This counts corrections.
+  const bool changed =
+    std::memcmp(reinterpret_cast<const void*>(at), matrix.data(),
+                kNodeMatrixSize) != 0;
+  std::memcpy(reinterpret_cast<void*>(at), matrix.data(), kNodeMatrixSize);
+  if (changed) {
+    static std::atomic<uint32_t> corrected{0};
+    const uint32_t n = corrected.fetch_add(1, std::memory_order_relaxed);
+    if (n < 4 || (verboseLogging() && n % 4096 == 0))
+      log("TALKANCHOR the update had moved the node; put back (n=", std::dec,
+          n + 1, ")");
+  }
+}
+
 void STDMETHODCALLTYPE tracedFieldUpdate(uintptr_t self, float dt) {
   // Before the update, so the resolver this call drives reads the value meant
   // for this frame.
@@ -516,7 +618,27 @@ void STDMETHODCALLTYPE tracedFieldUpdate(uintptr_t self, float dt) {
   // velocity the update is about to integrate.
   applyGraceHold(self);
 
+  std::array<float, 16> nodeMatrix{};
+  bool haveMatrix = false;
+  const bool hold = talkAnchorEnabled() && conversationOnScreen();
+  if (hold)
+    holdNodeAcrossUpdate(self, true, nodeMatrix, haveMatrix);
+
   originalFieldUpdate(self, dt);
+
+  if (hold && haveMatrix) {
+    holdNodeAcrossUpdate(self, false, nodeMatrix, haveMatrix);
+    // The controller's copy follows the node, because the update's last act was
+    // to read one from the other and leaving them apart only moves the
+    // disagreement somewhere else.
+    if (writableRange(self + kPosOffset, sizeof(float) * 3))
+      std::memcpy(reinterpret_cast<void*>(self + kPosOffset),
+                  nodeMatrix.data() + 12, sizeof(float) * 3);
+    static std::atomic<uint32_t> held{0};
+    const uint32_t n = held.fetch_add(1, std::memory_order_relaxed);
+    if (n == 0 || (verboseLogging() && n % 4096 == 0))
+      log("TALKANCHOR node held at the anchor (n=", std::dec, n + 1, ")");
+  }
 
   // After it, and that placement is the whole point. Correcting the height
   // before the frame's movement sets it for where the character WAS, and the
@@ -615,6 +737,28 @@ bool installFieldPhysics(BYTE* base, const Game& game) {
     g_graceActive = false;
     g_groundRayActive = false;
   }
+  // Independent of the physics fixes above: the talk hook only reports whether
+  // a conversation is on screen, and the anchor hold is its only reader. It
+  // declines on its own terms rather than taking them down with it.
+  if (installed && talkAnchorEnabled()) {
+    if (!addrs->talkUpdate) {
+      log("FIXES talk_anchor=no_address for this build");
+    } else {
+      BYTE* talk = base + addrs->talkUpdate;
+      if (!matches(talk, kTalkUpdateExpected)) {
+        log("TALKANCHOR talk-state prologue mismatch at 0x", std::hex,
+            addrs->talkUpdate, std::dec, "; the hold stays off");
+      } else if (!installMinHookDetour(talk,
+                   reinterpret_cast<void*>(&tracedTalkUpdate),
+                   reinterpret_cast<void**>(&originalTalkUpdate))) {
+        log("TALKANCHOR talk-state hook failed; the hold stays off");
+      } else {
+        log("FIXES talk_anchor=active, gated on the talk state at 0x",
+            std::hex, addrs->talkUpdate, std::dec);
+      }
+    }
+  }
+
   log("FIXES field_physics=", installed ? "active" : "failed",
       " engine_fix=", g_moveThreshold ? 1 : 0,
       " grace_hold=", g_graceActive ? 1 : 0,
