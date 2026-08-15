@@ -391,6 +391,7 @@ HRESULT STDMETHODCALLTYPE tracedPresent(
   // loader lock; from the frame tick nothing is held. Idempotent, and a no-op
   // when sharpening is off.
   atfix::sharpenPreload();
+  atfix::smaaPreload();
   atfix::smaaApply(swapChain);        // Present-time path (only if pre-UI off)
   atfix::ssaaDownscale(swapChain);    // supersampling: render res -> backbuffer
   const HRESULT result = originalPresent(

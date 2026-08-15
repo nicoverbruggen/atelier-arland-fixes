@@ -20,6 +20,10 @@
 namespace atfix {
 
 // Whether SMAA post-processing is enabled ([Rendering] SMAA / ARLAND_SMAA).
+// Load the shader compiler from the frame tick rather than from a draw. See
+// smaa.cpp: doing it inside a draw detour deadlocks on the loader lock.
+void smaaPreload();
+
 bool smaaEnabled();
 
 // Whether SMAA should run pre-UI (on the scene render target) rather than at
