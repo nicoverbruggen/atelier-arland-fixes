@@ -71,8 +71,8 @@
 namespace atfix {
 
 // One executable's row: the critical-section-guarded pad-create wrapper, and the
-// prologue window that proves the build has not moved under the RVA. Supplied by
-// the engine module, because address packs do not belong in src/core.
+// prologue window that proves the build has not moved under the RVA. Defined in
+// pad_rescan.cpp itself, unlike the per-build packs of the engine-module fixes.
 struct PadRescanTarget {
   uintptr_t wrapperRva;
   std::array<BYTE, 16> expected;

@@ -24,7 +24,7 @@ enum class Feature : uint8_t {
   SyncFix,             // text-safe D3D11 stall reduction (core)
   MenuHitchFix,        // .PSSG cache + menu construction hooks (core)
   AtlasCache,          // atlas read caching
-  FrameAtlasCache,     // Rorona-only frame-scoped atlas snapshot cache
+  FrameAtlasCache,     // frame-scoped atlas snapshot cache (Meruru opts in)
   ResolutionOverride,  // direct 1440p/2160p rendering
   ShadowMultiplier,    // higher-resolution shadow map (valued: 1/2/4/8)
   BattleShadows,       // restored ordinary-battle caster shadows

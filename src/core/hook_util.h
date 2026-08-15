@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: MIT
 #pragma once
 //
-// Shared low-level hook-installation infrastructure used by both menu_fix.cpp and
-// battle_shadow_restore.cpp: the per-game hook descriptor and its atlas/build
-// enums, the prologue-match helper, and the two detour installers. The non-inline
+// Shared low-level hook-installation infrastructure used across the core and Phyre engine
+// layers: the per-game hook descriptor and its atlas/build
+// enums, the prologue-match helper, the HookTransaction class, and the single
+// detour installer. The non-inline
 // definitions live in hook_util.cpp.
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>

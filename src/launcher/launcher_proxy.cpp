@@ -78,8 +78,8 @@ bool hostExeName(std::array<wchar_t, 32768>& path, const wchar_t** name) {
 //    assembled.
 //
 //    The same rule applies to DECIDING what to start. Reading which target the
-//    settings ask for means profile reads, file-attribute queries and, on the
-//    KTGL games, profile writes, and DllMain holds the loader lock. All of it
+//    settings ask for means profile reads and file-attribute queries, and
+//    DllMain holds the loader lock. All of it
 //    therefore happens at the entry point too, in resolveStartTarget.
 //    armRedirect verifies the entry window and splices; nothing else.
 //

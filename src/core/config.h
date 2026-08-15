@@ -42,8 +42,9 @@ bool debugSceneTargetHighlight();
 unsigned int shadowMapResolution();
 
 // Display (backbuffer / present) resolution: [Rendering] DisplayWidth/Height.
-// False when unset, meaning the swap chain keeps the size the game itself
-// requested.
+// Unset keys fall back to the desktop's current resolution. False only when the
+// desktop mode cannot be read, and the caller then leaves the game's own choice
+// alone.
 bool displayResolution(unsigned int* width, unsigned int* height);
 
 // Internal render resolution: [Rendering] RenderWidth/Height, falling back to
@@ -51,7 +52,8 @@ bool displayResolution(unsigned int* width, unsigned int* height);
 // supersampled down to the display size at present.
 bool renderResolution(unsigned int* width, unsigned int* height);
 
-// Backwards-compatible single override used by the current pipeline; resolves
+// Backwards-compatible single override, kept for external callers; nothing in
+// this codebase calls it. Resolves
 // to the display (backbuffer) resolution. Prefer displayResolution/
 // renderResolution in new code.
 bool configuredResolution(unsigned int* width, unsigned int* height);

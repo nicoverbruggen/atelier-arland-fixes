@@ -1,13 +1,8 @@
 // SPDX-License-Identifier: MIT
 //
-// Crash logger: a last-chance unhandled-exception filter that appends a
-// post-mortem to arland-fix.log before the process dies -- exception code,
-// faulting access, registers, and every stack value that looks like a return
-// address, each resolved to module+RVA so a crash inside the game or this mod
-// can be mapped straight back to a function. Best-effort by design: it only
-// reads memory it has VirtualQuery-verified, guards against re-entry, and
-// chains to the previously installed filter (Wine/winedbg backtraces and
-// PROTON_LOG output are unaffected because the exception continues its search).
+// Implementation. What this fixes and why it takes this shape is in
+// crash_log.h; what is here is the per-build wiring and the notes that
+// only mean anything beside the code they sit on.
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 

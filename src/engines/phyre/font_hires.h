@@ -1,21 +1,34 @@
 // SPDX-License-Identifier: MIT
-//
-// High-resolution UI text. The Arland games draw UI text from a pre-baked bitmap
-// font blitted 1:1, so on-screen text is low-resolution. For each string this
-// substitutes a kScale× bitmap into the engine's per-string output object, keeping
-// the normalized used/pot metrics so the on-screen quad is unchanged in size and
-// position -- only its texel density increases. Two modes, selected by
-// [Rendering] Font / ARLAND_UIFONT: "replaced" (the default) re-renders the string
-// from a bundled scalable font (per game: National Park, Nunito, or Cosmetica
-// Medium), falling back to "upscaled" for glyphs it
-// can't resolve; "upscaled" filter-upscales the engine's own baked glyphs,
-// preserving its exact layout (multi-line/align/icons). Active on any recognized
-// Arland title, English builds only. Implementation in font_hires.cpp.
 #pragma once
 
 #include <cstddef>
 #include <cstdint>
 
+// High-resolution UI text. The game bakes its UI font to a low-resolution bitmap;
+// for each string the engine renders, this substitutes a kScale× (2×) bitmap back
+// into the engine's per-string output object, so menus, save slots, and labels
+// read crisply. Two modes, selected by [Rendering] Font (see config.cpp):
+//
+//   "replaced" (the default) -- re-render the string from a bundled scalable font
+//     (a per-game face baked into the DLL: National Park SemiBold for Rorona,
+//     Nunito for Totori, Cosmetica Medium for Meruru; a loose
+//     arland-hires-font.ttf overrides them) via a
+//     glyph-atlas cache. renderReplaced() replicates the engine's layout (split on
+//     '\n', stack by lineHeight, left-aligned, fixed cap-box baseline). A glyph the
+//     face itself lacks comes from the bundled Arland Fallback face (arrows,
+//     shapes, music and the Greek tier markers); only when neither has it (the
+//     game's custom button-prompt icons) does the whole string fall back to the
+//     upscaled path, so nothing is left as raw baked art.
+//   "upscaled" -- keep the engine's own baked glyphs but filter-upscale them
+//     (bilinear + SDF coverage-steepen by default; bilinear+unsharp or lanczos+
+//     unsharp via ARLAND_HIRES_FILTER). Preserves the engine's exact layout and
+//     any icon glyphs; only the resolution increases.
+//
+// Both modes keep a per-string result cache to stay off the hot menu path, and
+// both stash the pre-substitution dims so the consumer wrapper can restore them
+// (auto-size widgets read the original size back). English builds only: on the
+// multilingual exes the text allocator/consumer hooks stay unresolved and the
+// substitution safely no-ops.
 namespace atfix {
 
 using HiResAllocFn = void* (*)(size_t);   // must match the engine's allocator

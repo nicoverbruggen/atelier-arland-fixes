@@ -6,7 +6,7 @@
 // is mapped -- a wild, stale, or freed pointer would otherwise fault. readableRange
 // is the primitive; tryRead wraps the guard and the copy together so a multi-level
 // pointer walk cannot forget a level. Forgetting a level on a freed battle object
-// is exactly the class of bug behind the battle-exit crash fixed in menu_fix.cpp:
+// is exactly the class of bug behind the battle-exit crash fixed in battle_shadow_restore.cpp:
 // prefer tryRead over a bare `*reinterpret_cast<T*>(addr)` for anything that reads
 // engine memory.
 //

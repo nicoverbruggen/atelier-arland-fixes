@@ -1296,10 +1296,9 @@ bool installMeruruBattleStateHook(BYTE* base, const Game& game) {
 //
 // The engine allocates a GameModeBattle for each battle and deletes it when the
 // battle's own end states report finished, so its constructor and destructor
-// are exact, once-per-battle edges. They replace what used to be inferred: a
-// ShadowHelperInit observer that never fired when a battle returned to a field
-// map that was still loaded, plus a watchdog that declared the battle over once
-// the game mode stopped looking alive for twenty consecutive frames.
+// are exact, once-per-battle edges. The watchdog below only approximates them:
+// it declares the battle over once the game mode stops looking alive for twenty
+// consecutive frames.
 //
 // The watchdog is left in place as a fallback. It costs nothing while this
 // works, because it only runs when the state it clears is still set.

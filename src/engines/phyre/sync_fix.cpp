@@ -555,11 +555,10 @@ bool applyResolutionOverride(DXGI_SWAP_CHAIN_DESC* pDesc) {
   //
   // FLIP_DISCARD is the fix for it, but do not set it here without settling one
   // thing first. A flip-model backbuffer is unbound after every present, so
-  // something has to bind it each frame. That used to be the supersampling
-  // pass, which was armed whether or not supersampling was configured. It is
-  // now armed only by a real render/display difference, so what decides the
-  // question is whether these games rebind their own backbuffer view every
-  // frame, and nothing here establishes that.
+  // something has to bind it each frame. The supersampling pass only rebinds it
+  // when a real render/display difference arms it, so what decides the question
+  // is whether these games rebind their own backbuffer view every frame, and
+  // nothing here establishes that.
   //
   // Seed the main render size from the configuration rather than waiting to
   // recognise it from a texture. It is known here -- it is what the ini says --
@@ -835,12 +834,12 @@ SmaaTrackedState* smaaTrackedState(
     ? &g_smaaImmediate : &g_smaaDeferred;
 }
 
-// Which scene/UI boundary to use. Rorona and Meruru shipped on the render-
-// target-bind boundary and it was visually confirmed working there, so that
-// stays their default; Totori has no such bind and uses the depth-state one.
-// The two share the once-per-frame latch, so running both lets whichever fires
-// first suppress the other -- which is why this is a choice and not a union.
-// ARLAND_SMAA_BOUNDARY=target|depth|both overrides.
+// Which scene/UI boundary to use. Rorona and Meruru use the scene-target
+// boundary (SceneRt); Totori has no usable render-target signal there and uses
+// the depth-state one. The reasoning for each is beside the return below.
+// The boundaries share the once-per-frame latch, so running two lets whichever
+// fires first suppress the other -- which is why this is a choice, not a union.
+// ARLAND_SMAA_BOUNDARY=target|depth|both|scene overrides.
 enum class SmaaBoundary { TargetBind, DepthState, Both, SceneRt };
 
 SmaaBoundary smaaBoundaryMode() {
@@ -2034,7 +2033,7 @@ HRESULT STDMETHODCALLTYPE ID3D11Device_CreateTexture2D(
       // This is the RENDER resolution, not the display one: everything the
       // engine draws follows the main target, and supersampling downscales the
       // finished frame into the (smaller) backbuffer at Present. With no render
-      // resolution configured the two are the same and this is the old path.
+      // resolution configured the two are the same and this is the vanilla path.
       const UINT originalWidth =
         g_originalSwapWidth.load(std::memory_order_relaxed);
       const UINT originalHeight =

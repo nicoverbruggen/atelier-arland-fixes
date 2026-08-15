@@ -1,30 +1,8 @@
 // SPDX-License-Identifier: MIT
 //
-// High-resolution UI text. The game bakes its UI font to a low-resolution bitmap;
-// for each string the engine renders, this substitutes a kScale× (2×) bitmap back
-// into the engine's per-string output object, so menus, save slots, and labels
-// read crisply. Two modes, selected by [Rendering] Font (see config.cpp):
-//
-//   "replaced" (the default) -- re-render the string from a bundled scalable font
-//     (a per-game face baked into the DLL: National Park SemiBold for Rorona,
-//     Nunito for Totori, Cosmetica Medium for Meruru; a loose
-//     arland-hires-font.ttf overrides them) via a
-//     glyph-atlas cache. renderReplaced() replicates the engine's layout (split on
-//     '\n', stack by lineHeight, left-aligned, fixed cap-box baseline). A glyph the
-//     face itself lacks comes from the bundled Arland Fallback face (arrows,
-//     shapes, music and the Greek tier markers); only when neither has it (the
-//     game's custom button-prompt icons) does the whole string fall back to the
-//     upscaled path, so nothing is left as raw baked art.
-//   "upscaled" -- keep the engine's own baked glyphs but filter-upscale them
-//     (bilinear + SDF coverage-steepen by default; bilinear+unsharp or lanczos+
-//     unsharp via ARLAND_HIRES_FILTER). Preserves the engine's exact layout and
-//     any icon glyphs; only the resolution increases.
-//
-// Both modes keep a per-string result cache to stay off the hot menu path, and
-// both stash the pre-substitution dims so the consumer wrapper can restore them
-// (auto-size widgets read the original size back). English builds only: on the
-// multilingual exes the text allocator/consumer hooks stay unresolved and the
-// substitution safely no-ops.
+// Implementation. What this fixes and why it takes this shape is in
+// font_hires.h; what is here is the per-build wiring and the notes that
+// only mean anything beside the code they sit on.
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 
@@ -332,8 +310,8 @@ bool loadFont() {
 // whole string down the upscale path, so a line of otherwise crisp text renders
 // as the engine's baked art. Every one of them is a symbol, which is where a
 // face change is least visible, and that is what makes mixing acceptable here.
-// Failure to load is not fatal: the string-wide bail below is still there, so
-// the feature degrades to what it did before.
+// Failure to load is not fatal: the string-wide bail below still applies, so
+// those strings upscale instead of missing a glyph.
 bool loadFallbackFont() {
   return stbtt_InitFont(&g_fallbackFont, kEmbeddedFontFallback,
     stbtt_GetFontOffsetForIndex(kEmbeddedFontFallback, 0)) != 0;
