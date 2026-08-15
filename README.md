@@ -32,6 +32,7 @@ These are enabled by default, as they are crucial fixes. Some items do not apply
 | Correct world-map analog cursor speed      |   —    |   ✓    |   ✓    |
 | Restored ordinary-battle shadows           |   ✓    |   —    |   —    |
 | Instant save and load menus                |   ✓    |   ✓    |   ✓    |
+| Correct picture shape on non-16:9 displays |   ✓    |   ✓    |   ✓    |
 | Fixed stutter with no controller connected |   ✓    |   ✓    |   ✓    |
 | Optional startup logo and intro-movie skip |   ✓    |   ✓    |   ✓    |
 | Various game-specific bug fixes            |   ✓    |   ✓    |   ✓    |

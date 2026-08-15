@@ -524,6 +524,46 @@ bool resolutionOverrideNeeded() {
     renderResolution(&width, &height);
 }
 
+namespace {
+
+// Give a window a client area of exactly this size, and centre what comes out.
+// The frame is measured from the window's own style rather than assumed: a
+// borderless window and a titled one need different amounts. Centred because
+// the window usually moves by a few hundred pixels here, and resizing about the
+// top-left corner leaves it half off the screen.
+void resizeClientArea(HWND window, UINT width, UINT height) {
+  if (!window || !width || !height)
+    return;
+  RECT frame = { 0, 0, LONG(width), LONG(height) };
+  const LONG_PTR style = GetWindowLongPtrW(window, GWL_STYLE);
+  const LONG_PTR exStyle = GetWindowLongPtrW(window, GWL_EXSTYLE);
+  if (!AdjustWindowRectEx(&frame, DWORD(style), GetMenu(window) != nullptr,
+                          DWORD(exStyle)))
+    return;
+  const int frameWidth = frame.right - frame.left;
+  const int frameHeight = frame.bottom - frame.top;
+
+  int x = 0;
+  int y = 0;
+  RECT work = { };
+  if (SystemParametersInfoW(SPI_GETWORKAREA, 0, &work, 0)) {
+    x = int(work.left) + (int(work.right - work.left) - frameWidth) / 2;
+    y = int(work.top) + (int(work.bottom - work.top) - frameHeight) / 2;
+    // A window bigger than the work area centres to a negative origin, which
+    // hides its title bar behind the panel and leaves it unmovable.
+    if (x < int(work.left))
+      x = int(work.left);
+    if (y < int(work.top))
+      y = int(work.top);
+  }
+  SetWindowPos(window, nullptr, x, y, frameWidth, frameHeight,
+               SWP_NOZORDER | SWP_NOACTIVATE);
+  log("Windowed: client area set to ", std::dec, width, "x", height,
+      ", window ", frameWidth, "x", frameHeight, " at ", x, ",", y);
+}
+
+}  // namespace
+
 bool applyResolutionOverride(DXGI_SWAP_CHAIN_DESC* pDesc) {
   if (!pDesc)
     return false;
@@ -587,6 +627,17 @@ bool applyResolutionOverride(DXGI_SWAP_CHAIN_DESC* pDesc) {
   static std::atomic<uint32_t> reportedResolutionOverride{0};
   if (logFirstOrVerbose(reportedResolutionOverride))
     log("Overriding swap-chain resolution to ", std::dec, width, "x", height);
+
+  // IN A WINDOW THE BACKBUFFER DOES NOT DECIDE THE SHAPE ON SCREEN. The window
+  // does, and the game sized it from its own [Graphics] ScreenWidth/ScreenHeight
+  // before this hook ran. A DXGI_SWAP_EFFECT_DISCARD chain stretches the
+  // backbuffer into whatever client area it finds, so correcting the backbuffer
+  // alone leaves the same stretched picture, produced one step later.
+  //
+  // pDesc->Windowed rather than the ini: a fact about the chain being created,
+  // not a setting somebody may have edited since.
+  if (pDesc->Windowed && pDesc->OutputWindow)
+    resizeClientArea(pDesc->OutputWindow, width, height);
   return true;
 }
 

@@ -190,6 +190,25 @@ static bool displayCurrent(UINT* width, UINT* height) {
   return true;
 }
 
+void fitToSixteenNine(UINT* width, UINT* height);
+
+// Whether the game will run in a window rather than fullscreen. This is the
+// game's own [Window] FullScreen in ArlandDX_Settings.ini, which is the value
+// the launcher writes and the game reads, so the mod cannot disagree with the
+// game about a setting it does not own. Unreadable or absent answers
+// fullscreen, which is both the game's default and the launcher's.
+bool gameRunsWindowed() {
+  static const bool windowed = [] {
+    std::array<char, MAX_PATH + 1> path = { };
+    const DWORD pathLength = GetModuleFileNameA(nullptr, path.data(), MAX_PATH);
+    if (!pathLength || pathLength >= MAX_PATH ||
+        !replaceFileName(path.data(), path.size(), "ArlandDX_Settings.ini"))
+      return false;
+    return GetPrivateProfileIntA("Window", "FullScreen", 1, path.data()) == 0;
+  }();
+  return windowed;
+}
+
 bool displayResolution(UINT* width, UINT* height) {
   if (!readResPair("DisplayWidth", "DisplayHeight", width, height)) {
     // Blank, half-filled or unparseable presents at the desktop resolution. The
@@ -197,23 +216,31 @@ bool displayResolution(UINT* width, UINT* height) {
     // worse than the screen it is running on for anyone who never opened the
     // launcher. Failing here means the desktop mode could not be read at all,
     // and the caller leaves the game's own choice alone.
-    return displayCurrent(width, height);
+    if (!displayCurrent(width, height))
+      return false;
+  } else {
+    UINT maxWidth = 0;
+    UINT maxHeight = 0;
+    if (displayMaximum(&maxWidth, &maxHeight) &&
+        (*width > maxWidth || *height > maxHeight)) {
+      static std::atomic<bool> warned { false };
+      if (!warned.exchange(true))
+        log("Display resolution ", std::dec, *width, "x", *height,
+          " exceeds the display's ", maxWidth, "x", maxHeight,
+          "; using the display's instead. To render at a higher resolution than"
+          " the screen, set RenderWidth/RenderHeight -- that is supersampling,"
+          " and it is downscaled to the display resolution at present.");
+      *width = maxWidth;
+      *height = maxHeight;
+    }
   }
 
-  UINT maxWidth = 0;
-  UINT maxHeight = 0;
-  if (displayMaximum(&maxWidth, &maxHeight) &&
-      (*width > maxWidth || *height > maxHeight)) {
-    static std::atomic<bool> warned { false };
-    if (!warned.exchange(true))
-      log("Display resolution ", std::dec, *width, "x", *height,
-        " exceeds the display's ", maxWidth, "x", maxHeight,
-        "; using the display's instead. To render at a higher resolution than"
-        " the screen, set RenderWidth/RenderHeight -- that is supersampling,"
-        " and it is downscaled to the display resolution at present.");
-    *width = maxWidth;
-    *height = maxHeight;
-  }
+  // A window has nothing to fill, so the BACKBUFFER is corrected here rather
+  // than the picture inside it being framed later. renderResolution() falls back
+  // to this same value, so the two agree, ssaaRequested() sees neither a larger
+  // render nor a different shape, and no fit pass installs at all.
+  if (gameRunsWindowed())
+    fitToSixteenNine(width, height);
   return true;
 }
 
@@ -485,7 +512,10 @@ void logConfiguration() {
   const bool haveDisplay = displayResolution(&displayWidth, &displayHeight);
   const bool haveRender = renderResolution(&renderWidth, &renderHeight);
   if (haveDisplay)
-    log("CONFIG using display ", std::dec, displayWidth, "x", displayHeight);
+    log("CONFIG using display ", std::dec, displayWidth, "x", displayHeight,
+        gameRunsWindowed()
+          ? " (windowed, so the backbuffer is itself 16:9 and needs no bars)"
+          : " (fullscreen)");
   else
     log("CONFIG using display (the game's own, no override)");
   // Three states, not two. A render size that is neither larger than the

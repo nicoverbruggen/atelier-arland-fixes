@@ -305,6 +305,26 @@ const wchar_t* aspectNote(unsigned w, unsigned h) {
   return wide > tall ? L"pillarboxed" : L"letterboxed";
 }
 
+// The largest 16:9 box inside this size, matching the DLL's own
+// fitToSixteenNine in config.cpp. The launcher needs it because in a window the
+// DLL fits the BACKBUFFER, so a windowed run at a 4:3 size never happens and
+// offering one would offer a size the game will not use.
+//
+// The tolerance is asked of aspectNote rather than restated, which is what stops
+// the two drifting apart.
+void fitToSixteenNine(unsigned* w, unsigned* h) {
+  if (!w || !h || !*w || !*h || !aspectNote(*w, *h))
+    return;
+  const unsigned long long wide = (unsigned long long)*w * 9;
+  const unsigned long long tall = (unsigned long long)*h * 16;
+  if (wide > tall)
+    *w = (unsigned)((unsigned long long)*h * 16 / 9);
+  else
+    *h = (unsigned)((unsigned long long)*w * 9 / 16);
+  *w &= ~1u;
+  *h &= ~1u;
+}
+
 // The largest mode the display reports. The base resolution is what gets
 // presented, so offering more than the panel has is offering a worse picture:
 // the extra pixels are only scaled away again. Rendering higher than the screen
@@ -666,6 +686,100 @@ bool selectedBase(unsigned* w, unsigned* h) {
   return true;
 }
 
+// The window mode as the FILE has it, for the two places that need the answer
+// before the control can give it: the resolution list is built before the
+// Window mode combo exists, and loadFromIni picks a resolution before it sets
+// that combo.
+bool windowedInFile() {
+  return GetPrivateProfileIntA("Window", "FullScreen", 1, g_settingsPath) == 0;
+}
+
+// The window mode as it is on SCREEN. The resolution list has to follow the
+// choice the user just made, not the one last saved.
+bool windowedSelected() {
+  return (int)SendMessageW(g_hWinMode, CB_GETCURSEL, 0, 0) == 0;
+}
+
+// Fill the resolution list for a window mode. Every listed size is 16:9
+// already, so the mode changes only what Auto is shown to resolve to and
+// whether anything carries a letterboxed note -- in a window nothing is
+// letterboxed, so promising bars there would promise something that never
+// happens.
+void fillBaseList(bool windowed) {
+  SendMessageW(g_hBase, CB_RESETCONTENT, 0, 0);
+  unsigned maxW = 0, maxH = 0;
+  displayMaximum(&maxW, &maxH);
+  unsigned curW = 0, curH = 0;
+  displayCurrent(&curW, &curH);
+  if (windowed)
+    fitToSixteenNine(&curW, &curH);
+  for (int i = 0; i < kBaseCount; ++i) {
+    // Skip anything the display cannot show. Auto (0x0) always stays.
+    if (maxW && maxH && kBaseItems[i].w &&
+        (kBaseItems[i].w > maxW || kBaseItems[i].h > maxH))
+      continue;
+    // Auto carries what it resolves to, for the same reason the supersampling
+    // list carries its render size: the answer belongs in the list being chosen
+    // from.
+    wchar_t label[96];
+    const wchar_t* note = windowed ? nullptr : aspectNote(curW, curH);
+    if (kBaseItems[i].w)
+      lstrcpynW(label, kBaseItems[i].label, 96);
+    else if (curW && curH) {
+      if (note)
+        wsprintfW(label, L"%s  (%u x %u, %s)", kBaseItems[i].label,
+                  curW, curH, note);
+      else
+        wsprintfW(label, L"%s  (%u x %u)", kBaseItems[i].label, curW, curH);
+    }
+    else
+      wsprintfW(label, L"%s  (desktop resolution)", kBaseItems[i].label);
+    int idx = (int)SendMessageW(g_hBase, CB_ADDSTRING, 0, (LPARAM)label);
+    SendMessageW(g_hBase, CB_SETITEMDATA, idx,
+      packRes(kBaseItems[i].w, kBaseItems[i].h));
+  }
+}
+
+// Which entry a concrete saved size should select, adding it to the list when
+// it is not one of the offered ones so that it round-trips. Returns the Auto
+// index for a size this display cannot show. A windowed size is fitted first,
+// so what the list offers is what will actually run.
+int selectBase(unsigned dispW, unsigned dispH, bool windowed) {
+  if (!dispW || !dispH)
+    return 0;   // Auto
+  if (windowed)
+    fitToSixteenNine(&dispW, &dispH);
+  // Match on what the combo actually holds rather than on a kBaseItems index.
+  // The list is filtered to what the display can show, so the two stop lining
+  // up as soon as anything is dropped; using the table index there selects
+  // nothing, and the resolution is then written back blank.
+  const int count = (int)SendMessageW(g_hBase, CB_GETCOUNT, 0, 0);
+  for (int i = 0; i < count; ++i)
+    if ((LPARAM)SendMessageW(g_hBase, CB_GETITEMDATA, i, 0) ==
+        packRes(dispW, dispH))
+      return i;
+  unsigned maxW = 0, maxH = 0;
+  displayMaximum(&maxW, &maxH);
+  if (maxW && maxH && (dispW > maxW || dispH > maxH)) {
+    // Saved for a bigger display than this one. The launcher does not offer
+    // resolutions the panel cannot show, so this one is not added either: it
+    // falls back to Auto, which is the desktop resolution and always correct
+    // here. The saved value is lost on the next save, deliberately.
+    return 0;
+  }
+  // Fits this display but is not one of the listed resolutions, so add it and
+  // keep it selectable.
+  wchar_t label[64];
+  const wchar_t* note = windowed ? nullptr : aspectNote(dispW, dispH);
+  if (note)
+    wsprintfW(label, L"%u x %u  (%s)", dispW, dispH, note);
+  else
+    wsprintfW(label, L"%u x %u", dispW, dispH);
+  const int idx = (int)SendMessageW(g_hBase, CB_ADDSTRING, 0, (LPARAM)label);
+  SendMessageW(g_hBase, CB_SETITEMDATA, idx, packRes(dispW, dispH));
+  return idx;
+}
+
 // The base supersampling is computed over. Same thing, except Auto resolves to
 // the desktop resolution, since that is what it will present at and multipliers
 // need something concrete. Only the render size is derived from this; the
@@ -836,40 +950,13 @@ void loadFromIni() {
   // one of the listed resolutions is added as its own item so it round-trips.
   unsigned dispW = iniDimension("DisplayWidth", "Width");
   unsigned dispH = iniDimension("DisplayHeight", "Height");
-  int baseSel = 0;   // Auto by default (index 0)
-  if (dispW && dispH) {
-    // Match on what the combo actually holds rather than on a kBaseItems index.
-    // The list is filtered to what the display can show, so the two stop lining
-    // up as soon as anything is dropped; using the table index there selects
-    // nothing, and the resolution is then written back blank.
-    baseSel = -1;
-    const int count = (int)SendMessageW(g_hBase, CB_GETCOUNT, 0, 0);
-    for (int i = 0; i < count; ++i)
-      if ((LPARAM)SendMessageW(g_hBase, CB_GETITEMDATA, i, 0) ==
-          packRes(dispW, dispH)) { baseSel = i; break; }
-    if (baseSel < 0) {
-      unsigned maxW = 0, maxH = 0;
-      displayMaximum(&maxW, &maxH);
-      if (maxW && maxH && (dispW > maxW || dispH > maxH)) {
-        // Saved for a bigger display than this one. The launcher does not offer
-        // resolutions the panel cannot show, so this one is not added either:
-        // it falls back to Auto, which is the desktop resolution and always
-        // correct here. The saved value is lost on the next save, deliberately.
-        baseSel = 0;
-      } else {
-        // Fits this display but is not one of the listed resolutions, so add it
-        // and keep it selectable.
-        wchar_t label[64];
-        if (const wchar_t* note = aspectNote(dispW, dispH))
-          wsprintfW(label, L"%u x %u  (%s)", dispW, dispH, note);
-        else
-          wsprintfW(label, L"%u x %u", dispW, dispH);
-        baseSel = (int)SendMessageW(g_hBase, CB_ADDSTRING, 0, (LPARAM)label);
-        SendMessageW(g_hBase, CB_SETITEMDATA, baseSel, packRes(dispW, dispH));
-      }
-    }
-  }
-  SendMessageW(g_hBase, CB_SETCURSEL, baseSel, 0);
+  // Built again here rather than trusting what the window put up: this runs
+  // before the Window mode combo is set, so the file is the only source that
+  // has the answer yet.
+  const bool windowed = windowedInFile();
+  fillBaseList(windowed);
+  SendMessageW(g_hBase, CB_SETCURSEL,
+               selectBase(dispW, dispH, windowed), 0);
 
   // Supersampling: infer the multiplier as RenderWidth / DisplayWidth and snap
   // to the nearest listed factor. Blank render => Off. An Auto base divides by
@@ -994,9 +1081,12 @@ void loadFromIni() {
 // and the game's own exclusive fullscreen.
 void resetToDefaults() {
   // Auto: the display keys blank, which is what a fresh install has and what
-  // src/core/config.cpp resolves to the desktop mode.
-  SendMessageW(g_hBase, CB_SETCURSEL, 0, 0);
+  // src/core/config.cpp resolves to the desktop mode. The list is refilled
+  // because the mode goes back to fullscreen here, where Auto resolves to the
+  // whole desktop rather than to the 16:9 box inside it.
   SendMessageW(g_hWinMode, CB_SETCURSEL, 1, 0);   // Fullscreen, as it defaults
+  fillBaseList(false);
+  SendMessageW(g_hBase, CB_SETCURSEL, 0, 0);
 
   SendMessageW(g_hFont, CB_SETCURSEL, 0, 0);      // replaced
   setSsIndex(0);                                  // supersampling off
@@ -2127,34 +2217,9 @@ void createControls(HWND w) {
       L"Decides which executable is started.");
 
     g_hBase = mkCombo(w, 0, 0, 10, IDC_BASE);
-    unsigned maxW = 0, maxH = 0;
-    displayMaximum(&maxW, &maxH);
-    unsigned curW = 0, curH = 0;
-    displayCurrent(&curW, &curH);
-    for (int i = 0; i < kBaseCount; ++i) {
-      // Skip anything the display cannot show. Auto (0x0) always stays.
-      if (maxW && maxH && kBaseItems[i].w &&
-          (kBaseItems[i].w > maxW || kBaseItems[i].h > maxH))
-        continue;
-      // Auto carries what it resolves to, for the same reason the supersampling
-      // list carries its render size: the answer belongs in the list being
-      // chosen from.
-      wchar_t label[96];
-      if (kBaseItems[i].w)
-        lstrcpynW(label, kBaseItems[i].label, 96);
-      else if (curW && curH) {
-        if (const wchar_t* note = aspectNote(curW, curH))
-          wsprintfW(label, L"%s  (%u x %u, %s)", kBaseItems[i].label,
-                    curW, curH, note);
-        else
-          wsprintfW(label, L"%s  (%u x %u)", kBaseItems[i].label, curW, curH);
-      }
-      else
-        wsprintfW(label, L"%s  (desktop resolution)", kBaseItems[i].label);
-      int idx = (int)SendMessageW(g_hBase, CB_ADDSTRING, 0, (LPARAM)label);
-      SendMessageW(g_hBase, CB_SETITEMDATA, idx,
-        packRes(kBaseItems[i].w, kBaseItems[i].h));
-    }
+    // The Window mode combo does not exist yet, so this reads the file. Both
+    // are set properly by loadFromIni, which refills the list once it knows.
+    fillBaseList(windowedInFile());
     page.row(L"Resolution:", g_hBase,
       L"Output resolution. It's recommended to pick your screen resolution.");
 
@@ -2535,6 +2600,21 @@ LRESULT CALLBACK WndProc(HWND w, UINT msg, WPARAM wp, LPARAM lp) {
       // Auto-disables-supersampling rule live.
       if (HIWORD(wp) == CBN_SELCHANGE &&
           (LOWORD(wp) == IDC_SS || LOWORD(wp) == IDC_BASE)) {
+        updateRenderResolution();
+        return 0;
+      }
+      // Window mode changed: the resolution list depends on it, because the DLL
+      // makes a window 16:9 itself and so nothing in a window is ever
+      // letterboxed. Rebuild it and keep the choice that was on screen, fitted
+      // if the new mode requires it -- switching to Windowed with 1600x1200
+      // selected leaves 1600x900 selected rather than dropping to Auto.
+      if (HIWORD(wp) == CBN_SELCHANGE && LOWORD(wp) == IDC_WINMODE) {
+        unsigned selW = 0, selH = 0;
+        const bool haveSel = selectedBase(&selW, &selH);
+        const bool windowed = windowedSelected();
+        fillBaseList(windowed);
+        SendMessageW(g_hBase, CB_SETCURSEL,
+                     haveSel ? selectBase(selW, selH, windowed) : 0, 0);
         updateRenderResolution();
         return 0;
       }
