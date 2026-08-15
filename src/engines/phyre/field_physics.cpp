@@ -67,9 +67,18 @@ constexpr float kMinThreshold = 0.0005f;
 // with exactly one reader, the collision resolver, and no writer anywhere in
 // the image. The resolver is verified before the threshold is trusted, since
 // neither is meaningful without the other.
-// nspFM::clsFMStateTalk::update, vtable slot 2. Zero means the build has no
-// derived address and the hold declines: Totori names the class
-// FieldMapStateCharaTalk and orders its vtable differently.
+// The conversation state's per-frame update. Rorona and Meruru call the class
+// `nspFM::clsFMStateTalk` and put it in vtable slot 2; Totori calls it
+// `FieldMapStateCharaTalk` and puts it in slot 6, which is why the two carry
+// different prologues below.
+//
+// Totori's slots were identified by what they do rather than by position: slot
+// 3 allocates a 0x138 object and stores it on the state, slot 4 destroys that
+// object and nulls the pointer, so those are enter and leave. Slot 6 delegates
+// to a sub-object and returns true, which is the per-frame tick. It takes only
+// `this` where the others also take a frame delta, and passing an extra float
+// in xmm1 to a function that never reads it costs nothing, so one detour
+// signature covers both shapes.
 struct FieldPhysicsAddrs {
   uintptr_t update;
   uintptr_t collisionResolver;
@@ -79,8 +88,8 @@ struct FieldPhysicsAddrs {
 
 constexpr FieldPhysicsAddrs kRoronaEn    { 0x553330, 0x551f40, 0x10a85a8, 0x368040 };
 constexpr FieldPhysicsAddrs kRoronaMulti { 0x569200, 0x567e10, 0x10e56a8, 0x37d610 };
-constexpr FieldPhysicsAddrs kTotoriEn    { 0x41bff0, 0x41ac00, 0x0ca93b8, 0 };
-constexpr FieldPhysicsAddrs kTotoriMulti { 0x6995f0, 0x698200, 0x1008968, 0 };
+constexpr FieldPhysicsAddrs kTotoriEn    { 0x41bff0, 0x41ac00, 0x0ca93b8, 0x0566b0 };
+constexpr FieldPhysicsAddrs kTotoriMulti { 0x6995f0, 0x698200, 0x1008968, 0x272d30 };
 constexpr FieldPhysicsAddrs kMeruruEn    { 0x5053d0, 0x504040, 0x0fa3478, 0x34c4f0 };
 constexpr FieldPhysicsAddrs kMeruruMulti { 0x5049c0, 0x503630, 0x1009048, 0x348b60 };
 
@@ -571,6 +580,13 @@ constexpr std::array<BYTE, 16> kTalkUpdateExpected = {
   0xd9, 0x0f, 0x29, 0x74, 0x24, 0x20, 0x48, 0x8b
 };
 
+// Totori's, and identical across both of its builds -- including the call
+// displacement, because the callee sits at the same relative distance in each.
+constexpr std::array<BYTE, 16> kTalkUpdateExpectedTotori = {
+  0x48, 0x83, 0xec, 0x28, 0x48, 0x8b, 0x89, 0x20,
+  0x01, 0x00, 0x00, 0xe8, 0x70, 0xf2, 0xff, 0xff
+};
+
 uintptr_t nodeOf(uintptr_t self) {
   uintptr_t node = 0;
   std::memcpy(&node, reinterpret_cast<const void*>(self + kNodeOffset),
@@ -745,7 +761,9 @@ bool installFieldPhysics(BYTE* base, const Game& game) {
       log("FIXES talk_anchor=no_address for this build");
     } else {
       BYTE* talk = base + addrs->talkUpdate;
-      if (!matches(talk, kTalkUpdateExpected)) {
+      const bool totori = game.atlasVariant == AtlasTotori;
+      if (!(totori ? matches(talk, kTalkUpdateExpectedTotori)
+                   : matches(talk, kTalkUpdateExpected))) {
         log("TALKANCHOR talk-state prologue mismatch at 0x", std::hex,
             addrs->talkUpdate, std::dec, "; the hold stays off");
       } else if (!installMinHookDetour(talk,

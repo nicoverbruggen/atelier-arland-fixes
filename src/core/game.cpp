@@ -103,12 +103,15 @@ constexpr Support X = Support::OnByDefault;
 // BattleCutInDimming is an inverse key: true is the game's original dimming.
 // See the descriptor above.
 //
-// TalkAnchorHold is Unsupported on Totori for want of an address, not because
-// the defect is absent. Rorona and Meruru name the conversation state
-// `nspFM::clsFMStateTalk` and its update sits in vtable slot 2 with the same
-// prologue as Ayesha's. Totori calls the class `FieldMapStateCharaTalk` and
-// lays the vtable out differently -- slots 1 and 2 are a getter and a setter --
-// so its update has to be derived separately before the row can change.
+// TalkAnchorHold is Unsupported on Totori because the defect is not there, not
+// for want of an address: `field_physics.cpp` carries a derived and verified
+// one for both Totori builds. Measured in play, Rorona and Meruru correct the
+// node on CONSECUTIVE frames during a conversation, which is the two writers
+// alternating. Totori corrected twice in a session, seconds apart, which is not
+// a fight -- far more likely a character legitimately repositioning, and
+// holding it would undo movement the game meant. Turn this row on if a Totori
+// conversation is ever seen shimmering; the address is ready.
+
 constexpr Support kMatrix[3][static_cast<int>(Feature::Count)] = {
   //           Sync Menu Atls Frme Res  ShMl Bat  CutS CutD Logo Movi Card Snap Pull Save Pad  Talk
   /* Rorona */ { X,   X,   X,   X,   X,   X,   X,   O,   O,   O,   O,   X,   X,   X,   X,   X,   X },
