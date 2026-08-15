@@ -542,8 +542,16 @@ void applyGraceHold(uintptr_t self) {
 // The anchor wins, because a character in a conversation stands where the
 // conversation puts them. So the node is put back to what it held before the
 // controller update ran, and the controller's own copy follows it.
-constexpr uintptr_t kNodeMatrixOffset = 0x110;
-constexpr size_t kNodeMatrixSize = 64;
+// BOTH transforms, local first: PSSG::PNode keeps local at 0xd0..0x10f with its
+// translation row at +0x100, and world at 0x110..0x14f with its row at +0x140.
+// World is DERIVED from local, and two recomputes exist -- the controller
+// update's own, and the render traversal's, which is stamp-gated and runs later
+// in the frame. Restoring world alone therefore holds only while nothing bumps
+// the stamp; the render path would rebuild it from a local this never touched.
+// Covering the source as well as the derived value removes that dependency.
+// See atelier-re-tools/systems/phyre-field-movement.md, "Position storage".
+constexpr uintptr_t kNodeMatrixOffset = 0xd0;
+constexpr size_t kNodeMatrixSize = 128;
 
 std::atomic<uint64_t> g_talkSeenMs{0};
 
@@ -595,7 +603,7 @@ uintptr_t nodeOf(uintptr_t self) {
 }
 
 void holdNodeAcrossUpdate(uintptr_t self, bool capture,
-                          std::array<float, 16>& matrix, bool& have) {
+                          std::array<float, 32>& matrix, bool& have) {
   const uintptr_t node = nodeOf(self);
   if (!node)
     return;
@@ -634,7 +642,7 @@ void STDMETHODCALLTYPE tracedFieldUpdate(uintptr_t self, float dt) {
   // velocity the update is about to integrate.
   applyGraceHold(self);
 
-  std::array<float, 16> nodeMatrix{};
+  std::array<float, 32> nodeMatrix{};
   bool haveMatrix = false;
   const bool hold = talkAnchorEnabled() && conversationOnScreen();
   if (hold)
@@ -649,7 +657,7 @@ void STDMETHODCALLTYPE tracedFieldUpdate(uintptr_t self, float dt) {
     // disagreement somewhere else.
     if (writableRange(self + kPosOffset, sizeof(float) * 3))
       std::memcpy(reinterpret_cast<void*>(self + kPosOffset),
-                  nodeMatrix.data() + 12, sizeof(float) * 3);
+                  nodeMatrix.data() + 28, sizeof(float) * 3);
     static std::atomic<uint32_t> held{0};
     const uint32_t n = held.fetch_add(1, std::memory_order_relaxed);
     if (n == 0 || (verboseLogging() && n % 4096 == 0))
