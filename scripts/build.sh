@@ -13,8 +13,15 @@ buildtype="${1:-release}"
 arch="${VSCMD_ARG_TGT_ARCH:-x64}"
 builddir="build_${arch}"
 
-meson setup "$builddir" --buildtype "$buildtype" --reconfigure >/dev/null 2>&1 \
-  || meson setup "$builddir" --buildtype "$buildtype"
+# Static CRT, matching the release workflow. Without it a local build links the
+# dynamic runtime and needs a Visual C++ redistributable the shipped DLL
+# deliberately does not, so what gets tested by hand differs from what users get
+# in the one way most likely to go unnoticed until it is on someone else's
+# machine.
+meson setup "$builddir" --buildtype "$buildtype" \
+  -Db_vscrt=static_from_buildtype --reconfigure >/dev/null 2>&1 \
+  || meson setup "$builddir" --buildtype "$buildtype" \
+       -Db_vscrt=static_from_buildtype
 meson compile -C "$builddir"
 
 # The compile above builds every target for this architecture; this only
