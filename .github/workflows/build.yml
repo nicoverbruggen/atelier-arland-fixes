@@ -102,6 +102,10 @@ jobs:
         run: python3 scripts/check_core_contract.py
       - name: Check asynchronous lifecycle contract
         run: python3 scripts/check_lifecycle_contract.py
+      # The step below copies the licences into the archive with one `cp -r`,
+      # which cannot notice one that has gone missing. This is what notices.
+      - name: Check release contract
+        run: python3 scripts/check_release_contract.py
       - name: Assemble the archive
         run: |
           # Shipped under its final name so the archive extracts straight into

@@ -48,7 +48,7 @@ It compiles the intermediate binaries as `build64/d3d11.dll`, `build64/arland-fi
 
 ## Validation
 
-After making changes, run the relevant validation scripts, including `scripts/check_default_ini.py`, `scripts/check_launcher_contract.py`, and `scripts/check_core_contract.py`; `scripts/build_linux.sh` runs these checks after a successful build. When a contract check fails, determine whether the change intentionally altered the contract. If it did, update the contract check and its accompanying documentation as needed. If it did not, treat the failure as a possible regression and investigate it rather than weakening or bypassing the check.
+After making changes, run the relevant validation scripts, including `scripts/check_default_ini.py`, `scripts/check_launcher_contract.py`, `scripts/check_core_contract.py`, and `scripts/check_release_contract.py`. `scripts/build_linux.sh` runs all of these after a successful build except `check_default_ini.py`, which runs in CI only. When a contract check fails, determine whether the change intentionally altered the contract. If it did, update the contract check and its accompanying documentation as needed. If it did not, treat the failure as a possible regression and investigate it rather than weakening or bypassing the check.
 
 ## Implementation rules
 

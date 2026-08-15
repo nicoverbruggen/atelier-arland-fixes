@@ -67,6 +67,10 @@ python3 "$repo/scripts/check_launcher_contract.py"
 python3 "$repo/scripts/check_transaction_contract.py"
 python3 "$repo/scripts/check_core_contract.py"
 python3 "$repo/scripts/check_lifecycle_contract.py"
+# Before packaging rather than after: the archive assembled below is what this
+# check describes, so a licence it would ship without should stop the build
+# instead of being found in the zip.
+python3 "$repo/scripts/check_release_contract.py"
 
 # Package the same archive the release workflow does, so what gets tested by
 # hand locally has the same shape as what users download: same file names, same
