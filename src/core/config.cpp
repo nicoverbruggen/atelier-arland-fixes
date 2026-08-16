@@ -42,7 +42,13 @@ const char* configPath() {
       WritePrivateProfileStringA("Rendering", "DisplayHeight", "", result.data());
       WritePrivateProfileStringA("Rendering", "RenderWidth", "", result.data());
       WritePrivateProfileStringA("Rendering", "RenderHeight", "", result.data());
-      WritePrivateProfileStringA("Rendering", "ShadowMultiplier", "2", result.data());
+      // Only these four, because blank is a value here and nothing else can
+      // write it: the lazy seeds state true or false. ShadowMultiplier was
+      // seeded here as well and is not any more, because shadowMapResolution()
+      // already writes 2 for a missing key and logConfiguration() calls it on
+      // every run. Stating one default in two places is how the two come to
+      // disagree.
+      //
       // The cut-in keys (BattleCutInShadows / BattleCutInDimming) are seeded
       // lazily by featureEnabled() using their per-game matrix defaults, so they
       // stay correct when those defaults change (currently OptIn on every
@@ -441,8 +447,8 @@ void logIniFile() {
     text.append(chunk, read);
   CloseHandle(file);
 
-  // Comments and blank lines are the bulk of the shipped file and say nothing
-  // about this run, so only real content is kept.
+  // Comments and blank lines say nothing about this run, so only real content
+  // is kept. A file this mod wrote has neither; a hand-edited one can.
   size_t start = 0;
   while (start <= text.size()) {
     size_t end = text.find('\n', start);

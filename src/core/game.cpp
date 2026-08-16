@@ -93,12 +93,12 @@ constexpr Support X = Support::OnByDefault;
 // Why it defaults that way belongs beside the code that answers it, in the
 // feature's own header or the top of the file that implements it.
 //
-// TWO CELLS DO NOT MEAN WHAT THE OTHERS MEAN, and both will mislead a reader
+// THREE ROWS DO NOT MEAN WHAT THE OTHERS MEAN, and each will mislead a reader
 // who assumes the table decides behaviour:
 //
 //   ShadowMultiplier is documentation only. It is a valued knob rather than a
 //   switch and has its own reader, so nothing resolves through this cell. It
-//   says OnByDefault because the shipped [Rendering] ShadowMultiplier is 2.
+//   says OnByDefault because shadowMapResolution() reads a missing key as 2.
 //
 //   BattleShadows is read directly in battle_shadow_restore.cpp rather than
 //   through featureEnabled, so ARLAND_BATTLE_SHADOWS=0 reaches even the rows
@@ -106,8 +106,11 @@ constexpr Support X = Support::OnByDefault;
 //   battle ticks the cut-in gate and dim depend on, and the Present hook that
 //   drives them.
 //
-// BattleCutInDimming is an inverse key: true is the game's original dimming.
-// See the descriptor above.
+//   BattleCutInDimming is the one row whose cell gives the opposite of the
+//   key's default. Its descriptor sets `invert`, so featureEnabled resolves
+//   !actionable: the cell is OptIn on all three games and the key therefore
+//   defaults to true, which is the game's original dimming. Read
+//   featureEnabled, not the cell, whenever this row's value matters.
 //
 // TalkAnchorHold is Unsupported on Totori because the defect is not there, not
 // for want of an address: `field_physics.cpp` carries a derived and verified

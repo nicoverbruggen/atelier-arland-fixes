@@ -990,10 +990,10 @@ void loadFromIni() {
   updateRenderResolution();
 
   // An absent key falls back to what the DLL would do with it, not to the first
-  // entry in the list. ShadowMultiplier ships at "2", so falling back to "1"
-  // here would show Normal for a default install and then persist that on the
-  // next save, quietly turning the feature off for anyone who opened the
-  // launcher.
+  // entry in the list. shadowMapResolution() reads a missing ShadowMultiplier
+  // as "2", so falling back to "1" here would show Normal for a default install
+  // and then persist that on the next save, quietly turning the feature off for
+  // anyone who opened the launcher.
   iniString("Rendering", "ShadowMultiplier", buf, sizeof(buf));
   comboSelectByValue(g_hShadow, kShadowItems, kShadowCount,
                      buf[0] ? buf : "2", 1);
@@ -1090,7 +1090,7 @@ void resetToDefaults() {
 
   SendMessageW(g_hFont, CB_SETCURSEL, 0, 0);      // replaced
   setSsIndex(0);                                  // supersampling off
-  SendMessageW(g_hShadow, CB_SETCURSEL, 1, 0);    // 2048 map, the shipped default
+  SendMessageW(g_hShadow, CB_SETCURSEL, 1, 0);    // 2048 map, a missing key's value
   SendMessageW(g_hSmaa, BM_SETCHECK, BST_CHECKED, 0);
   SendMessageW(g_hSharpen, CB_SETCURSEL, 0, 0);   // off, as it ships
   SendMessageW(g_hOutline, BM_SETCHECK, BST_CHECKED, 0);   // on as it shipped
@@ -1194,8 +1194,8 @@ SaveOutcome saveToIni() {
   iniWrite("Debug", "View",
     debugViewSel ? kDebugViewItems[debugViewSel].value : nullptr, g_iniPath);
   // The box disables, so a tick writes the key and an empty box removes it.
-  // A normal install therefore carries no [Debug] key for this at all and the
-  // shipped default is the one that applies.
+  // A normal install therefore carries no [Debug] key for this at all and
+  // fieldJitterFix()'s own default, on, is the one that applies.
   iniWrite("Debug", "FieldJitterFix",
     isChecked(g_hFieldGroundRay) ? "0" : nullptr, g_iniPath);
 
