@@ -145,15 +145,24 @@ jobs:
           # Auto-generating them from commits produced a wall of internal churn,
           # and deriving them from a CHANGELOG made cutting a release depend on
           # having remembered to edit a document. Neither is wanted.
-          # Tags containing "pre" (e.g. v0.5-pre) publish as a GitHub pre-release.
+          # Tags containing "pre" (e.g. v0.5-pre) are GitHub pre-releases, and are
+          # created as drafts: cutting one is for trying a build, so nothing
+          # should reach the releases page until someone decides it should. A
+          # normal tag publishes on the spot, as it always did.
+          #
+          # --draft is set only at creation. Re-running this workflow against a
+          # release that already exists must not retract a pre-release the
+          # maintainer has since published by hand.
           if echo "${GITHUB_REF_NAME}" | grep -qi 'pre'; then
-            PRERELEASE="--prerelease"
+            CREATE_FLAGS="--prerelease --draft"
+            EDIT_FLAGS="--prerelease"
           else
-            PRERELEASE="--latest"
+            CREATE_FLAGS="--latest"
+            EDIT_FLAGS="--latest"
           fi
           if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
-            gh release edit "${GITHUB_REF_NAME}" $PRERELEASE
+            gh release edit "${GITHUB_REF_NAME}" $EDIT_FLAGS
             gh release upload "${GITHUB_REF_NAME}" "arland-fix-${GITHUB_REF_NAME}.zip" --clobber
           else
-            gh release create "${GITHUB_REF_NAME}" "arland-fix-${GITHUB_REF_NAME}.zip" --verify-tag --notes "" --title "${GITHUB_REF_NAME}" $PRERELEASE
+            gh release create "${GITHUB_REF_NAME}" "arland-fix-${GITHUB_REF_NAME}.zip" --verify-tag --notes "" --title "${GITHUB_REF_NAME}" $CREATE_FLAGS
           fi
