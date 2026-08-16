@@ -1075,10 +1075,10 @@ void loadFromIni() {
 // English because they wanted their graphics settings back would be a hostile
 // reading of "defaults". saveToIni writes it back unchanged from its control.
 //
-// Every other value here is the one default.ini ships and src/ parses, the
-// resolution and window mode included, so a reset lands exactly where a fresh
-// install starts: the display keys blank, which resolves to the desktop mode,
-// and the game's own exclusive fullscreen.
+// Every other value here is the one src/ falls back to when the key is missing,
+// the resolution and window mode included, so a reset lands exactly where a
+// fresh install starts: the display keys blank, which resolves to the desktop
+// mode, and the game's own exclusive fullscreen.
 void resetToDefaults() {
   // Auto: the display keys blank, which is what a fresh install has and what
   // src/core/config.cpp resolves to the desktop mode. The list is refilled
@@ -1184,9 +1184,10 @@ SaveOutcome saveToIni() {
   iniWriteBool("Launcher", "SkipLauncher", isChecked(g_hSkipLauncher));
 
   iniWriteBool("Diagnostics", "VerboseLogging", isChecked(g_hVerbose));
-  // [Debug] is developer tooling and is deliberately absent from the shipped
-  // default.ini, so the key is written only when a view is actually selected
-  // and deleted when it is not. An ordinary user's ini never gains the section.
+  // [Debug] is developer tooling and is deliberately not an offered option, as
+  // scripts/check_option_surface.py records, so the key is written only when a
+  // view is actually selected and deleted when it is not. An ordinary user's
+  // ini never gains the section.
   int debugViewSel = (int)SendMessageW(g_hDebugView, CB_GETCURSEL, 0, 0);
   if (debugViewSel < 0 || debugViewSel >= kDebugViewCount)
     debugViewSel = 0;

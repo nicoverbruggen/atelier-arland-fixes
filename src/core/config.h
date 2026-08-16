@@ -68,8 +68,8 @@ bool verboseLogging();
 // hold, so one switch restores the engine's own field movement. On in a normal
 // install; the key exists so the defect can be seen again without rebuilding,
 // which is what a bug report about field movement needs. It sits under [Debug]
-// rather than in default.ini because it is not a preference -- there is no
-// reason to play with it off.
+// rather than on the launcher's tabs because it is not a preference -- there is
+// no reason to play with it off.
 //
 // The two halves keep their own environment switches, ARLAND_FIELD_GROUND_RAY
 // and ARLAND_FIELD_GRACE_HOLD, for an A/B between them.
