@@ -89,11 +89,8 @@ stage="$out/stage"
 rm -rf "$stage"
 mkdir -p "$stage/arland-fix"
 
-# Shipped under its final name so the archive extracts straight into the game
-# directory with nothing to rename.
 cp "$repo/build64/d3d11.dll" "$repo/build64/arland-fix-launcher.exe" \
    "$repo/build32/msimg32.dll" "$stage/"
-cp "$repo/default.ini" "$stage/arland-fix.ini"
 cp "$repo/README.md" "$repo/LICENSE" \
    "$stage/arland-fix/"
 cp -r "$repo/licenses" "$stage/arland-fix/LICENSES"
@@ -106,7 +103,7 @@ build_version="$(python3 "$repo/scripts/read_version.py" "$repo/VERSION")"
 archive="$out/arland-fix-$build_version.zip"
 rm -f "$archive"
 ( cd "$stage" && zip -qr "$archive" \
-    d3d11.dll msimg32.dll arland-fix.ini arland-fix-launcher.exe arland-fix )
+    d3d11.dll msimg32.dll arland-fix-launcher.exe arland-fix )
 rm -rf "$stage"
 
 echo

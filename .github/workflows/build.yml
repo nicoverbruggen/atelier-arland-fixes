@@ -44,6 +44,11 @@ jobs:
       - run: meson compile -C build64
       - name: Check d3d11 proxy exports
         run: python scripts/check_exports.py build64/d3d11.dll
+      # No ini ships, so the launcher is the option surface. This runs it once
+      # per game and compares what it writes against src/. It has to be here
+      # rather than in the packaging job: it runs a Windows executable.
+      - name: Check option surface
+        run: python scripts/check_option_surface.py build64/arland-fix-launcher.exe
       - uses: actions/upload-artifact@v7
         with:
           name: d3d11
@@ -90,10 +95,6 @@ jobs:
         with:
           name: msimg32
           path: dist
-      # default.ini ships to users and repeats defaults that live in src/, so
-      # check it before packaging rather than spending a separate runner on it.
-      - name: Check shipped configuration defaults
-        run: python3 scripts/check_default_ini.py
       - name: Check launcher contract
         run: python3 scripts/check_launcher_contract.py
       - name: Check transactional mutation contract
@@ -108,10 +109,7 @@ jobs:
         run: python3 scripts/check_release_contract.py
       - name: Assemble the archive
         run: |
-          # Shipped under its final name so the archive extracts straight into
-          # the game directory with nothing to rename.
-          cp default.ini dist/arland-fix.ini
-          # Documentation and the required licences go in a subfolder so the four
+          # Documentation and the required licences go in a subfolder so the
           # files that actually have to sit beside the executable stay at the top
           # level. The vendored texts are named for what they cover, since
           # LICENSE points at them and there is no vendor/ tree here.
@@ -122,7 +120,7 @@ jobs:
           cp vendor/smaa/LICENSE.txt dist/arland-fix/LICENSES/SMAA.txt
           cd dist
           zip -r ../arland-fix.zip \
-            d3d11.dll msimg32.dll arland-fix.ini arland-fix-launcher.exe arland-fix
+            d3d11.dll msimg32.dll arland-fix-launcher.exe arland-fix
       - uses: actions/upload-artifact@v7
         with:
           name: arland-fix

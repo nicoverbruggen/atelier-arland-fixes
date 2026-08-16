@@ -32,7 +32,7 @@ The current tree contains:
 - `scripts/embed_font.py` compiles the vendored fonts into the DLL at build time; the generated sources live under the build directory and are not committed.
 - `.github/workflows/build.yml` builds and publishes both Windows DLLs.
 - `README.md` is the user-facing overview: what the mod does per game, and how to install it. It is the only prose document in the repository.
-- `default.ini` is the option surface. Every user-facing key appears there with its default, and environment switches are diagnostics that must not be given one.
+- The settings launcher is the option surface. No ini ships: the mod writes `arland-fix.ini` itself, and the launcher writes it again on every Save. Environment switches are diagnostics and must not be given a key.
 
 Keep the root minimal. Packaged build output belongs below ignored `out/` and must not be committed. The day-to-day Linux build script uses `build64/` and `build32/` as intermediate Meson trees before packaging the distributable archive into `out/`.
 
@@ -48,7 +48,7 @@ It compiles the intermediate binaries as `build64/d3d11.dll`, `build64/arland-fi
 
 ## Validation
 
-After making changes, run the relevant validation scripts, including `scripts/check_default_ini.py`, `scripts/check_launcher_contract.py`, `scripts/check_core_contract.py`, and `scripts/check_release_contract.py`. `scripts/build_linux.sh` runs all of these after a successful build except `check_default_ini.py`, which runs in CI only. When a contract check fails, determine whether the change intentionally altered the contract. If it did, update the contract check and its accompanying documentation as needed. If it did not, treat the failure as a possible regression and investigate it rather than weakening or bypassing the check.
+After making changes, run the relevant validation scripts, including `scripts/check_launcher_contract.py`, `scripts/check_core_contract.py`, and `scripts/check_release_contract.py`. `scripts/build_linux.sh` runs all of these after a successful build except `check_option_surface.py`, which runs the launcher and so needs Windows; it runs in CI, or locally with `ARLAND_LAUNCHER_RUNNER=umu-run`. When a contract check fails, determine whether the change intentionally altered the contract. If it did, update the contract check and its accompanying documentation as needed. If it did not, treat the failure as a possible regression and investigate it rather than weakening or bypassing the check.
 
 ## Implementation rules
 
@@ -72,9 +72,15 @@ A refactor, or a performance idea with no measured problem behind it, is not a f
 
 ## Configuration options
 
-`default.ini` ships in the release archive and repeats defaults that really live in `src/core/config.cpp` (and `src/core/game.cpp`'s feature table). When you add, rename, remove or re-default an option, update `default.ini` in the same change.
+**No ini ships. The mod writes its own.** `configPath()` creates `arland-fix.ini` when it is absent and seeds the resolution keys, `ShadowMultiplier` and `Font` outright; the rest are seeded lazily by the read that wants them, with the feature table's default for the game actually running. The settings launcher then writes the file whenever the user saves. A shipped file could not do better: it would carry one set of values for three games, including keys a given game ignores.
 
-`scripts/check_default_ini.py` enforces this and runs in CI: it checks that every option the code reads is documented, that nothing documented is unread, and that the literal defaults agree. If an option is deliberately kept out of `default.ini`, or its default cannot be read from a single call site (the per-game cut-in keys), add it to the allowlists at the top of that script rather than dropping the check.
+That makes the launcher the option surface. A key the launcher does not offer is reachable only by someone who already knows its name, so adding an option means adding its control, and the default a user sees before the DLL has ever run is the launcher's own fallback rather than anything in the repository.
+
+An option may still be deliberately ini-only, and the two `[Debug]` keys are: they are developer controls the Debug tab shows only when verbose logging is on. What that costs is discoverability, so it is a decision rather than an omission, and `scripts/check_option_surface.py` holds the list with the reason for each. Drifting into it is the thing to avoid: a key read behind a condition never appears for the user who leaves that feature off, and nobody has to decide anything for it to happen.
+
+A correction is not a setting, so it gets no ini key at all: `FieldMonsterSnap`, `FieldCharacterPull` and `FastSaveMenu` lost theirs for that reason, keeping only their environment switches for a diagnostic run.
+
+`[Battle] BattleCutInDimming` is the one key whose default cannot be read off its feature table cell: its `Descriptor` sets `invert`, so the key defaults to the opposite of the cell. Read `featureEnabled` rather than the table when you need its value.
 
 ## Documentation style
 

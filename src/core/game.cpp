@@ -60,9 +60,15 @@ const Descriptor& descriptor(Feature f) {
     /* SkipStartupLogos   */ { "ARLAND_SKIP_LOGOS", "Startup", "SkipLogos", false },
     /* SkipIntroMovie     */ { "ARLAND_SKIP_INTRO_MOVIE", "Startup", "SkipIntroMovie", false },
     /* SynthesisAnimationRate */ { "ARLAND_SYNTH_RATE", nullptr, nullptr, false },
-    /* FieldMonsterSnap   */ { "ARLAND_MONSTER_SNAP", "Field", "MonsterSnapFix", false },
-    /* FieldCharacterPull */ { "ARLAND_CHARACTER_PULL", "Field", "CharacterPullFix", false },
-    /* FastSaveMenu       */ { "ARLAND_SAVE_MENU_GATES", "Menus", "FastSaveMenu", false },
+    // Keyless, and they used to carry [Field] MonsterSnapFix, [Field]
+    // CharacterPullFix and [Menus] FastSaveMenu. All three are corrections that
+    // are simply on, so the keys documented a decision nobody has to make, and
+    // the settings launcher never offered them: a key no control writes can only
+    // be found by someone who already knows its name. The environment switches
+    // below remain, which is what an A/B run for a bug report needs.
+    /* FieldMonsterSnap   */ { "ARLAND_MONSTER_SNAP", nullptr, nullptr, false },
+    /* FieldCharacterPull */ { "ARLAND_CHARACTER_PULL", nullptr, nullptr, false },
+    /* FastSaveMenu       */ { "ARLAND_SAVE_MENU_GATES", nullptr, nullptr, false },
     // No ini key: a correction is not a setting. See pad_rescan.h.
     /* PadRescanBackoff   */ { "ARLAND_PAD_RESCAN", nullptr, nullptr, false },
     // Keyless: a defect correction rather than a setting. ARLAND_TALK_ANCHOR=0

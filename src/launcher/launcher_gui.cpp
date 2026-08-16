@@ -1302,8 +1302,8 @@ bool hasUnsavedChanges() {
 // Create arland-fix.ini with the defaults, for a folder that has one of the
 // DLLs but has never run the game. These are the same keys and values
 // src/core/config.cpp writes in configPath() when it creates the file itself, and
-// scripts/check_default_ini.py checks both against default.ini, so the two
-// cannot drift apart quietly. The cut-in keys are deliberately absent here as
+// scripts/check_option_surface.py runs this launcher and checks what it writes
+// against src/, so the two cannot drift apart quietly. The cut-in keys are deliberately absent here as
 // well: featureEnabled() seeds those lazily from the per-game matrix, which
 // this tool cannot see. There is no [Battle] key for the restored ordinary
 // battle shadows on Rorona; that one is a fix and cannot be turned off.
@@ -2724,6 +2724,62 @@ LRESULT CALLBACK WndProc(HWND w, UINT msg, WPARAM wp, LPARAM lp) {
   return DefWindowProcW(w, msg, wp, lp);
 }
 
+// ---- writing the defaults out ----------------------------------------------
+
+// `--write-defaults <game> <path>` writes one game's defaults to an ini and
+// exits without showing the window.
+//
+// It is here for CI. No ini ships, so the values a user meets before the DLL has
+// ever run are this window's own, and the only honest way to check them is to
+// make the window produce them and read the result. A checker that read a table
+// of defaults out of this file instead would agree with itself while the window
+// did something else.
+//
+// The game is named rather than detected: a runner has no game installed, and
+// the defaults differ per game, so all three are asked for in turn.
+const wchar_t* const kGameArguments[kGameCount] = {
+  L"rorona", L"totori", L"meruru",
+};
+
+// -1 when the name is not one of the three.
+int gameFromArgument(const wchar_t* name) {
+  for (int i = 0; i < kGameCount; ++i)
+    if (lstrcmpiW(name, kGameArguments[i]) == 0)
+      return i;
+  return -1;
+}
+
+// Fills g_game, g_gameName, g_iniPath and g_settingsPath from the command line,
+// and reports whether this is a headless run. An ordinary launch touches none of
+// them and goes on to hunt for the game folder as before.
+//
+// g_settingsPath gets a sibling of the output rather than being left empty:
+// saveToIni writes the game's own file too, and an empty path there is not a
+// no-op, it is a write to WIN.INI.
+bool adoptHeadlessRequest() {
+  int count = 0;
+  wchar_t** argv = CommandLineToArgvW(GetCommandLineW(), &count);
+  if (!argv)
+    return false;
+
+  bool headless = false;
+  if (count == 4 && lstrcmpiW(argv[1], L"--write-defaults") == 0) {
+    const int game = gameFromArgument(argv[2]);
+    if (game >= 0 &&
+        WideCharToMultiByte(CP_ACP, 0, argv[3], -1, g_iniPath, MAX_PATH,
+                            nullptr, nullptr) > 0) {
+      g_game = game;
+      g_gameName = kGames[game].name;
+      lstrcpynA(g_settingsPath, g_iniPath, MAX_PATH);
+      lstrcatA(g_settingsPath, ".game-settings");
+      headless = true;
+    }
+  }
+
+  LocalFree(argv);
+  return headless;
+}
+
 }  // namespace
 
 int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int) {
@@ -2745,7 +2801,12 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int) {
 
   // This tool edits the files beside it, so both must be there. Saying which
   // one is missing is the whole of the diagnosis for a misplaced copy.
-  if (!resolveGameFolder()) {
+  // A headless run names its game and its output file, so both the hunt for a
+  // game folder and the seeding below are skipped: there is no game beside a
+  // runner, and the file being written is a report rather than a game's config.
+  const bool headless = adoptHeadlessRequest();
+
+  if (!headless && !resolveGameFolder()) {
     MessageBoxW(nullptr,
       L"No Atelier Arland game was found in this folder.\n\n"
       L"Put arland-fix-launcher.exe in the game's installation folder, "
@@ -2761,7 +2822,8 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int) {
   // with the same keys src/core/config.cpp seeds in configPath(), so a launcher-made
   // file and a DLL-made one are the same file. Only a failure to write it is
   // worth stopping for, and that is a real problem the user can act on.
-  if (GetFileAttributesA(g_iniPath) == INVALID_FILE_ATTRIBUTES &&
+  if (!headless &&
+      GetFileAttributesA(g_iniPath) == INVALID_FILE_ATTRIBUTES &&
       !seedIniDefaults()) {
     MessageBoxW(nullptr,
       L"arland-fix.ini is missing and could not be created in this folder.\n\n"
@@ -2780,7 +2842,9 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int) {
   wc.lpszClassName = L"ArlandConfigWindow";
   RegisterClassExW(&wc);
 
-  const DWORD style = windowStyle;
+  // WS_VISIBLE is part of windowStyle, so a headless run has to take it back
+  // out: the window is created to build the controls, not to be seen.
+  const DWORD style = headless ? (windowStyle & ~WS_VISIBLE) : windowStyle;
   RECT r = { 0, 0, S(kBaseWidth), S(kBaseHeight) };
   AdjustWindowRect(&r, style, FALSE);
   const int width = r.right - r.left;
@@ -2821,6 +2885,21 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int) {
     nullptr, nullptr, hInst, nullptr);
   if (!w)
     return 1;
+
+  // Reset fills every control with its default and Save writes them out, which
+  // is the pair the Reset button runs. No message loop starts, so this returns
+  // as soon as the file is on disk.
+  //
+  // Only the ini half is required. There is no game beside a runner, so the
+  // game's own settings file cannot be written, and that failure says nothing
+  // about the defaults being reported.
+  if (headless) {
+    resetToDefaults();
+    const SaveOutcome outcome = saveToIni();
+    DestroyWindow(w);
+    return outcome.ini ? 0 : 1;
+  }
+
   applyGameIcon(w);
   // After the controls exist and the window is up, so nothing takes it back.
   // Skipped when there is no game to start, since focus on a disabled control
