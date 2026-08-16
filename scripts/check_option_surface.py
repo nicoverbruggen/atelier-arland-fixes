@@ -39,19 +39,27 @@ SECTIONS = ("Rendering", "Battle", "Startup", "Field", "Menus", "Launcher",
 # The launcher's argument for each game, in feature-table row order.
 GAMES = ("rorona", "totori", "meruru")
 
-# Options the code reads that the launcher deliberately does not write.
+# Options the code reads that a default run of the launcher does not write.
 #
-# The surface is the launcher, so anything listed here is an option a user cannot
-# find by looking. Each entry states why it is not offered, and adding one is a
-# decision that the option is not for players. It is not a place to park an
-# option whose control has not been written yet.
-NOT_IN_LAUNCHER: dict[tuple[str, str], str] = {
+# Two shapes end up here and they are not the same thing, so every entry says
+# which it is:
+#
+#   "exposed ..."      a control offers it, but its default state writes no key.
+#                      An unset combo, or an inverted box whose unticked state
+#                      is the correction being on. Nothing is hidden.
+#   "not exposed ..."  no control offers it, so it can only be set by someone
+#                      who already knows the name. The surface is the launcher,
+#                      so this is a decision that the option is not for players,
+#                      not a note that its control has not been written yet.
+NOT_WRITTEN_AT_DEFAULT: dict[tuple[str, str], str] = {
     ("Debug", "View"):
-        "a developer view selector with no meaning to a player; the Debug tab"
-        " offers it only when verbose logging is on, and Reset clears the key",
+        "exposed on the Debug tab, which appears when verbose logging is on."
+        " A default run writes no key: index 0 means no view and writes"
+        " nullptr, which deletes it",
     ("Debug", "FieldJitterFix"):
-        "the same, and its control is inverted: the key exists only to turn the"
-        " correction off, so a default run writes no line at all",
+        "exposed on the same tab, and inverted: the box is ticked to turn the"
+        " correction off, so a default run deletes the key rather than writing"
+        " one",
 }
 
 # Keys where the launcher and the code differ on purpose, because they are not
@@ -242,7 +250,7 @@ def compare(game, ini, source, cells, inverted):
             )
 
     for entry in sorted(source):
-        if entry in ini or entry in NOT_IN_LAUNCHER:
+        if entry in ini or entry in NOT_WRITTEN_AT_DEFAULT:
             continue
         if cells.get(entry) == "U":
             continue          # correctly absent: this game does not have it
@@ -283,8 +291,8 @@ def main():
             problems += compare(game, parse_ini(out), source, per_game[index],
                                 inverted)
 
-    for entry, reason in sorted(NOT_IN_LAUNCHER.items()):
-        print(f"note: [{entry[0]}] {entry[1]} is not offered: {reason}")
+    for entry, reason in sorted(NOT_WRITTEN_AT_DEFAULT.items()):
+        print(f"note: [{entry[0]}] {entry[1]}: {reason}")
     for entry, reason in sorted(DIFFERENT_BY_DESIGN.items()):
         print(f"note: [{entry[0]}] {entry[1]} differs on purpose: {reason}")
 
@@ -293,7 +301,7 @@ def main():
               file=sys.stderr)
         for problem in problems:
             print(f"  {problem}", file=sys.stderr)
-        print("\nFix whichever is wrong, or add the option to NOT_IN_LAUNCHER "
+        print("\nFix whichever is wrong, or add the option to NOT_WRITTEN_AT_DEFAULT "
               "in this script with the reason it cannot be offered.",
               file=sys.stderr)
         return 1
