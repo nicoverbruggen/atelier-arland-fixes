@@ -57,7 +57,7 @@ These things were not part of the original games, but were added with the mod. E
 > This mod is a replacement for `atelier-sync-fix` and Atelier Graphics Tweak (`AGT`), so remove those mods first if you have them installed.
 
 1. Open the game's installation directory from Steam by selecting **Manage → Browse local files**.
-2. Copy the contents of the latest release (`d3d11.dll`, `arland-fix-launcher.exe`, `msimg32.dll` and `arland-fix.ini`) into that directory, beside the game's own executables. If you are updating an existing install, keep the `arland-fix.ini` you already have, since the bundled one is only the defaults.
+2. Copy the contents of the latest release (`d3d11.dll`, `arland-fix-launcher.exe` and `msimg32.dll`) into that directory, beside the game's own executables. Updating an existing install is the same three files, and your settings are safe: `arland-fix.ini` is not in the archive, so there is nothing to overwrite it with.
 3. Launch the game normally through Steam. The mod's launcher should open now instead of the original one.
 
 ## Installation on Linux (Proton)
@@ -100,7 +100,7 @@ The complete source code and the steps GitHub uses to build each release are pub
 
 ## Configuration
 
-Use the launcher. It writes the game's own configuration file and the mod's `arland-fix.ini`, and only shows options the game it sits next to supports. `arland-fix.ini` ships with every default filled in, so it also serves as the list of what can be set.
+Use the launcher. It writes the game's own configuration file and the mod's `arland-fix.ini`, and only shows options the game it sits next to supports. That is also the list of what can be set: no ini is bundled, because one file cannot hold the right defaults for three games. The mod writes `arland-fix.ini` itself the first time it runs.
 
 ## Credits
 
