@@ -103,6 +103,20 @@ KEY_ONLY = (
 )
 
 
+def parse_retired():
+    """(section, key) pairs config.cpp reports as retired.
+
+    Guarded because the list is a claim about the code: a key listed there and
+    still read by src/ would have the log telling a player it does nothing while
+    it quietly went on working.
+    """
+    text = (ROOT / "src" / "core" / "config.cpp").read_text(encoding="utf-8")
+    block = re.search(r"kRetiredKeys\[\]\s*=\s*\{(.*?)\n\};", text, re.S)
+    if not block:
+        return None
+    return set(re.findall(r'\{\s*"(\w+)",\s*"(\w+)"\s*\}', block.group(1)))
+
+
 def parse_ini(path):
     """(section, key) -> value, ignoring comments and blank lines."""
     values = {}
@@ -280,7 +294,19 @@ def main():
         return 1
     per_game, inverted = parsed
 
-    problems = []
+    retired = parse_retired()
+    if retired is None:
+        print("the retired-key list in src/core/config.cpp could not be read",
+              file=sys.stderr)
+        return 1
+
+    # A key cannot be both retired and read. The log would be telling a player
+    # it does nothing while it went on working.
+    problems = [
+        f"[{section}] {key} is listed as retired but src/ still reads it"
+        for section, key in sorted(retired & set(source))
+    ]
+
     with tempfile.TemporaryDirectory() as tmp:
         for index, game in enumerate(GAMES):
             out = Path(tmp) / f"{game}.ini"

@@ -425,6 +425,46 @@ bool modDisabled() {
 // relevant environment variables are included.
 //
 //   CONFIG ini   -- the file as it reads on disk, comments stripped
+// Keys retired along with the features they configured.
+//
+// They are left exactly where they are. The file belongs to whoever owns the
+// game, and quietly editing it is a poor way to explain that a setting went
+// away; a line in the log is a better one, and the log is what a bug report
+// already carries. So these are ignored, once, out loud.
+//
+// A player's ini outlives the code that read it: MSAA, anisotropic filtering
+// and borderless mode were removed in three separate changes and every one of
+// those keys is still sitting in files today.
+//
+// ADD TO THIS IN THE SAME CHANGE that removes an option.
+struct RetiredKey { const char* section; const char* key; };
+constexpr RetiredKey kRetiredKeys[] = {
+  { "Rendering", "MSAA" },
+  { "Rendering", "AnisotropicFiltering" },
+  { "Rendering", "Borderless" },
+  { "Battle",    "BattleShadows" },        // now keyless: a fix, not a setting
+  { "Field",     "MonsterSnapFix" },       // the same, all three of these
+  { "Field",     "CharacterPullFix" },
+  { "Menus",     "FastSaveMenu" },
+  { "Engine",    "MaxFps" },
+  { "Gameplay",  "MaxEngineFps" },
+};
+
+void warnRetiredKeys() {
+  const char* path = configPath();
+  if (!path)
+    return;
+  for (const RetiredKey& retired : kRetiredKeys) {
+    char value[8] = { };
+    GetPrivateProfileStringA(retired.section, retired.key, "\x01", value,
+      sizeof(value), path);
+    if (value[0] == '\x01')
+      continue;
+    log("CONFIG ignored [", retired.section, "] ", retired.key,
+      " -- retired, this key does nothing");
+  }
+}
+
 //   CONFIG env   -- every ARLAND_* variable, which override the ini
 //   CONFIG using -- the resolutions after clamping, which is what actually ran
 void logIniFile() {
@@ -506,6 +546,10 @@ void logConfiguration() {
   static std::atomic<bool> written { false };
   if (written.exchange(true))
     return;
+
+  // Before the dump, so a reader meets the warning and then the line it is
+  // about rather than the other way round.
+  warnRetiredKeys();
 
   logIniFile();
   logEnvironmentOverrides();

@@ -5,3 +5,6 @@
 /arland-fix.ini
 /arland-fix.log
 /HANDOFF.md
+
+# Python bytecode from running the scripts/ checks locally.
+__pycache__/
