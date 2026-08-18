@@ -991,12 +991,12 @@ void loadFromIni() {
 
   // An absent key falls back to what the DLL would do with it, not to the first
   // entry in the list. shadowMapResolution() reads a missing ShadowMultiplier
-  // as "2", so falling back to "1" here would show Normal for a default install
+  // as "4", so falling back to "1" here would show Normal for a default install
   // and then persist that on the next save, quietly turning the feature off for
   // anyone who opened the launcher.
   iniString("Rendering", "ShadowMultiplier", buf, sizeof(buf));
   comboSelectByValue(g_hShadow, kShadowItems, kShadowCount,
-                     buf[0] ? buf : "2", 1);
+                     buf[0] ? buf : "4", 2);
 
   // SMAA is on by default.
   SendMessageW(g_hSmaa, BM_SETCHECK,
@@ -1090,7 +1090,7 @@ void resetToDefaults() {
 
   SendMessageW(g_hFont, CB_SETCURSEL, 0, 0);      // replaced
   setSsIndex(0);                                  // supersampling off
-  SendMessageW(g_hShadow, CB_SETCURSEL, 1, 0);    // 2048 map, a missing key's value
+  SendMessageW(g_hShadow, CB_SETCURSEL, 2, 0);    // 4096 map, a missing key's value
   SendMessageW(g_hSmaa, BM_SETCHECK, BST_CHECKED, 0);
   SendMessageW(g_hSharpen, CB_SETCURSEL, 0, 0);   // off, as it ships
   SendMessageW(g_hOutline, BM_SETCHECK, BST_CHECKED, 0);   // on as it shipped
@@ -1319,7 +1319,7 @@ bool seedIniDefaults() {
   WritePrivateProfileStringA("Rendering", "DisplayHeight", "", g_iniPath);
   WritePrivateProfileStringA("Rendering", "RenderWidth", "", g_iniPath);
   WritePrivateProfileStringA("Rendering", "RenderHeight", "", g_iniPath);
-  WritePrivateProfileStringA("Rendering", "ShadowMultiplier", "2", g_iniPath);
+  WritePrivateProfileStringA("Rendering", "ShadowMultiplier", "4", g_iniPath);
   return true;
 }
 

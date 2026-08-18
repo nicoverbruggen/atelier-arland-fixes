@@ -98,7 +98,7 @@ constexpr Support X = Support::OnByDefault;
 //
 //   ShadowMultiplier is documentation only. It is a valued knob rather than a
 //   switch and has its own reader, so nothing resolves through this cell. It
-//   says OnByDefault because shadowMapResolution() reads a missing key as 2.
+//   says OnByDefault because shadowMapResolution() reads a missing key as 4.
 //
 //   BattleShadows is read directly in battle_shadow_restore.cpp rather than
 //   through featureEnabled, so ARLAND_BATTLE_SHADOWS=0 reaches even the rows

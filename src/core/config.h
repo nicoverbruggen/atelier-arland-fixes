@@ -35,8 +35,8 @@ int smaaDebugLevel();               // 0 none, 1 edges, 2 weights
 bool debugWireframe();
 bool debugSceneTargetHighlight();
 
-// Shadow-map edge length: 2048 by default ([Rendering] ShadowMultiplier = 2),
-// or 4096/8192 when asked for. ShadowMultiplier = 1 restores the engine's own
+// Shadow-map edge length: 4096 by default ([Rendering] ShadowMultiplier = 4),
+// or 2048/8192 when asked for. ShadowMultiplier = 1 restores the engine's own
 // 1024 map. See ARLAND_SHADOW_MULTIPLIER.
 unsigned int shadowMapResolution();
 

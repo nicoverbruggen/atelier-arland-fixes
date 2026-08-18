@@ -45,7 +45,7 @@ const char* configPath() {
       // Only these four, because blank is a value here and nothing else can
       // write it: the lazy seeds state true or false. ShadowMultiplier was
       // seeded here as well and is not any more, because shadowMapResolution()
-      // already writes 2 for a missing key and logConfiguration() calls it on
+      // already writes 4 for a missing key and logConfiguration() calls it on
       // every run. Stating one default in two places is how the two come to
       // disagree.
       //
@@ -84,13 +84,16 @@ bool arlandConfigBool(const char* section, const char* key, bool def) {
 // like arlandConfigBool, a missing ini key is written back for discovery. The
 // multiplier (1, 2, 4 or 8) scales the engine's 1024x1024 shadow map.
 //
-// Defaults to 2. The engine draws every shadow in a scene into one 1024 map, so
-// at the resolutions this mod renders at the edges are visibly blocky; 2048
-// costs little video memory and is what stops it looking broken. Both seed
-// sites have to agree: this one and the file creation in configPath() above.
+// Defaults to 4. The engine draws every shadow in a scene into one 1024 map, so
+// at the resolutions this mod renders at the edges are visibly blocky. 2048 is
+// not enough to correct that; 4096 is where the edges stop reading as broken.
+// The cost is a pair of mod-owned twins at 4 bytes a pixel, so 128 MiB of video
+// memory here against 32 at 2048 and 512 at 8192, which is why 8 stays a choice
+// rather than the default. Both seed sites have to agree: this one and the
+// launcher's own fallback, which check_option_surface.py compares.
 UINT shadowMapResolution() {
   static const UINT resolution = []() -> UINT {
-    unsigned long multiplier = 2;
+    unsigned long multiplier = 4;
     char value[16] = { };
     const DWORD length = GetEnvironmentVariableA(
       "ARLAND_SHADOW_MULTIPLIER", value, sizeof(value));
@@ -101,7 +104,7 @@ UINT shadowMapResolution() {
       GetPrivateProfileStringA("Rendering", "ShadowMultiplier", "\x01",
         iniValue, sizeof(iniValue), path);
       if (iniValue[0] == '\x01')
-        WritePrivateProfileStringA("Rendering", "ShadowMultiplier", "2", path);
+        WritePrivateProfileStringA("Rendering", "ShadowMultiplier", "4", path);
       else
         multiplier = std::strtoul(iniValue, nullptr, 10);
     }

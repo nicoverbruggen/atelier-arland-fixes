@@ -138,7 +138,7 @@ std::atomic<uint64_t> g_transitionShadowFlushBytes = 0;
 //              write path AND (load-bearing) via a 16-byte boxed
 //              UpdateSubresource right before each cinematic shadow-receiving
 //              880 draw (gateHoldAtDraw).
-// ShadowMultiplier (arland-fix.ini [Rendering], default 2): scales
+// ShadowMultiplier (arland-fix.ini [Rendering], default 4): scales
 // the engine's two 1024x1024 R24G8 shadow maps. Values 2, 4 and 8 enlarge the
 // maps to 2048/4096/8192 (plus the caster viewport, the A->B copy box and the
 // receiver's PCF tap scale); anything else, 1 included, keeps vanilla
