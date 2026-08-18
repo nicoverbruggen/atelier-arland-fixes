@@ -99,6 +99,7 @@ else
     'src/core/pad_notify_trace.cpp',
     'src/core/smaa.cpp',
     'src/engines/phyre/field_physics.cpp',
+    'src/engines/phyre/worker_idle_sleep.cpp',
     'src/engines/phyre/worldmap_fix.cpp',
     'src/engines/phyre/item_guard.cpp',
     'src/engines/phyre/stream_lifetime_fix.cpp',

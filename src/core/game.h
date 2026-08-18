@@ -38,6 +38,7 @@ enum class Feature : uint8_t {
   FastSaveMenu,        // drop the hardcoded waits before the save slots view
   PadRescanBackoff,    // rate-limit the controller rescan while no pad is present
   TalkAnchorHold,      // hold a talking character at its conversation anchor
+  WorkerIdleSleep,     // shorten the idle poll a scene transition joins
   Count,
 };
 

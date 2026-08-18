@@ -32,6 +32,7 @@ FEATURES = (
     "FieldMonsterSnap", "FieldCharacterPull", "FastSaveMenu",
     "PadRescanBackoff",
     "TalkAnchorHold",
+    "WorkerIdleSleep",
 )
 
 
@@ -84,9 +85,9 @@ def main():
             r"/\*\s*(Rorona|Totori|Meruru)\s*\*/\s*\{([^}]*)\}", matrix
         )
         expected_matrix = (
-            ("Rorona", ("X", "X", "X", "X", "X", "X", "X", "O", "O", "O", "O", "X", "X", "X", "X", "X", "X")),
-            ("Totori", ("X", "X", "X", "X", "X", "X", "U", "O", "O", "O", "O", "X", "X", "X", "X", "X", "U")),
-            ("Meruru", ("X", "X", "X", "O", "X", "X", "U", "O", "O", "O", "O", "X", "X", "X", "X", "X", "X")),
+            ("Rorona", ("X", "X", "X", "X", "X", "X", "X", "O", "O", "O", "O", "X", "X", "X", "X", "X", "X", "X")),
+            ("Totori", ("X", "X", "X", "X", "X", "X", "U", "O", "O", "O", "O", "X", "X", "X", "X", "X", "U", "X")),
+            ("Meruru", ("X", "X", "X", "O", "X", "X", "U", "O", "O", "O", "O", "X", "X", "X", "X", "X", "X", "X")),
         )
         actual_matrix = tuple(
             (name, tuple(re.findall(r"\b([UXO])\b", values)))

@@ -21,6 +21,7 @@
 #include "field_physics.h"
 #include "../../core/pad_notify_trace.h"
 #include "../../core/pad_rescan.h"
+#include "worker_idle_sleep.h"
 #include "worldmap_fix.h"
 #include "item_guard.h"
 #include "stream_lifetime_fix.h"
@@ -450,6 +451,12 @@ std::atomic<uint64_t> renderTextHeartbeatCalls = { 0 };
 std::atomic<uint64_t> renderTextHeartbeatNanos = { 0 };
 std::atomic<uint64_t> pathCacheHits = { 0 };
 std::atomic<uint64_t> pathRealChecks = { 0 };
+// Path checks the cache never sees, because pssgPath rejects anything not
+// ending .PSSG and cachedPathCheck forwards those untouched. Without this the
+// drain's real path-check volume is invisible: pssg_cached and pssg_real count
+// only the .PSSG-suffixed subset, so a drain making thousands of other checks
+// logs the same two numbers as one making none.
+std::atomic<uint64_t> pathOtherChecks = { 0 };
 std::atomic<uint64_t> atlasCacheHits = { 0 };
 std::atomic<uint64_t> atlasRealReads = { 0 };
 thread_local uint32_t renderTextDepth = 0;
@@ -950,8 +957,11 @@ uintptr_t timedLayoutTemplate(uintptr_t a1, uintptr_t a2, uintptr_t a3,
 
 bool cachedPathCheck(void* context, void* pathString) {
   const char* path = pssgPath(pathString);
-  if (!path)
+  if (!path) {
+    if (menuStatsEnabled())
+      pathOtherChecks.fetch_add(1, std::memory_order_relaxed);
     return originalPathCheck(context, pathString);
+  }
   const std::string key(path);
   {
     std::lock_guard lock(cacheMutex);
@@ -1033,6 +1043,459 @@ std::atomic<uint32_t> transitionPresentBudget = 0;
 std::atomic<uint32_t> transitionPresentIndex = 0;
 std::atomic<uint64_t> transitionDrainMicros = 0;
 
+// ---- blocking probe -------------------------------------------------------
+// Where a drain's wall clock goes when the thread is not running.
+//
+// A battle transition is one drain that costs half a second while the thread is
+// scheduled for a tenth of it, so the rest is spent inside something that
+// blocks. PhyreEngine's subsystem-entry idiom is `while (busy) Sleep(1)`
+// followed by a mutex wait that pumps messages on a 50 ms timeout, and both
+// halves are off-CPU. This times the three calls that idiom is built from and
+// attributes them to the drain, which is the difference between knowing the
+// thread waits and knowing what it waits in.
+//
+// SCOPED BY THREAD, not by a global flag. These are process-wide detours on
+// hot system calls, and every other thread keeps its own zero depth, so a
+// worker sleeping in parallel cannot be counted as the game thread's stall.
+// The hooks take no lock: a probe that can block is a probe that can deadlock
+// the thing it measures.
+//
+// ARLAND_BLOCK_TRACE=1 installs it. Off by default because detouring Sleep and
+// WaitForSingleObject for every caller in the process is not something a normal
+// session should carry.
+thread_local uint32_t t_drainDepth = 0;
+std::atomic<uint64_t> blockSleepCalls = { 0 };
+std::atomic<uint64_t> blockSleepNanos = { 0 };
+std::atomic<uint64_t> blockWaitCalls = { 0 };
+std::atomic<uint64_t> blockWaitNanos = { 0 };
+std::atomic<uint64_t> blockPumpCalls = { 0 };
+
+// Wait durations by size, because the total alone cannot tell two very
+// different problems apart. Half a second spread over twenty thousand waits is
+// either a handful of long blocks -- the loader threads holding the lock while
+// they work, which is the engine's design and nothing a proxy can reach -- or
+// twenty thousand short ones, which is hand-off and wake-up cost between two
+// threads fighting one mutex. The average is the same either way.
+//
+// Bucket edges are 10 us, 100 us and 1 ms. An uncontended acquire measures
+// around 1.1 us, so the first bucket is "did not block at all".
+constexpr size_t kWaitBuckets = 4;
+std::atomic<uint64_t> blockWaitBucketCalls[kWaitBuckets] = {};
+std::atomic<uint64_t> blockWaitBucketNanos[kWaitBuckets] = {};
+std::atomic<uint64_t> blockWaitMaxNanos = { 0 };
+// Who made the longest wait of the drain, and on what. The totals say a wait of
+// half a second happens; these say which line of the game asked for it, which
+// is the difference between a measurement and an address to disassemble.
+//
+// Captured in the hook, reported from the drain. Formatting and writing a log
+// line from inside a detour on WaitForSingleObject is the kind of reentrancy
+// that turns a probe into the bug it is looking for.
+std::atomic<uintptr_t> blockWaitMaxCaller = { 0 };
+std::atomic<uintptr_t> blockWaitMaxHandle = { 0 };
+std::atomic<uint32_t> blockWaitMaxTimeout = { 0 };
+
+// The other half of the battle-entry stall: what the worker the game just
+// joined is itself waiting for, and whether the joining thread is holding it.
+//
+// The engine's pump-lock retries on a 50 ms timeout, so a wait of exactly 50 ms
+// from a thread that is not the one draining, while a drain is in flight, is
+// that lock. Recording its handle lets it be compared against what the drain
+// thread holds, which is the difference between "the worker is waiting for
+// something slow" and "the worker is waiting for the thread that is waiting for
+// the worker".
+constexpr DWORD kPumpLockTimeout = 50;
+constexpr size_t kHeldSlots = 16;
+std::atomic<uint32_t> g_drainThread = { 0 };
+std::atomic<uintptr_t> g_workerLockHandle = { 0 };
+std::atomic<uint32_t> g_workerLockThread = { 0 };
+std::atomic<uint64_t> g_workerLockRounds = { 0 };
+
+// The longest wait made by any thread other than the one draining. The 50 ms
+// pump-lock counters above only see one shape of wait, and the thread the game
+// joins turns out not to be in that shape, so this catches whatever it is
+// actually blocked in, with the return address that will name it.
+std::atomic<uint64_t> g_otherWaitMicros = { 0 };
+std::atomic<uintptr_t> g_otherWaitHandle = { 0 };
+std::atomic<uintptr_t> g_otherWaitCaller = { 0 };
+std::atomic<uint32_t> g_otherWaitThread = { 0 };
+std::atomic<uint32_t> g_otherWaitTimeout = { 0 };
+// Which call it blocked in. WaitForSingleObject was the first guess and it was
+// wrong -- the joined thread's longest wait there is under a millisecond -- so
+// the remaining ways a thread can stop without burning CPU are covered too.
+enum class BlockKind : int { None, Wait, Sleep, WaitMultiple, ReadFile };
+std::atomic<int> g_otherWaitKind = { int(BlockKind::None) };
+
+const char* blockKindName(int kind) {
+  switch (BlockKind(kind)) {
+    case BlockKind::Wait:         return "WaitForSingleObject";
+    case BlockKind::Sleep:        return "Sleep";
+    case BlockKind::WaitMultiple: return "WaitForMultipleObjects";
+    case BlockKind::ReadFile:     return "ReadFile";
+    default:                      return "none";
+  }
+}
+
+// Keeps the longest block seen from any thread that is not draining. Every
+// caller times its own call and offers it here; the winner carries its call
+// site, which is the thing worth disassembling.
+void noteOtherBlock(BlockKind kind, uint64_t micros, uintptr_t caller,
+                    uintptr_t handle, uint32_t detail) {
+  uint64_t worst = g_otherWaitMicros.load(std::memory_order_relaxed);
+  while (micros > worst) {
+    if (g_otherWaitMicros.compare_exchange_weak(worst, micros,
+        std::memory_order_relaxed)) {
+      g_otherWaitKind.store(int(kind), std::memory_order_relaxed);
+      g_otherWaitHandle.store(handle, std::memory_order_relaxed);
+      g_otherWaitCaller.store(caller, std::memory_order_relaxed);
+      g_otherWaitThread.store(GetCurrentThreadId(), std::memory_order_relaxed);
+      g_otherWaitTimeout.store(detail, std::memory_order_relaxed);
+      return;
+    }
+  }
+}
+
+using WaitMultipleProc = DWORD (WINAPI*)(DWORD, const HANDLE*, BOOL, DWORD);
+using ReadFileProc = BOOL (WINAPI*)(HANDLE, LPVOID, DWORD, LPDWORD,
+  LPOVERLAPPED);
+WaitMultipleProc originalWaitMultiple = nullptr;
+ReadFileProc originalReadFile = nullptr;
+
+DWORD WINAPI tracedWaitMultiple(DWORD count, const HANDLE* handles,
+                                BOOL waitAll, DWORD milliseconds) {
+  if (t_drainDepth || !g_drainThread.load(std::memory_order_relaxed))
+    return originalWaitMultiple(count, handles, waitAll, milliseconds);
+  const uintptr_t caller = reinterpret_cast<uintptr_t>(arlandReturnAddress());
+  const auto started = std::chrono::steady_clock::now();
+  const DWORD result = originalWaitMultiple(count, handles, waitAll,
+    milliseconds);
+  noteOtherBlock(BlockKind::WaitMultiple, uint64_t(
+    std::chrono::duration_cast<std::chrono::microseconds>(
+      std::chrono::steady_clock::now() - started).count()), caller,
+    count && handles ? reinterpret_cast<uintptr_t>(handles[0]) : 0,
+    milliseconds);
+  return result;
+}
+
+BOOL WINAPI tracedReadFile(HANDLE file, LPVOID buffer, DWORD bytes,
+                           LPDWORD read, LPOVERLAPPED overlapped) {
+  if (t_drainDepth || !g_drainThread.load(std::memory_order_relaxed))
+    return originalReadFile(file, buffer, bytes, read, overlapped);
+  const uintptr_t caller = reinterpret_cast<uintptr_t>(arlandReturnAddress());
+  const auto started = std::chrono::steady_clock::now();
+  const BOOL result = originalReadFile(file, buffer, bytes, read, overlapped);
+  noteOtherBlock(BlockKind::ReadFile, uint64_t(
+    std::chrono::duration_cast<std::chrono::microseconds>(
+      std::chrono::steady_clock::now() - started).count()), caller,
+    reinterpret_cast<uintptr_t>(file), bytes);
+  return result;
+}
+
+// Handles this thread has acquired and not yet released. Bounded and lossy on
+// purpose: it exists to answer one yes/no question about one lock, not to be a
+// correct lock tracker.
+thread_local uintptr_t t_held[kHeldSlots] = {};
+// When each of those was taken, so a release can price the hold. The stall is a
+// worker spinning on a lock at 50 ms a round, so the thing worth naming is
+// whoever keeps that lock long enough to make the spinning necessary.
+thread_local int64_t t_heldSince[kHeldSlots] = {};
+std::atomic<uint64_t> g_longestHoldMicros = { 0 };
+std::atomic<uintptr_t> g_longestHoldHandle = { 0 };
+std::atomic<uint32_t> g_longestHoldThread = { 0 };
+// Snapshot taken as the join begins, since the set is what matters at that
+// instant rather than after the join has returned.
+std::atomic<uintptr_t> g_heldAtJoin[kHeldSlots] = {};
+
+void noteAcquired(uintptr_t handle) {
+  for (size_t i = 0; i < kHeldSlots; ++i) {
+    if (!t_held[i]) {
+      t_held[i] = handle;
+      t_heldSince[i] = std::chrono::steady_clock::now()
+        .time_since_epoch().count();
+      return;
+    }
+  }
+}
+
+void noteReleased(uintptr_t handle) {
+  for (size_t i = 0; i < kHeldSlots; ++i) {
+    if (t_held[i] != handle)
+      continue;
+    const int64_t now =
+      std::chrono::steady_clock::now().time_since_epoch().count();
+    const uint64_t micros = t_heldSince[i] && now > t_heldSince[i]
+      ? uint64_t(now - t_heldSince[i]) / 1000 : 0;
+    if (g_drainThread.load(std::memory_order_relaxed)) {
+      uint64_t worst = g_longestHoldMicros.load(std::memory_order_relaxed);
+      while (micros > worst) {
+        if (g_longestHoldMicros.compare_exchange_weak(worst, micros,
+            std::memory_order_relaxed)) {
+          g_longestHoldHandle.store(handle, std::memory_order_relaxed);
+          g_longestHoldThread.store(GetCurrentThreadId(),
+            std::memory_order_relaxed);
+          break;
+        }
+      }
+    }
+    t_held[i] = 0;
+    t_heldSince[i] = 0;
+    return;
+  }
+}
+
+using ReleaseMutexProc = BOOL (WINAPI*)(HANDLE);
+ReleaseMutexProc originalReleaseMutex = nullptr;
+
+BOOL WINAPI tracedReleaseMutex(HANDLE handle) {
+  noteReleased(reinterpret_cast<uintptr_t>(handle));
+  return originalReleaseMutex(handle);
+}
+
+size_t waitBucket(uint64_t nanos) {
+  if (nanos < 10'000) return 0;
+  if (nanos < 100'000) return 1;
+  if (nanos < 1'000'000) return 2;
+  return 3;
+}
+
+using CreateThreadProc = HANDLE (WINAPI*)(LPSECURITY_ATTRIBUTES, SIZE_T,
+  LPTHREAD_START_ROUTINE, LPVOID, DWORD, LPDWORD);
+CreateThreadProc originalCreateThread = nullptr;
+
+using WaitProc = DWORD (WINAPI*)(HANDLE, DWORD);
+using PeekProc = BOOL (WINAPI*)(LPMSG, HWND, UINT, UINT, UINT);
+WaitProc originalWait = nullptr;
+PeekProc originalPeek = nullptr;
+
+bool blockTraceEnabled() {
+  static const bool enabled = [] {
+    const char* value = std::getenv("ARLAND_BLOCK_TRACE");
+    return value && value[0] != '0';
+  }();
+  return enabled;
+}
+
+// Sleep is detoured by worker_idle_sleep.cpp, which owns that hook for the idle
+// override. MinHook allows one detour per function, so the probe observes it
+// from here rather than competing for it. Called on the sleeping thread with
+// the value actually passed.
+void observeSleep(DWORD passed, uint64_t nanos, uintptr_t caller) {
+  if (t_drainDepth) {
+    blockSleepNanos.fetch_add(nanos, std::memory_order_relaxed);
+    blockSleepCalls.fetch_add(1, std::memory_order_relaxed);
+    return;
+  }
+  if (g_drainThread.load(std::memory_order_relaxed))
+    noteOtherBlock(BlockKind::Sleep, nanos / 1000, caller, 0, passed);
+}
+
+DWORD WINAPI tracedWait(HANDLE handle, DWORD milliseconds) {
+  if (!t_drainDepth) {
+    if (!g_drainThread.load(std::memory_order_relaxed))
+      return originalWait(handle, milliseconds);
+    // Another thread, while a drain is running. The pump-lock's 50 ms retry
+    // gets its own counters; every wait gets timed, because the interesting
+    // one is whichever blocks longest and its shape is not known in advance.
+    if (milliseconds == kPumpLockTimeout) {
+      g_workerLockHandle.store(reinterpret_cast<uintptr_t>(handle),
+        std::memory_order_relaxed);
+      g_workerLockThread.store(GetCurrentThreadId(),
+        std::memory_order_relaxed);
+      g_workerLockRounds.fetch_add(1, std::memory_order_relaxed);
+    }
+    const uintptr_t otherCaller =
+      reinterpret_cast<uintptr_t>(arlandReturnAddress());
+    const auto otherStarted = std::chrono::steady_clock::now();
+    const DWORD otherResult = originalWait(handle, milliseconds);
+    const uint64_t otherMicros = uint64_t(
+      std::chrono::duration_cast<std::chrono::microseconds>(
+        std::chrono::steady_clock::now() - otherStarted).count());
+    noteOtherBlock(BlockKind::Wait, otherMicros, otherCaller,
+      reinterpret_cast<uintptr_t>(handle), milliseconds);
+    return otherResult;
+  }
+  // The game's own call site: this is a detour, so the return address on the
+  // stack belongs to whoever called WaitForSingleObject.
+  const uintptr_t caller = reinterpret_cast<uintptr_t>(arlandReturnAddress());
+  // 0x478b93 is the join: WaitForSingleObject(INFINITE) then GetExitCodeThread.
+  // What this thread holds as it goes in is what a worker could be stuck on.
+  const uintptr_t joinBase = reinterpret_cast<uintptr_t>(gameBase);
+  if (joinBase && caller - joinBase == 0x478b93) {
+    for (size_t i = 0; i < kHeldSlots; ++i)
+      g_heldAtJoin[i].store(t_held[i], std::memory_order_relaxed);
+  }
+  const auto started = std::chrono::steady_clock::now();
+  const DWORD result = originalWait(handle, milliseconds);
+  if (result == WAIT_OBJECT_0)
+    noteAcquired(reinterpret_cast<uintptr_t>(handle));
+  const uint64_t nanos = uint64_t(
+    std::chrono::duration_cast<std::chrono::nanoseconds>(
+      std::chrono::steady_clock::now() - started).count());
+  blockWaitNanos.fetch_add(nanos, std::memory_order_relaxed);
+  blockWaitCalls.fetch_add(1, std::memory_order_relaxed);
+  const size_t bucket = waitBucket(nanos);
+  blockWaitBucketCalls[bucket].fetch_add(1, std::memory_order_relaxed);
+  blockWaitBucketNanos[bucket].fetch_add(nanos, std::memory_order_relaxed);
+  uint64_t worst = blockWaitMaxNanos.load(std::memory_order_relaxed);
+  bool longest = false;
+  while (nanos > worst) {
+    if (blockWaitMaxNanos.compare_exchange_weak(worst, nanos,
+        std::memory_order_relaxed)) {
+      longest = true;
+      break;
+    }
+  }
+  if (longest) {
+    blockWaitMaxCaller.store(caller, std::memory_order_relaxed);
+    blockWaitMaxHandle.store(reinterpret_cast<uintptr_t>(handle),
+      std::memory_order_relaxed);
+    blockWaitMaxTimeout.store(milliseconds, std::memory_order_relaxed);
+  }
+  return result;
+}
+
+// Counted, not timed. A non-zero count is the whole signal: the pump only runs
+// when the 50 ms wait timed out, so it says the mutex was genuinely contended
+// rather than the thread having blocked somewhere else entirely.
+BOOL WINAPI tracedPeek(LPMSG msg, HWND window, UINT first, UINT last,
+                       UINT remove) {
+  if (t_drainDepth)
+    blockPumpCalls.fetch_add(1, std::memory_order_relaxed);
+  return originalPeek(msg, window, first, last, remove);
+}
+
+// Every worker the game starts, so the handle the battle join blocks on can be
+// matched to the thread it belongs to.
+//
+// One family matters here: three creation sites share the thread body at
+// rva 0x219e50, which reads a period in seconds from its object's first field,
+// multiplies by 1000 and hands it to SetTimer. Its object also carries the
+// function it runs at +8 and a user pointer at +0x10, so those are read back
+// here, guarded. For any other thread the object fields are meaningless and
+// only the start address is worth reading.
+//
+// Logged inline rather than deferred like the wait probe: threads are created a
+// handful of times in a session, so there is no reentrancy risk worth avoiding.
+HANDLE WINAPI tracedCreateThread(LPSECURITY_ATTRIBUTES attributes,
+                                 SIZE_T stackSize,
+                                 LPTHREAD_START_ROUTINE start, LPVOID parameter,
+                                 DWORD flags, LPDWORD threadId) {
+  const uintptr_t caller = reinterpret_cast<uintptr_t>(arlandReturnAddress());
+  const HANDLE handle = originalCreateThread(attributes, stackSize, start,
+    parameter, flags, threadId);
+  const uintptr_t base = reinterpret_cast<uintptr_t>(gameBase);
+  const auto rva = [base](uintptr_t address) -> uintptr_t {
+    return base && address > base && address - base < 0x1000000
+      ? address - base : 0;
+  };
+  const uintptr_t object = reinterpret_cast<uintptr_t>(parameter);
+  float period = 0.0f;
+  uintptr_t body = 0;
+  tryRead(object, period);
+  tryRead(object + 8, body);
+  atfix::log("THREAD created handle=0x", std::hex,
+    reinterpret_cast<uintptr_t>(handle),
+    " id=", std::dec, handle ? GetThreadId(handle) : 0,
+    " start_rva=0x", std::hex, rva(reinterpret_cast<uintptr_t>(start)),
+    " caller_rva=0x", rva(caller),
+    " param=0x", object,
+    " obj_fn_rva=0x", rva(body), std::dec,
+    " obj_period=", period);
+  return handle;
+}
+
+void installBlockTrace() {
+  // Diagnostic only, and it stays out of a normal session: these are
+  // process-wide detours on hot system calls, and a probe that is always
+  // present is a probe nobody has measured the cost of. The idle-sleep fix owns
+  // its own hook in worker_idle_sleep.cpp and does not come through here.
+  const bool probe = blockTraceEnabled();
+  if (!probe)
+    return;
+  HMODULE kernel32 = GetModuleHandleW(L"kernel32.dll");
+  if (!kernel32) {
+    atfix::log("FIXES block_trace=unavailable (no kernel32)");
+    return;
+  }
+  if (!probe)
+    return;
+  bool any = false;
+  atfix::setSleepObserver(&observeSleep);
+  HMODULE user32 = GetModuleHandleW(L"user32.dll");
+  if (auto* createThread = reinterpret_cast<BYTE*>(
+        GetProcAddress(kernel32, "CreateThread")))
+    any |= installMinHookDetour(createThread,
+      reinterpret_cast<void*>(&tracedCreateThread),
+      reinterpret_cast<void**>(&originalCreateThread));
+  if (auto* waitMultiple = reinterpret_cast<BYTE*>(
+        GetProcAddress(kernel32, "WaitForMultipleObjects")))
+    any |= installMinHookDetour(waitMultiple,
+      reinterpret_cast<void*>(&tracedWaitMultiple),
+      reinterpret_cast<void**>(&originalWaitMultiple));
+  if (auto* readFile = reinterpret_cast<BYTE*>(
+        GetProcAddress(kernel32, "ReadFile")))
+    any |= installMinHookDetour(readFile,
+      reinterpret_cast<void*>(&tracedReadFile),
+      reinterpret_cast<void**>(&originalReadFile));
+  if (auto* releaseProc = reinterpret_cast<BYTE*>(
+        GetProcAddress(kernel32, "ReleaseMutex")))
+    any |= installMinHookDetour(releaseProc,
+      reinterpret_cast<void*>(&tracedReleaseMutex),
+      reinterpret_cast<void**>(&originalReleaseMutex));
+  if (auto* waitProc = reinterpret_cast<BYTE*>(
+        GetProcAddress(kernel32, "WaitForSingleObject")))
+    any |= installMinHookDetour(waitProc,
+      reinterpret_cast<void*>(&tracedWait),
+      reinterpret_cast<void**>(&originalWait));
+  if (user32) {
+    if (auto* peekProc = reinterpret_cast<BYTE*>(
+          GetProcAddress(user32, "PeekMessageA")))
+      any |= installMinHookDetour(peekProc,
+        reinterpret_cast<void*>(&tracedPeek),
+        reinterpret_cast<void**>(&originalPeek));
+  }
+  atfix::log("FIXES block_trace=", any ? "active" : "failed");
+}
+
+// Microseconds this thread has actually been scheduled, kernel plus user. The
+// difference against wall clock is the whole question for a long drain: equal
+// means it is computing, far short means it is waiting on something.
+uint64_t threadCpuMicros() {
+  FILETIME creation = {}, exit = {}, kernel = {}, user = {};
+  if (!GetThreadTimes(GetCurrentThread(), &creation, &exit, &kernel, &user))
+    return 0;
+  const auto toMicros = [](const FILETIME& t) {
+    return ((uint64_t(t.dwHighDateTime) << 32) | t.dwLowDateTime) / 10;
+  };
+  return toMicros(kernel) + toMicros(user);
+}
+
+// The same, for every thread in the process. Subtracting the calling thread's
+// share says what the rest of the engine did while this drain ran, which is the
+// difference between a thread parked on a loader that is working and a thread
+// parked on a loader that is itself stuck.
+uint64_t processCpuMicros() {
+  FILETIME creation = {}, exit = {}, kernel = {}, user = {};
+  if (!GetProcessTimes(GetCurrentProcess(), &creation, &exit, &kernel, &user))
+    return 0;
+  const auto toMicros = [](const FILETIME& t) {
+    return ((uint64_t(t.dwHighDateTime) << 32) | t.dwLowDateTime) / 10;
+  };
+  return toMicros(kernel) + toMicros(user);
+}
+
+// Pending mode requests at the head of a drain, or zero when the manager does
+// not look like the std::list this build carries. Read-only and guarded: this
+// is a diagnostic, so an unrecognised object must report nothing rather than
+// risk the game.
+uint64_t queuedRequests(void* manager) {
+  const uintptr_t base = reinterpret_cast<uintptr_t>(manager);
+  uint64_t count = 0;
+  if (!base || !tryRead(base + 0x30, count))
+    return 0;
+  // A plausible pending-request count, not a pointer or uninitialised memory.
+  return count <= 0x10000 ? count : 0;
+}
+
 void cachedQueueDrain(void* manager) {
   const bool outermost =
     atlasDrainDepth.fetch_add(1, std::memory_order_acq_rel) == 0;
@@ -1058,6 +1521,49 @@ void cachedQueueDrain(void* manager) {
     ? atlasCacheHits.load(std::memory_order_relaxed) : 0;
   const uint64_t atlasReadsBefore = stats
     ? atlasRealReads.load(std::memory_order_relaxed) : 0;
+  const uint64_t pathOtherBefore = stats
+    ? pathOtherChecks.load(std::memory_order_relaxed) : 0;
+
+  // Three samples that say what kind of work the drain is, which the caches'
+  // own counters cannot: how much was queued, how much of the wall clock the
+  // thread actually spent running, and whether the process read from disk.
+  //
+  // Wall clock alone cannot separate a thread burning CPU from a thread parked
+  // on a file. The manager holds a std::list of pending mode requests: the head
+  // at +0x28 and the count at +0x30, and the drain loops until that count is
+  // zero, which is why a battle's whole construction lands in one frame. The
+  // count is read, never written, and guarded like every other game-memory read
+  // here, so an unrecognised layout reports zero rather than faulting.
+  const uint64_t queuedBefore =
+    stats ? queuedRequests(manager) : 0;
+  const uint64_t threadMicrosBefore = stats ? threadCpuMicros() : 0;
+  const uint64_t processMicrosBefore = stats ? processCpuMicros() : 0;
+  const uint64_t sleepNanosBefore =
+    blockSleepNanos.load(std::memory_order_relaxed);
+  const uint64_t sleepCallsBefore =
+    blockSleepCalls.load(std::memory_order_relaxed);
+  const uint64_t waitNanosBefore =
+    blockWaitNanos.load(std::memory_order_relaxed);
+  const uint64_t waitCallsBefore =
+    blockWaitCalls.load(std::memory_order_relaxed);
+  const uint64_t pumpCallsBefore =
+    blockPumpCalls.load(std::memory_order_relaxed);
+  uint64_t bucketCallsBefore[kWaitBuckets] = {};
+  uint64_t bucketNanosBefore[kWaitBuckets] = {};
+  if (blockTraceEnabled()) {
+    for (size_t i = 0; i < kWaitBuckets; ++i) {
+      bucketCallsBefore[i] =
+        blockWaitBucketCalls[i].load(std::memory_order_relaxed);
+      bucketNanosBefore[i] =
+        blockWaitBucketNanos[i].load(std::memory_order_relaxed);
+    }
+    // Only the draining thread contributes, so the peak reported below belongs
+    // to this drain rather than to whatever came before it.
+    blockWaitMaxNanos.store(0, std::memory_order_relaxed);
+  }
+  IO_COUNTERS ioBefore = {};
+  if (stats)
+    GetProcessIoCounters(GetCurrentProcess(), &ioBefore);
   const auto started = std::chrono::steady_clock::now();
 
   if (stats && deepMenuStatsEnabled()) {
@@ -1151,7 +1657,18 @@ void cachedQueueDrain(void* manager) {
     recordTimingActive.store(true, std::memory_order_release);
   }
 
+  ++t_drainDepth;
+  if (blockTraceEnabled()) {
+    g_drainThread.store(GetCurrentThreadId(), std::memory_order_relaxed);
+    g_workerLockHandle.store(0, std::memory_order_relaxed);
+    g_workerLockRounds.store(0, std::memory_order_relaxed);
+    g_longestHoldMicros.store(0, std::memory_order_relaxed);
+    g_otherWaitMicros.store(0, std::memory_order_relaxed);
+  }
   originalQueueDrain(manager);
+  if (blockTraceEnabled())
+    g_drainThread.store(0, std::memory_order_relaxed);
+  --t_drainDepth;
 
   if (stats && deepMenuStatsEnabled())
     recordTimingActive.store(false, std::memory_order_release);
@@ -1192,11 +1709,123 @@ void cachedQueueDrain(void* manager) {
       if (elapsed < 1000 && !pathHitDelta && !pathRealDelta &&
           !atlasHitDelta && !atlasRealDelta)
         return;
+      const uint64_t pathOtherDelta =
+        pathOtherChecks.load(std::memory_order_relaxed) - pathOtherBefore;
+      IO_COUNTERS ioAfter = {};
+      GetProcessIoCounters(GetCurrentProcess(), &ioAfter);
+      const uint64_t threadMicros = threadCpuMicros() - threadMicrosBefore;
+      const uint64_t processMicros = processCpuMicros() - processMicrosBefore;
+      // Everything the process burned that this thread did not. Clamped: the
+      // two samples are taken a few instructions apart, so a busy worker can
+      // make the process total lag the thread total by a hair.
+      const uint64_t otherMicros =
+        processMicros > threadMicros ? processMicros - threadMicros : 0;
       atfix::log("MENU drain us=", elapsed,
         " pssg_cached=", pathHitDelta,
         " pssg_real=", pathRealDelta,
+        " path_other=", pathOtherDelta,
         " atlas_cached=", atlasHitDelta,
-        " atlas_real=", atlasRealDelta);
+        " atlas_real=", atlasRealDelta,
+        " queued=", queuedBefore,
+        " cpu_us=", threadMicros,
+        " other_cpu_us=", otherMicros,
+        " io_reads=", ioAfter.ReadOperationCount - ioBefore.ReadOperationCount,
+        " io_bytes=", ioAfter.ReadTransferCount - ioBefore.ReadTransferCount);
+      if (blockTraceEnabled())
+        atfix::log("MENU blocked sleep_calls=",
+          blockSleepCalls.load(std::memory_order_relaxed) - sleepCallsBefore,
+          " sleep_us=",
+          (blockSleepNanos.load(std::memory_order_relaxed)
+            - sleepNanosBefore) / 1000,
+          " wait_calls=",
+          blockWaitCalls.load(std::memory_order_relaxed) - waitCallsBefore,
+          " wait_us=",
+          (blockWaitNanos.load(std::memory_order_relaxed)
+            - waitNanosBefore) / 1000,
+          " pump_calls=",
+          blockPumpCalls.load(std::memory_order_relaxed) - pumpCallsBefore);
+      if (blockTraceEnabled()) {
+        const auto delta = [&](size_t i) {
+          return std::array<uint64_t, 2> {
+            blockWaitBucketCalls[i].load(std::memory_order_relaxed)
+              - bucketCallsBefore[i],
+            (blockWaitBucketNanos[i].load(std::memory_order_relaxed)
+              - bucketNanosBefore[i]) / 1000 };
+        };
+        const auto fast = delta(0);
+        const auto tens = delta(1);
+        const auto hundreds = delta(2);
+        const auto slow = delta(3);
+        atfix::log("MENU wait-hist under10us=", fast[0], "/", fast[1],
+          " under100us=", tens[0], "/", tens[1],
+          " under1ms=", hundreds[0], "/", hundreds[1],
+          " over1ms=", slow[0], "/", slow[1],
+          " max_us=",
+          blockWaitMaxNanos.load(std::memory_order_relaxed) / 1000);
+        // Only worth a line when something actually blocked; every ordinary
+        // drain's longest wait is a few microseconds of syscall floor. The
+        // threshold is low enough to see what is left of a transition once the
+        // half-second sleep is out of it, where the remaining waits are tens of
+        // milliseconds rather than hundreds.
+        if (blockWaitMaxNanos.load(std::memory_order_relaxed) >= 5'000'000) {
+          const uintptr_t caller =
+            blockWaitMaxCaller.load(std::memory_order_relaxed);
+          const uintptr_t base = reinterpret_cast<uintptr_t>(gameBase);
+          const bool inGame = base && caller > base && caller - base < 0x1000000;
+          const DWORD timeout =
+            blockWaitMaxTimeout.load(std::memory_order_relaxed);
+          atfix::log("MENU longest-wait us=",
+            blockWaitMaxNanos.load(std::memory_order_relaxed) / 1000,
+            " caller=0x", std::hex, caller,
+            " caller_rva=0x", inGame ? caller - base : 0,
+            " handle=0x",
+            blockWaitMaxHandle.load(std::memory_order_relaxed),
+            " thread_id=", std::dec, GetThreadId(reinterpret_cast<HANDLE>(
+              blockWaitMaxHandle.load(std::memory_order_relaxed))), std::hex,
+            std::dec, " timeout=",
+            timeout == INFINITE ? -1 : int64_t(timeout));
+          const uintptr_t workerLock =
+            g_workerLockHandle.load(std::memory_order_relaxed);
+          bool joinerHolds = false;
+          for (size_t i = 0; i < kHeldSlots && workerLock; ++i) {
+            if (g_heldAtJoin[i].load(std::memory_order_relaxed) == workerLock)
+              joinerHolds = true;
+          }
+          atfix::log("MENU worker-lock handle=0x", std::hex, workerLock,
+            std::dec, " thread_id=",
+            g_workerLockThread.load(std::memory_order_relaxed),
+            " rounds=", g_workerLockRounds.load(std::memory_order_relaxed),
+            " joiner_holds_it=", joinerHolds ? 1 : 0);
+          const uintptr_t otherCaller =
+            g_otherWaitCaller.load(std::memory_order_relaxed);
+          const uintptr_t otherBase = reinterpret_cast<uintptr_t>(gameBase);
+          const bool otherInGame = otherBase && otherCaller > otherBase &&
+            otherCaller - otherBase < 0x1000000;
+          const uint32_t otherTimeout =
+            g_otherWaitTimeout.load(std::memory_order_relaxed);
+          atfix::log("MENU other-wait kind=",
+            blockKindName(g_otherWaitKind.load(std::memory_order_relaxed)),
+            " us=",
+            g_otherWaitMicros.load(std::memory_order_relaxed),
+            " thread_id=",
+            g_otherWaitThread.load(std::memory_order_relaxed),
+            " caller_rva=0x", std::hex,
+            otherInGame ? otherCaller - otherBase : 0,
+            " handle=0x",
+            g_otherWaitHandle.load(std::memory_order_relaxed), std::dec,
+            " timeout=",
+            otherTimeout == INFINITE ? -1 : int64_t(otherTimeout));
+          atfix::log("MENU longest-hold us=",
+            g_longestHoldMicros.load(std::memory_order_relaxed),
+            " handle=0x", std::hex,
+            g_longestHoldHandle.load(std::memory_order_relaxed), std::dec,
+            " holder_thread=",
+            g_longestHoldThread.load(std::memory_order_relaxed),
+            " is_worker_lock=",
+            g_longestHoldHandle.load(std::memory_order_relaxed) == workerLock
+              ? 1 : 0);
+        }
+      }
       if (deepMenuStatsEnabled()) {
         const uintptr_t f0 = deepMenu.virtualF0Target.load(
           std::memory_order_relaxed);
@@ -2355,6 +2984,8 @@ void detectAndInstallGameHooks() {
     // there is no result here worth branching on. An installer that cannot hold
     // that property unwinds itself, the way installSaveMenuFix restores its
     // gates when the carried-press repair will not install.
+    installBlockTrace();
+    atfix::installWorkerIdleSleep(gameBase, game);
     atfix::installBattleShadowRestore(gameBase, game);
     atfix::installFieldPhysics(gameBase, game);
     atfix::installWorldMapFix(gameBase, game);

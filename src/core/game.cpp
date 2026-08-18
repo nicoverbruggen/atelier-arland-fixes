@@ -74,6 +74,10 @@ const Descriptor& descriptor(Feature f) {
     // Keyless: a defect correction rather than a setting. ARLAND_TALK_ANCHOR=0
     // turns it off for a diagnostic run.
     /* TalkAnchorHold     */ { "ARLAND_TALK_ANCHOR", nullptr, nullptr, false },
+    // Keyless, and valued rather than boolean: the switch also carries the
+    // millisecond count, so worker_idle_sleep.cpp reads it directly and this
+    // cell only says which games have the worker at all.
+    /* WorkerIdleSleep    */ { "ARLAND_WORKER_IDLE_SLEEP", nullptr, nullptr, false },
   };
   return table[static_cast<int>(f)];
 }
@@ -122,10 +126,10 @@ constexpr Support X = Support::OnByDefault;
 // conversation is ever seen shimmering; the address is ready.
 
 constexpr Support kMatrix[3][static_cast<int>(Feature::Count)] = {
-  //           Sync Menu Atls Frme Res  ShMl Bat  CutS CutD Logo Movi Card Snap Pull Save Pad  Talk
-  /* Rorona */ { X,   X,   X,   X,   X,   X,   X,   O,   O,   O,   O,   X,   X,   X,   X,   X,   X },
-  /* Totori */ { X,   X,   X,   X,   X,   X,   U,   O,   O,   O,   O,   X,   X,   X,   X,   X,   U },
-  /* Meruru */ { X,   X,   X,   O,   X,   X,   U,   O,   O,   O,   O,   X,   X,   X,   X,   X,   X },
+  //           Sync Menu Atls Frme Res  ShMl Bat  CutS CutD Logo Movi Card Snap Pull Save Pad  Talk Idle
+  /* Rorona */ { X,   X,   X,   X,   X,   X,   X,   O,   O,   O,   O,   X,   X,   X,   X,   X,   X,   X },
+  /* Totori */ { X,   X,   X,   X,   X,   X,   U,   O,   O,   O,   O,   X,   X,   X,   X,   X,   U,   X },
+  /* Meruru */ { X,   X,   X,   O,   X,   X,   U,   O,   O,   O,   O,   X,   X,   X,   X,   X,   X,   X },
 };
 
 int titleRow(Title t) {
