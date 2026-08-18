@@ -1,6 +1,7 @@
 // Derived from Philip Rebohle's atelier-sync-fix; see LICENSE (zlib).
 #include <iostream>
 
+#include "../../vendor/minhook/include/MinHook.h"
 #include "config.h"
 #include "crash_log.h"
 #include "hook_util.h"

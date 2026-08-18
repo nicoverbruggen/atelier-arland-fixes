@@ -104,7 +104,6 @@ std::atomic<uintptr_t> g_battleSeenLiveMode{0};
 std::atomic<uintptr_t> g_battleStateSlot{0};
 std::atomic<uintptr_t> g_lastBattleStateVt{0};
 std::atomic<uintptr_t> g_lastSceneA{0};
-std::atomic<uintptr_t> g_lastSceneB{0};
 std::atomic<uintptr_t> g_lastSceneHelper{0};
 
 // ==== C1: gates/traces/tables/regs ====
@@ -1835,11 +1834,6 @@ bool arlandCutinCasterClearActive() {
 
 uint32_t arlandSceneGeneration() {
   return g_sceneGeneration.load(std::memory_order_acquire);
-}
-
-// Current battle state name for D3D-side logging, or null outside battle.
-const char* arlandBattleStateName() {
-  return currentBattleState();
 }
 
 // Called by the D3D layer when the 1024x1024 battle shadow map is cleared.

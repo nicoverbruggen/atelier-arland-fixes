@@ -60,8 +60,7 @@
 //
 // It has no ini key. A correction is not a setting -- the same rule that gives
 // the travel-map cursor an environment switch and nothing else.
-// `ARLAND_PAD_RESCAN=0` stands it down for a comparison, and
-// `ARLAND_PAD_RESCAN_PROBE=1` still reports.
+// `ARLAND_PAD_RESCAN=0` stands it down for a comparison.
 //
 // ALL SIX BUILDS carry a row. Neither a prologue signature nor the cross-build
 // homolog matcher can place this function -- it is a short critical-section

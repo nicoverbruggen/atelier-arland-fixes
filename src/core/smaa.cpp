@@ -642,8 +642,8 @@ bool smaaRunAtDraw(ID3D11Device* dev, ID3D11DeviceContext* ctx,
                    ID3D11RenderTargetView* colorRTV) {
   ScopedPipelineState savedState(ctx);
   // Debug views are allowed here too: this is the path that actually runs, so
-  // gating them to the Present-time fallback made ARLAND_SMAA_DEBUG silently
-  // do nothing in the configuration one would be diagnosing.
+  // gating them to the Present-time fallback would silently do nothing in the
+  // configuration one would be diagnosing.
   return smaaRunPasses(dev, ctx, color, colorRTV, true);
 }
 

@@ -344,16 +344,6 @@ bool renderResolution(UINT* width, UINT* height) {
   return true;
 }
 
-bool configuredResolution(UINT* width, UINT* height) {
-  // Backwards-compatible single override, resolving to the display (backbuffer)
-  // size. The render/display split is live: the swap chain follows this, while
-  // the main render target and everything the engine derives from it follow
-  // renderResolution(), and supersample.cpp downscales one into the other at
-  // present. With no render resolution configured the two are equal and this is
-  // the pre-split behaviour.
-  return displayResolution(width, height);
-}
-
 UIFontMode uiFontMode() {
   static const UIFontMode mode = []() -> UIFontMode {
     char value[16] = { };
@@ -601,14 +591,7 @@ namespace atfix {
 DebugView debugView() {
   static const DebugView view = [] {
     char value[24] = { };
-    // The SMAA-specific switch predates the unified view and stays honoured.
     DWORD length = GetEnvironmentVariableA(
-      "ARLAND_SMAA_DEBUG", value, sizeof(value));
-    if (length && length < sizeof(value)) {
-      if (value[0] == '1') return DebugView::SmaaEdges;
-      if (value[0] == '2') return DebugView::SmaaWeights;
-    }
-    length = GetEnvironmentVariableA(
       "ARLAND_DEBUG_VIEW", value, sizeof(value));
     if (!(length && length < sizeof(value))) {
       value[0] = '\0';

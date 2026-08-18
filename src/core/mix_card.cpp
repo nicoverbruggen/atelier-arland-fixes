@@ -5,7 +5,6 @@
 #include <windows.h>
 
 #include <array>
-#include <atomic>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
@@ -70,11 +69,6 @@ const float kRate = bitsToFloat(0x426FC28Fu);
 // of zero; anything a whole second in the past is not recoverable state.
 constexpr float kDriftFloor = -1.0f;
 
-std::atomic<uint64_t> g_calls{0};
-std::atomic<uint64_t> g_ticked{0};
-std::atomic<uint64_t> g_skipped{0};
-std::atomic<uint64_t> g_healed{0};
-
 int titleRow(Title t) {
   switch (t) {
     case Title::Rorona: return 0;
@@ -100,11 +94,8 @@ bool STDMETHODCALLTYPE correctedCardUpdate(uintptr_t self, float dt) {
   if (!tryRead(self + kAccumulator, accumulated))
     return originalCardUpdate(self, dt);   // unreadable: leave the engine alone
 
-  g_calls.fetch_add(1, std::memory_order_relaxed);
-
   if (accumulated < kDriftFloor) {
     accumulated = 0.0f;
-    g_healed.fetch_add(1, std::memory_order_relaxed);
   }
 
   const float next = accumulated + dt;
@@ -113,7 +104,6 @@ bool STDMETHODCALLTYPE correctedCardUpdate(uintptr_t self, float dt) {
   // a tick is due the original runs completely untouched -- it re-reads the same
   // field, recomputes the same count, and behaves bit-for-bit as shipped.
   if (static_cast<int>(next * kRate) >= 1) {
-    g_ticked.fetch_add(1, std::memory_order_relaxed);
     return originalCardUpdate(self, dt);
   }
 
@@ -123,7 +113,6 @@ bool STDMETHODCALLTYPE correctedCardUpdate(uintptr_t self, float dt) {
     std::memcpy(reinterpret_cast<void*>(self + kAccumulator), &next,
                 sizeof(next));
   }
-  g_skipped.fetch_add(1, std::memory_order_relaxed);
   return true;   // the original's only exit is `mov al, 1`
 }
 

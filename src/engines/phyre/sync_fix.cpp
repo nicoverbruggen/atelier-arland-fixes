@@ -14,6 +14,7 @@
 #include <tuple>
 #include <vector>
 
+#include "../../../vendor/minhook/include/MinHook.h"
 #include "sync_fix.h"
 #include "../../core/util.h"
 #include "../../core/game.h"
@@ -141,10 +142,6 @@ std::atomic<uint64_t> g_transitionShadowFlushBytes = 0;
 //              write path AND (load-bearing) via a 16-byte boxed
 //              UpdateSubresource right before each cinematic shadow-receiving
 //              880 draw (gateHoldAtDraw).
-// Shared arland-fix.ini boolean reader; writes the default back when the key is
-// absent so it appears in the file for the user. Defined in config.cpp.
-bool arlandConfigBool(const char* section, const char* key, bool def);
-
 // ShadowMultiplier (arland-fix.ini [Rendering], default 2): scales
 // the engine's two 1024x1024 R24G8 shadow maps. Values 2, 4 and 8 enlarge the
 // maps to 2048/4096/8192 (plus the caster viewport, the A->B copy box and the
@@ -506,9 +503,9 @@ bool texture2DDesc(ID3D11Resource* resource, D3D11_TEXTURE2D_DESC* desc) {
   return true;
 }
 
-// configPath / arlandConfigBool / shadowMapResolution / configuredResolution
-// moved to config.cpp (arland-fix.ini access). applyResolutionOverride stays
-// here because it mutates the resolution globals below.
+// configPath, arlandConfigBool and shadowMapResolution live in config.cpp.
+// applyResolutionOverride stays here because it mutates the resolution globals
+// below.
 
 // Whether swap-chain creation has to be intercepted for the resolution policy
 // alone, with no other feature asking for it. This mirrors the two gates in
@@ -833,33 +830,6 @@ bool smaaIsSceneTarget(ID3D11RenderTargetView* rtv, ID3D11Texture2D** outTex) {
     }
     res->Release();
   }
-  return match;
-}
-
-// Main-size single-sample test for a resource rather than a view.
-bool smaaMainSizeHostResource(ID3D11Resource* res) {
-  ID3D11Texture2D* tex = nullptr;
-  if (!res || FAILED(res->QueryInterface(IID_PPV_ARGS(&tex))) || !tex)
-    return false;
-  D3D11_TEXTURE2D_DESC d = {};
-  tex->GetDesc(&d);
-  const UINT w = g_mainRtWidth.load(std::memory_order_relaxed);
-  const UINT h = g_mainRtHeight.load(std::memory_order_relaxed);
-  const bool match =
-    w && d.Width == w && d.Height == h && d.SampleDesc.Count == 1;
-  tex->Release();
-  return match;
-}
-
-bool smaaIsSceneTargetResource(ID3D11Resource* res) {
-  void* anchor = g_sceneAnchor.load(std::memory_order_relaxed);
-  if (!res || !anchor)
-    return false;
-  ID3D11Texture2D* tex = nullptr;
-  if (FAILED(res->QueryInterface(IID_PPV_ARGS(&tex))) || !tex)
-    return false;
-  const bool match = static_cast<void*>(tex) == anchor;
-  tex->Release();
   return match;
 }
 

@@ -13,7 +13,6 @@ bool applyResolutionOverride(DXGI_SWAP_CHAIN_DESC* pDesc);
 /* lives in sync_fix.cpp: true when applyResolutionOverride would record or
    rewrite anything, so the factory route knows it has a job of its own. */
 bool resolutionOverrideNeeded();
-bool arlandConfigBool(const char* section, const char* key, bool def);
 void traceTransitionD3DFrame(uint64_t intervalMicros);
 /* lives in sync_fix.cpp: reset the per-frame pre-UI SMAA latch (call at Present). */
 void smaaResetFrame();
@@ -50,9 +49,6 @@ bool arlandInCinematicBattle();
    the D3D-layer dim/gate holds may engage immediately instead of waiting for
    the dim value to settle. */
 bool arlandCutinCasterClearActive();
-
-/* lives in battle_shadow_restore.cpp: current battle state name (null outside battle). */
-const char* arlandBattleStateName();
 
 /* lives in battle_shadow_restore.cpp: increments on every field/battle scene (re)build. */
 uint32_t arlandSceneGeneration();

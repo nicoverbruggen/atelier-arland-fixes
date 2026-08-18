@@ -74,13 +74,6 @@ bool dimHoldValueMatches(const float* v, uint32_t components) {
 
 bool dimHoldValueMatches(const float* v) { return dimHoldValueMatches(v, 4); }
 
-bool dimHoldValuePatch(float* v) {
-  if (!dimHoldValueMatches(v))
-    return false;
-  v[0] = v[1] = v[2] = 1.0f;
-  return true;
-}
-
 // The cut-in dim `diffuse` field per constant-buffer layout. Rorona and Meruru
 // ship the PS3-style shader pack where the scene-light fade is the 16-byte
 // $Params. Totori's shader set was rewritten for D3D11 (static RE 2026-07-23:

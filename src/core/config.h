@@ -20,7 +20,6 @@ bool arlandConfigBool(const char* section, const char* key, bool def);
 // verbose logging is on, so a normal install never sees any of this.
 //
 // [Debug] View = off | wireframe | smaa-edges | smaa-weights | scene-target
-// ARLAND_DEBUG_VIEW overrides it, as does the older ARLAND_SMAA_DEBUG=1|2.
 enum class DebugView {
   None,
   Wireframe,      // depth-tested geometry as outlines; UI and movies untouched
@@ -51,12 +50,6 @@ bool displayResolution(unsigned int* width, unsigned int* height);
 // the display resolution. When larger than display the whole frame is
 // supersampled down to the display size at present.
 bool renderResolution(unsigned int* width, unsigned int* height);
-
-// Backwards-compatible single override, kept for external callers; nothing in
-// this codebase calls it. Resolves
-// to the display (backbuffer) resolution. Prefer displayResolution/
-// renderResolution in new code.
-bool configuredResolution(unsigned int* width, unsigned int* height);
 
 // Whether extra diagnostic logging is enabled: [Diagnostics] VerboseLogging
 // (default false), or ARLAND_VERBOSE_LOG. Gates the periodic process-memory
