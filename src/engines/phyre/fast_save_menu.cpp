@@ -8,8 +8,6 @@
 
 #include <array>
 #include <cstdint>
-#include <cstdlib>
-#include <cstring>
 
 #include "../../core/game.h"
 #include "../../core/hook_util.h"

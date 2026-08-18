@@ -2,12 +2,8 @@
 // work by TellowKrinkle; substantially altered for Arland. See LICENSE.
 #include <array>
 #include <atomic>
-#include <deque>
-#include <cmath>
-#include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <fstream>
 #include <algorithm>
 #include <map>
 #include <set>

@@ -1,6 +1,7 @@
 // Derived from Philip Rebohle's atelier-sync-fix; see LICENSE (zlib).
 #pragma once
 
+#include <atomic>
 #include <chrono>
 #include <sstream>
 #include <iomanip>

@@ -114,7 +114,21 @@ This mod was inspired by, and consulted, prior work by:
 - Yuri Hime's [Atelier Graphics Tweak](https://steamcommunity.com/app/1152300/discussions/0/3345546664208090238/)
 - The [Rorona community investigation](https://steamcommunity.com/app/936160/discussions/0/1742227264210806751/?ctp=2) into the font-atlas transfer problem
 
-The bundled SMAA anti-aliasing is by Jorge Jimenez, Jose I. Echevarria, Belen Masia, Fernando Navarro, and Diego Gutierrez ([SMAA](https://github.com/iryoku/smaa), MIT), vendored unchanged; AGT shipped the same SMAA for these games. The high-resolution UI text is rasterized with [stb_truetype](https://github.com/nothings/stb) by Sean Barrett (public domain). One replacement typeface is embedded per game: [National Park](https://nationalparktypeface.com/) SemiBold (Rorona) and [Nunito](https://fonts.google.com/specimen/Nunito) Regular (Totori), both under the SIL Open Font License, and Cosmetica Medium (Meruru), an emboldened [MgOpen](https://www.ellak.gr/fonts/mgopen/index.html) Cosmetica under the MgOpen licence and renamed as that licence requires. The handful of symbols none of the three carries come from Arland Fallback, a small face of 67 symbols whose outlines are taken from [Inter](https://rsms.me/inter/) and [Source Sans 3](https://github.com/adobe-fonts/source-sans), both under the SIL Open Font License. Copyright notices and the full licence texts are in [licenses/](licenses/), and ship with each release. [MinHook](https://github.com/TsudaKageyu/minhook) is by Tsuda Kageyu and contributors.
+The mod also bundles code by:
+
+- Jorge Jimenez, Jose I. Echevarria, Belen Masia, Fernando Navarro, and Diego Gutierrez, whose [SMAA](https://github.com/iryoku/smaa) anti-aliasing (MIT) is vendored unchanged. AGT shipped the same SMAA for these games.
+- Sean Barrett, whose [stb_truetype](https://github.com/nothings/stb) (public domain) rasterizes the high-resolution UI text.
+- Tsuda Kageyu and contributors, for [MinHook](https://github.com/TsudaKageyu/minhook).
+
+One replacement typeface is embedded per game:
+
+- Rorona: [National Park](https://nationalparktypeface.com/) SemiBold, under the SIL Open Font License.
+- Totori: [Nunito](https://fonts.google.com/specimen/Nunito) Regular, under the SIL Open Font License.
+- Meruru: Cosmetica Medium, an emboldened [MgOpen](https://www.ellak.gr/fonts/mgopen/index.html) Cosmetica under the MgOpen licence, renamed as that licence requires.
+
+The handful of symbols none of the three carries come from Arland Fallback, a small face of 67 symbols whose outlines are taken from [Inter](https://rsms.me/inter/) and [Source Sans 3](https://github.com/adobe-fonts/source-sans), both under the SIL Open Font License.
+
+Copyright notices and the full licence texts are in [licenses/](licenses/), and ship with each release.
 
 ## License
 

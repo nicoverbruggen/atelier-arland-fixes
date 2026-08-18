@@ -8,7 +8,6 @@
 
 #include <algorithm>
 #include <array>
-#include <atomic>
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>

@@ -4,7 +4,6 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 
-#include <atomic>
 #include <mutex>
 
 // Portable caller return address, used by the hook functions to recover the

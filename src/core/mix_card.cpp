@@ -6,7 +6,6 @@
 
 #include <array>
 #include <cstdint>
-#include <cstdlib>
 #include <cstring>
 
 #include "game.h"
