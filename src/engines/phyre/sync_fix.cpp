@@ -2479,6 +2479,18 @@ void updateViewportScissor(ID3D11DeviceContext* pContext) {
       resizeScissor = (fullSizeScissor && fullSizeTarget) ||
         (halfSizeScissor && halfSizeTarget) ||
         (shadowSizeScissor && shadowTarget);
+      // Kept for the trace below: the override replaces width and height but
+      // never touches the origin, which is only safe if the game draws every
+      // caster over the whole map. If it packs casters into sub-rects instead,
+      // each one gets blown up to the full target and lands on top of the last.
+      const FLOAT incomingVpX = viewport.TopLeftX;
+      const FLOAT incomingVpY = viewport.TopLeftY;
+      const FLOAT incomingVpW = viewport.Width;
+      const FLOAT incomingVpH = viewport.Height;
+      const LONG incomingScL = scissor.left;
+      const LONG incomingScT = scissor.top;
+      const LONG incomingScR = scissor.right;
+      const LONG incomingScB = scissor.bottom;
       if (resizeViewport) {
         viewport.Width = static_cast<FLOAT>(desc.Width);
         viewport.Height = static_cast<FLOAT>(desc.Height);
@@ -2494,6 +2506,21 @@ void updateViewportScissor(ID3D11DeviceContext* pContext) {
           log("SHADOWRES caster viewport/scissor 1024 -> ", std::dec,
               desc.Width, " (vp=", resizeViewport,
               " sc=", resizeScissor, ")");
+        // Every distinct incoming rect, once. A single full-map rect means the
+        // override is correct; several rects, or any non-zero origin, means the
+        // game tiles the map and the override is stretching each tile over the
+        // whole thing.
+        static std::atomic<uint64_t> lastRect{~0ull};
+        const uint64_t rect =
+          (uint64_t(uint16_t(LONG(incomingVpX))) << 48) |
+          (uint64_t(uint16_t(LONG(incomingVpY))) << 32) |
+          (uint64_t(uint16_t(LONG(incomingVpW))) << 16) |
+          uint64_t(uint16_t(LONG(incomingVpH)));
+        if (verboseLogging() && rect != lastRect.exchange(rect))
+          log("SHADOWRES caster incoming vp=", std::dec, LONG(incomingVpX), ",",
+              LONG(incomingVpY), " ", LONG(incomingVpW), "x", LONG(incomingVpH),
+              " sc=", incomingScL, ",", incomingScT, " ", incomingScR, ",",
+              incomingScB, " target=", desc.Width, "x", desc.Height);
       }
     }
   }
