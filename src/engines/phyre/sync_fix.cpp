@@ -3713,6 +3713,10 @@ void STDMETHODCALLTYPE ID3D11DeviceContext_ExecuteCommandList(
   procs->ExecuteCommandList(pContext, pCommandList, RestoreContextState);
 }
 
+// Pastes the interface and procedure names together, so every
+// ID3D11DeviceContext_* and ID3D11Device_* hook below is referenced only by a
+// name that does not appear anywhere as written. A grep for one of them finds
+// its definition and nothing else, which reads as dead code and is not.
 #define HOOK_PROC(iface, object, table, index, proc) \
   allInstalled = hookProc(object, #iface "::" #proc, &table->proc, \
     &iface ## _ ## proc, index) && allInstalled

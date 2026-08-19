@@ -59,6 +59,9 @@ void startPadNotifyTrace();
 // A no-op when the trace never started. Also not callable from DllMain: it joins
 // the actual thread, whose exit may need the loader lock. A timeout leaves the
 // retained worker intact so a later call can retry safely.
+// No caller today. Kept because the contract above is a pair: a start that
+// retains a thread needs a stop that joins it, and a future caller of the one
+// needs the other to already exist.
 void stopPadNotifyTrace();
 
 }  // namespace atfix

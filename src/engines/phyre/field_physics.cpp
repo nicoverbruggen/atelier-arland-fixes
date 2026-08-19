@@ -49,6 +49,11 @@ constexpr uintptr_t kFootYOffset = 0xb0;
 constexpr uintptr_t kAirTimerOffset = 0xb8;
 constexpr uint32_t kGroundedBit = 0x100;
 
+// kPosYOffset, kEntryPosYOffset and kFootYOffset have no reader and are kept on
+// purpose: they complete the struct-layout census that kControllerSpan below is
+// derived from, and constexpr costs nothing. kVelOffset and kEntryPosOffset
+// beside them were deleted once as unused and put back for the same reason.
+
 // Past the last field touched here, so one range check covers the whole set.
 constexpr size_t kControllerSpan = 0xbc;
 
