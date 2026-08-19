@@ -37,6 +37,7 @@ extern Log log;
 bool arlandInCinematicBattle();
 const char* currentBattleState();
 bool inActionCutin();
+bool battleGameModeLive(uintptr_t gameMode);
 
 
 // ==== A: battle typedefs ====
@@ -77,6 +78,10 @@ void clearPendingBattleShadows() {
   pendingBattleShadows.clear();
 }
 
+// Forward: the collected-chara lists are declared below but every battle-end
+// reset site has to clear them, and those sites sit alongside this one.
+void clearBattleCharas();
+
 // Battle-shadow reconstruction, enabled by default on the recognized Rorona
 // executable (ARLAND_BATTLE_SHADOWS=0 disables). BtlChara-family instances are
 // collected as they are constructed; once the battle ShadowHelper finishes
@@ -85,6 +90,16 @@ void clearPendingBattleShadows() {
 std::mutex battleCharaMutex;
 std::vector<uintptr_t> battleCharas;
 std::unordered_set<uintptr_t> dispatchedBattleCharas;
+
+// Per-battle, both of them. dispatchedBattleCharas is what stops
+// registerBattleCharaShadows registering the same battler twice across its
+// repeated passes, so carrying it into the next battle would let a recycled
+// address suppress a registration that is genuinely needed.
+void clearBattleCharas() {
+  std::lock_guard<std::mutex> lock(battleCharaMutex);
+  battleCharas.clear();
+  dispatchedBattleCharas.clear();
+}
 
 std::atomic<uintptr_t> g_battleHelper{0};
 std::atomic<uintptr_t> g_battleGameMode{0};
@@ -545,12 +560,26 @@ size_t dispatchBattleCharaShadows(uintptr_t helper, uintptr_t scene) {
 
 // ==== C2: registration + tactical + traced hooks ====
 
+// The best candidate a scan has seen: the widest vector, and where it lives.
+struct BestCharaVector {
+  uintptr_t addr = 0;
+  size_t count = 0;
+};
+
 // Scan an object's memory for a std::vector<BtlChara*> -- a (begin,end) pair
 // whose first element carries a known BtlChara-family vtable -- recursing one
 // pointer level. Every access is VirtualQuery-guarded so wild members are safe.
+//
+// Keeps the WIDEST candidate, not the last one seen. A BtlChara* vector is not
+// necessarily the battlers vector: a turn order, a target list or a selection
+// would all pass the same test, and the walk reaches the game mode before the
+// scene, so anything hanging off the scene used to overwrite the real one no
+// matter what had been found first. Which of those lists is non-empty depends
+// on how far the engine got before the scan ran, which made the choice depend
+// on timing -- the same trap as the registration this feeds.
 size_t scanForBattleCharaVectors(uintptr_t obj, size_t window, int depth,
                                  std::unordered_set<uintptr_t>& seen,
-                                 size_t& budget) {
+                                 size_t& budget, BestCharaVector& best) {
   if (!obj || (obj & 7) || budget == 0 || !seen.insert(obj).second)
     return 0;
   --budget;
@@ -566,7 +595,11 @@ size_t scanForBattleCharaVectors(uintptr_t obj, size_t window, int depth,
       const uintptr_t elem0 = *reinterpret_cast<const uintptr_t*>(begin);
       if (readableRange(elem0, sizeof(uintptr_t)) &&
           isBattleCharaVtable(*reinterpret_cast<const uintptr_t*>(elem0))) {
-        g_battleCharaVectorAddr.store(obj + off, std::memory_order_release);
+        const size_t count = (end - begin) / sizeof(uintptr_t);
+        if (count > best.count) {
+          best.addr = obj + off;
+          best.count = count;
+        }
         if (sceneTraceEnabled()) {
           const uintptr_t vt = *reinterpret_cast<const uintptr_t*>(elem0);
           atfix::log("BATTLE_CONTAINER obj=", reinterpret_cast<void*>(obj),
@@ -582,28 +615,61 @@ size_t scanForBattleCharaVectors(uintptr_t obj, size_t window, int depth,
     if (depth > 0) {
       const uintptr_t ptr = *reinterpret_cast<const uintptr_t*>(obj + off);
       found += scanForBattleCharaVectors(
-        ptr, 0x400, depth - 1, seen, budget);
+        ptr, 0x400, depth - 1, seen, budget, best);
     }
   }
   return found;
 }
 
-// Scan the battle game-mode and scene (two pointer levels) for the party's
-// BtlChara vector, logging any hit. Returns the number of vectors found.
+// Locate the battlers vector. Returns the number of candidates considered.
+//
+// The offset inside the game mode is known per build and already trusted
+// elsewhere -- battleGameModeLive reads the same vector through
+// partyVectorOffset to decide whether a battle is still running -- so take it
+// directly and do not go looking. Guessing was never needed on a recognised
+// build, and a guess that can pick a different vector on an early pass than on
+// a late one is a timing dependency for nothing.
+//
+// The scan stays as the fallback for a game mode where the known offset does
+// not validate, which is the case the offsets were derived to cover and the
+// case a future build could break.
 size_t locateBattleCharaContainer(uintptr_t gameMode, uintptr_t scene,
                                   const char* phase) {
+  if (gameMode && g_battleAddrs && battleGameModeLive(gameMode)) {
+    const uintptr_t vec = gameMode + g_battleAddrs->partyVectorOffset;
+    g_battleCharaVectorAddr.store(vec, std::memory_order_release);
+    if (sceneTraceEnabled())
+      atfix::log("BATTLE_CONTAINER_SCAN phase=", phase, " source=known_offset",
+        " gamemode=", reinterpret_cast<void*>(gameMode),
+        " vec=", reinterpret_cast<void*>(vec),
+        " offset=0x", std::hex, g_battleAddrs->partyVectorOffset, std::dec);
+    return 1;
+  }
+
   std::unordered_set<uintptr_t> seen;
   size_t budget = 2000;
+  BestCharaVector best;
   size_t found = scanForBattleCharaVectors(
-    gameMode, 0x1000, 2, seen, budget);
+    gameMode, 0x1000, 2, seen, budget, best);
   if (scene)
     found += scanForBattleCharaVectors(
-      scene, 0x1000, 2, seen, budget);
+      scene, 0x1000, 2, seen, budget, best);
+  if (best.addr)
+    g_battleCharaVectorAddr.store(best.addr, std::memory_order_release);
+  // exhausted= is the field that matters. A budget that ran out returns the
+  // same found=0 as a graph that genuinely holds no vector, and the two want
+  // opposite fixes.
+  // exhausted= is the field that matters. A budget that ran out returns the
+  // same found=0 as a graph that genuinely holds no vector, and the two want
+  // opposite fixes.
   if (sceneTraceEnabled())
-    atfix::log("BATTLE_CONTAINER_SCAN phase=", phase,
+    atfix::log("BATTLE_CONTAINER_SCAN phase=", phase, " source=scan",
       " gamemode=", reinterpret_cast<void*>(gameMode),
       " scene=", reinterpret_cast<void*>(scene),
-      " found=", found, " objects_scanned=", 2000 - budget);
+      " found=", found, " chosen=", reinterpret_cast<void*>(best.addr),
+      " chosen_count=", best.count,
+      " objects_scanned=", 2000 - budget,
+      " exhausted=", budget == 0);
   return found;
 }
 
@@ -631,14 +697,34 @@ uintptr_t* globalActiveHelperSlot() {
   return reinterpret_cast<uintptr_t*>(slot);
 }
 
-// Register the located battle party as shadow casters. For each BtlChara in the
+// Register the battle's characters as shadow casters. For each BtlChara in the
 // game-mode's character vector, call ShadowCharacterBuild(helper, scene,
 // [chara+0x18]) -- the same registration the field path performs per character --
 // so the renderer that already binds the battle depth targets has casters to
-// draw. Runs once per battle. Every access is VirtualQuery-guarded.
+// draw. Every access is VirtualQuery-guarded.
+//
+// Runs repeatedly for the length of the battle, not once. The vector holds
+// every battler, party and monsters together, and the engine fills it in
+// stages: the party is in it within about 50 ms of battle start and the
+// monsters roughly half a second later. A single pass registers whoever
+// happens to be in it at that instant.
+//
+// That was a race the whole time, and until 2026-08-19 it was won by accident.
+// The battle transition used to take 553 ms, so the first pass that found the
+// vector at all ran after everyone was in it. Shortening the worker idle sleep
+// took the transition to 172 ms, the pass started landing at 47 ms, and battles
+// registered three casters instead of six -- monsters with no shadows, and
+// nothing in the shadow code changed to cause it. Measured both ways on one
+// build, switching only ARLAND_WORKER_IDLE_SLEEP: 549 ms and six, or 47 ms and
+// three.
+//
+// So do not reintroduce a "registered already" early-out here. Dedup per
+// character instead: a battler is skipped because it is in the set, never
+// because some earlier pass finished. A character whose model has not been
+// built yet stays out of the set so a later pass retries it, and the set is
+// cleared at battle end so the next battle cannot inherit a recycled address.
 void registerBattleCharaShadows() {
-  if (g_battleRegistered.load(std::memory_order_acquire) ||
-      !originalShadowCharacterBuild)
+  if (!originalShadowCharacterBuild)
     return;
   const uintptr_t vecAddr =
     g_battleCharaVectorAddr.load(std::memory_order_acquire);
@@ -655,34 +741,56 @@ void registerBattleCharaShadows() {
   if (!helper || !scene)
     return;
 
-  g_battleRegistered.store(true, std::memory_order_release);
-  size_t registered = 0;
-  for (uintptr_t p = begin; p < end; p += sizeof(uintptr_t)) {
-    const uintptr_t chara = *reinterpret_cast<const uintptr_t*>(p);
-    if (!readableRange(chara, 0x20) ||
-        !isBattleCharaVtable(*reinterpret_cast<const uintptr_t*>(chara)))
-      continue;
-    const uintptr_t character = *reinterpret_cast<const uintptr_t*>(chara + 0x18);
-    if (!character)
-      continue;
-    const size_t before = shadowLayerCount(helper, 0x48);
-    originalShadowCharacterBuild(helper, scene, character, 0);
-    const size_t after = shadowLayerCount(helper, 0x48);
-    ++registered;
-    if (sceneTraceEnabled())
-      atfix::log("BATTLE_SHADOW_REGISTER which=battle",
-        " helper=", reinterpret_cast<void*>(helper),
-        " chara=", reinterpret_cast<void*>(chara),
-        " character=", reinterpret_cast<void*>(character),
-        " registry_before=", before, " registry_after=", after);
+  size_t registered = 0, known = 0, pending = 0;
+  {
+    std::lock_guard<std::mutex> lock(battleCharaMutex);
+    for (uintptr_t p = begin; p < end; p += sizeof(uintptr_t)) {
+      const uintptr_t chara = *reinterpret_cast<const uintptr_t*>(p);
+      if (!readableRange(chara, 0x20) ||
+          !isBattleCharaVtable(*reinterpret_cast<const uintptr_t*>(chara)))
+        continue;
+      if (dispatchedBattleCharas.count(chara)) {
+        ++known;
+        continue;
+      }
+      const uintptr_t character =
+        *reinterpret_cast<const uintptr_t*>(chara + 0x18);
+      if (!character) {
+        // In the vector but without a model yet. Deliberately not recorded, so
+        // the next pass looks at it again.
+        ++pending;
+        continue;
+      }
+      const size_t before = shadowLayerCount(helper, 0x48);
+      originalShadowCharacterBuild(helper, scene, character, 0);
+      const size_t after = shadowLayerCount(helper, 0x48);
+      dispatchedBattleCharas.insert(chara);
+      ++registered;
+      if (sceneTraceEnabled())
+        atfix::log("BATTLE_SHADOW_REGISTER which=battle",
+          " helper=", reinterpret_cast<void*>(helper),
+          " chara=", reinterpret_cast<void*>(chara),
+          " character=", reinterpret_cast<void*>(character),
+          " vtable_rva=0x", std::hex,
+          *reinterpret_cast<const uintptr_t*>(chara) -
+            reinterpret_cast<uintptr_t>(gameBase), std::dec,
+          " registry_before=", before, " registry_after=", after);
+    }
   }
+  if (!registered && !pending)
+    return;
 
   // Registering into the battle helper only matters if the renderer traverses
   // it, so publish it into the global slot (saving the field helper to restore
   // on field re-entry). The global-helper target is already the rendered one.
   bool published = false;
   bool republished = false;
-  if (uintptr_t* slot = globalActiveHelperSlot()) {
+  // Publish once per battle. g_battleRegistered no longer means "registration
+  // is finished" -- registration never finishes while the battle runs -- it
+  // means the helper has been published and the displaced one saved.
+  const bool firstPass =
+    !g_battleRegistered.exchange(true, std::memory_order_acq_rel);
+  if (uintptr_t* slot = firstPass ? globalActiveHelperSlot() : nullptr) {
     // Save the displaced helper only on the FIRST publish of a battle. A
     // second publish would otherwise record the battle helper as the thing to
     // put back, and restoring that leaves the field rendering through a
@@ -701,6 +809,7 @@ void registerBattleCharaShadows() {
     atfix::log("BATTLE_SHADOW_REGISTER_SUMMARY which=battle",
       " helper=", reinterpret_cast<void*>(helper),
       " scene=", reinterpret_cast<void*>(scene), " registered=", registered,
+      " known=", known, " pending=", pending, " first_pass=", firstPass,
       " published=", published, " republished=", republished,
       " saved=", reinterpret_cast<void*>(
         g_savedGlobalHelper.load(std::memory_order_acquire)));
@@ -944,6 +1053,7 @@ uintptr_t tracedShadowHelperInit(uintptr_t helper, uintptr_t id,
     g_battleContainerFound.store(false, std::memory_order_release);
     g_battleRegistered.store(false, std::memory_order_release);
     g_battleCharaVectorAddr.store(0, std::memory_order_release);
+    clearBattleCharas();
     g_battleDeadFrames.store(0, std::memory_order_release);
     g_battleStateSlot.store(0, std::memory_order_release);
     g_lastBattleStateVt.store(0, std::memory_order_release);
@@ -1368,6 +1478,7 @@ uintptr_t tracedBattleModeDtor(uintptr_t self) {
     g_battleDeadFrames.store(0, std::memory_order_release);
     g_snodeRestoreDeadlineMs.store(0, std::memory_order_release);
     clearPendingBattleShadows();
+    clearBattleCharas();
     if (sceneTraceEnabled())
       atfix::log("==== BATTLE_END ms=", GetTickCount64(),
         " mode=", reinterpret_cast<void*>(self), " (mode dtor) ====");
@@ -1934,6 +2045,7 @@ void battleShadowFrameTick() {
       g_battleDeadFrames.store(0, std::memory_order_release);
       g_snodeRestoreDeadlineMs.store(0, std::memory_order_release);
       clearPendingBattleShadows();
+      clearBattleCharas();
       return;
     }
   }
@@ -1960,13 +2072,34 @@ void battleShadowFrameTick() {
     1, std::memory_order_relaxed);
   const uintptr_t scene = g_battleScene.load(std::memory_order_acquire);
 
+  // Two halves, latched differently on purpose.
+  //
+  // Finding the vector is the expensive half: locateBattleCharaContainer walks
+  // up to 2000 guarded objects. It only has to succeed once, because the vector
+  // lives at a fixed address inside the game mode, so this keeps latching.
   if (g_battleAddrs && g_battleAddrs->casterRestore &&
       !g_battleContainerFound.load(std::memory_order_acquire) &&
-      tick % 30 == 0 && tick / 30 <= 40 && gameMode &&
-      locateBattleCharaContainer(gameMode, scene, "frame")) {
-    g_battleContainerFound.store(true, std::memory_order_release);
-    registerBattleCharaShadows();
+      tick % 30 == 0 && gameMode) {
+    if (tick / 30 <= 40) {
+      if (locateBattleCharaContainer(gameMode, scene, "frame"))
+        g_battleContainerFound.store(true, std::memory_order_release);
+    } else if (tick / 30 == 41 && sceneTraceEnabled()) {
+      // One line, once, on the tick after the last attempt. Without it a battle
+      // that never finds its vector reads exactly like one that found it
+      // immediately: both go quiet.
+      atfix::log("BATTLE_CONTAINER_GIVEUP gamemode=",
+        reinterpret_cast<void*>(gameMode),
+        " scene=", reinterpret_cast<void*>(scene), " attempts=41");
+    }
   }
+
+  // Registering from it is the cheap half: two pointer reads and a set lookup
+  // per battler. It does NOT latch, because the engine fills that vector in
+  // stages and one pass only ever sees the stage it landed in. This is the
+  // half that broke when the battle transition got three times faster.
+  if (g_battleAddrs && g_battleAddrs->casterRestore &&
+      g_battleContainerFound.load(std::memory_order_acquire) && tick % 30 == 0)
+    registerBattleCharaShadows();
 }
 
 // Per-frame battle tick, bundled so the Present hook (traceMenuPresent) has a
