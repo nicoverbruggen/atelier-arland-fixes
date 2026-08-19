@@ -69,8 +69,8 @@ bool hostExeName(std::array<wchar_t, 32768>& path, const wchar_t** name) {
 //  - It must not happen in DllMain. This DLL is a static import of the
 //    launcher, so its process attach runs before the executable's entry point
 //    and before anything injected into the process has finished setting itself
-//    up -- including Steam's overlay, which hooks process creation in order to
-//    follow the game into child processes. Starting our launcher from there
+//    up -- including Steam's overlay, which hooks process creation to follow
+//    the game into child processes. Starting our launcher from there
 //    produced a child Steam knew nothing about: no overlay, no frame-rate
 //    counter, and no Steam Input, which is what makes a DualSense work at all
 //    when Steam is handling it. So the redirect is armed here and runs at the
