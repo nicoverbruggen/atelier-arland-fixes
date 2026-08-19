@@ -560,13 +560,34 @@ bool itemIndexFieldsUsable(uintptr_t item, size_t first, size_t count,
   return true;
 }
 
-// The quality ceiling. NOT the engine's own bound: a scan of both Totori builds
-// finds no 120.0f literal reachable from any code path, and the single
-// referenced occurrence disassembles as an HSV hue conversion. What supports it
-// is distribution -- across eight saves and roughly 2000 live records nothing
-// exceeds it, and 110 of 948 records in the largest sit exactly on it, which is
-// the shape of a clamp. That is resemblance, not derivation, so exceeding it is
-// CORRECTED, never treated as damage. See BACKLOG for what would settle it.
+// The quality ceiling, and it is the game's, shared by all four Arland titles.
+//
+// Not derived from this binary: a scan of both Totori builds finds no 120.0f
+// literal reachable from any code path, and the single referenced occurrence
+// disassembles as an HSV hue conversion. That fits rather than contradicts,
+// because the arithmetic below never produces a float 120 to compare against.
+//
+// What establishes it, four ways that do not depend on each other:
+//
+//   - Plain synthesis averages its ingredients and stops at 100. The strongest
+//     quality trait is +50%. Uncapped that lands on 150, and no player report
+//     of 150, 130 or even 121 exists anywhere. Something clamps.
+//   - A second, unrelated system agrees: slow-enhance items that gain quality
+//     while carried stop at exactly 120.
+//   - The games check against it themselves. Meruru's Master Gatherer trait
+//     requires a 120-quality Super Magic Paint, which only means anything if
+//     120 is the ceiling.
+//   - Documentation of the DX ports states it outright, and a cheat-table
+//     author who has read this build's memory puts it as "120 is the max that
+//     the game will detect".
+//
+// Our own save census matches: about 2000 live records across eight saves with
+// nothing above 120 and 110 of them sitting exactly on it.
+//
+// SO A QUALITY ABOVE THIS IS NOT DAMAGE. The only route past 120 is editing
+// memory, and such a save is otherwise well formed. That is why exceeding it is
+// corrected rather than condemned: a player who made the item deliberately gets
+// it pulled back to a value the game understands, not erased.
 constexpr float kQualityCeiling = 120.0f;
 
 // Bit patterns that cannot be a quality at all, which is the only half of the
