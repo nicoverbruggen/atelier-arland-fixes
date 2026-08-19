@@ -560,10 +560,38 @@ bool itemIndexFieldsUsable(uintptr_t item, size_t first, size_t count,
   return true;
 }
 
-bool qualityUsable(uintptr_t item) {
+// The quality ceiling. NOT the engine's own bound: a scan of both Totori builds
+// finds no 120.0f literal reachable from any code path, and the single
+// referenced occurrence disassembles as an HSV hue conversion. What supports it
+// is distribution -- across eight saves and roughly 2000 live records nothing
+// exceeds it, and 110 of 948 records in the largest sit exactly on it, which is
+// the shape of a clamp. That is resemblance, not derivation, so exceeding it is
+// CORRECTED, never treated as damage. See BACKLOG for what would settle it.
+constexpr float kQualityCeiling = 120.0f;
+
+// Bit patterns that cannot be a quality at all, which is the only half of the
+// old combined predicate that means "this record is damaged".
+//
+// The band between 0 and 1 belongs here rather than with the ceiling: it is
+// where an integer written over the float field lands, and the damaged sample
+// saves carry exactly that -- 1.1770907e-43 and 3.9896e-42, both denormals, and
+// both of which pass isfinite. Widening this to accept them would let the
+// sanitizer keep genuinely destroyed records.
+bool qualityCorrupt(uintptr_t item) {
   const float quality = asFloat(uint32_t(itemWord(item, 2)));
-  return std::isfinite(quality) && quality >= 0.0f && quality <= 120.0f &&
-    (quality == 0.0f || quality >= 1.0f);
+  return !std::isfinite(quality) || quality < 0.0f ||
+    (quality > 0.0f && quality < 1.0f);
+}
+
+// Sound in every other respect, only above the ceiling.
+bool qualityAboveCeiling(uintptr_t item) {
+  const float quality = asFloat(uint32_t(itemWord(item, 2)));
+  return std::isfinite(quality) && quality > kQualityCeiling;
+}
+
+void clampQuality(uintptr_t item) {
+  const float quality = kQualityCeiling;
+  std::memcpy(reinterpret_cast<void*>(item + 8), &quality, sizeof(quality));
 }
 
 bool canonicalEmptyItem(uintptr_t item) {
@@ -580,7 +608,7 @@ bool canonicalEmptyItem(uintptr_t item) {
 bool itemStructurallyUsable(uintptr_t item) {
   const int32_t first = itemWord(item, 0);
   const int32_t second = itemWord(item, 1);
-  if (first < -1 || second < -1 || !qualityUsable(item))
+  if (first < -1 || second < -1 || qualityCorrupt(item))
     return false;
   if (first == -1 && second == -1)
     return canonicalEmptyItem(item);
@@ -597,7 +625,7 @@ bool itemPrefixUsable(uintptr_t item) {
   const int32_t first = itemWord(item, 0);
   const int32_t second = itemWord(item, 1);
   return first >= -1 && second >= -1 && (first >= 0 || second >= 0) &&
-    qualityUsable(item) &&
+    !qualityCorrupt(item) &&
     itemIndexFieldsUsable(item, kTraitOffset / 4, kTraitCount, g_traitTable);
 }
 
@@ -612,6 +640,7 @@ struct ItemRangeSummary {
   size_t salvaged = 0;
   size_t cleared = 0;
   size_t clampedLimits = 0;
+  size_t clampedQuality = 0;
 };
 
 ItemRangeSummary sanitizeItemRange(
@@ -619,6 +648,17 @@ ItemRangeSummary sanitizeItemRange(
   ItemRangeSummary summary;
   for (size_t slot = 0; slot < count; ++slot) {
     const uintptr_t item = records + slot * kItemStride;
+    // Correct the quality before judging the record, so a value over the
+    // ceiling can never be the reason a record is called unrecoverable. The
+    // ceiling is not derived from the engine; destroying thirteen words of a
+    // legal item over a bound nobody has confirmed is the wrong trade.
+    if (qualityAboveCeiling(item)) {
+      const float was = asFloat(uint32_t(itemWord(item, 2)));
+      clampQuality(item);
+      ++summary.clampedQuality;
+      log("ITEMSANITIZE clamped item quality: owner=", ownerName,
+          " slot=", slot, " was=", was, " now=", kQualityCeiling);
+    }
     if (itemStructurallyUsable(item))
       continue;
     if (itemPrefixUsable(item)) {
@@ -717,6 +757,7 @@ ItemRangeSummary sanitizeLoadedInventory() {
     sanitizeItemRange(g_containerArray, kContainerCount, "container");
   summary.salvaged = carried.salvaged + container.salvaged;
   summary.cleared = carried.cleared + container.cleared;
+  summary.clampedQuality = carried.clampedQuality + container.clampedQuality;
   return summary;
 }
 
@@ -744,7 +785,7 @@ void STDMETHODCALLTYPE itemEffectBuildDetour(
   }
 
   const bool usable =
-    qualityUsable(item) &&
+    !qualityCorrupt(item) && !qualityAboveCeiling(item) &&
     itemIndexFieldsUsable(item, kEffectOffset / 4, kEffectCount,
                           g_effectTable);
   if (usable) {
@@ -756,9 +797,14 @@ void STDMETHODCALLTYPE itemEffectBuildDetour(
   std::memcpy(repaired.data(), reinterpret_cast<const void*>(item),
               repaired.size());
   const uintptr_t local = reinterpret_cast<uintptr_t>(repaired.data());
-  if (!qualityUsable(local)) {
+  // Corrupt has no recoverable value in it, so the empty-item default is all
+  // there is. Merely over the ceiling keeps everything the record earned: it
+  // fights at the ceiling rather than being knocked back to 50.
+  if (qualityCorrupt(local)) {
     const float quality = 50.0f;
     std::memcpy(repaired.data() + 8, &quality, sizeof(quality));
+  } else if (qualityAboveCeiling(local)) {
+    clampQuality(local);
   }
   for (size_t i = 0; i < kEffectCount; ++i) {
     const size_t word = kEffectOffset / 4 + i;
@@ -899,6 +945,7 @@ struct SanitizeSummary {
   size_t sets = 0;
   size_t salvagedItems = 0;
   size_t clearedItems = 0;
+  size_t clampedQuality = 0;
   size_t rebuiltSkills = 0;
   size_t repairedHeaders = 0;
 };
@@ -931,6 +978,18 @@ SanitizeSummary sanitizeLoadedEquipment() {
 
     for (size_t slot = 0; slot < 3; ++slot) {
       const uintptr_t item = set + kItemBase + slot * kItemStride;
+      // Same correction the carried and container walk makes, and this is the
+      // walk where it matters most: equipment is what synthesis pushes hardest,
+      // so it is where a quality above the unconfirmed ceiling would turn up.
+      if (qualityAboveCeiling(item)) {
+        const float was = asFloat(uint32_t(itemWord(item, 2)));
+        clampQuality(item);
+        ++summary.clampedQuality;
+        changed = true;
+        itemsChanged = true;
+        log("ITEMSANITIZE clamped item quality: set=", setIndex,
+            " slot=", slot, " was=", was, " now=", kQualityCeiling);
+      }
       if (itemStructurallyUsable(item))
         continue;
       if (itemPrefixUsable(item)) {
@@ -1193,6 +1252,7 @@ int STDMETHODCALLTYPE saveLoaderDetour(uintptr_t self, uintptr_t stream) {
     log("ITEMSANITIZE repaired loaded save: sets=", repaired.sets,
         " salvaged_items=", repaired.salvagedItems,
         " cleared_items=", repaired.clearedItems,
+        " clamped_quality=", repaired.clampedQuality,
         " rebuilt_skills=", repaired.rebuiltSkills,
         " repaired_headers=", repaired.repairedHeaders,
         "; save normally to persist");
@@ -1218,9 +1278,11 @@ int STDMETHODCALLTYPE inventoryLoaderDetour(
   if (!g_actualSaveLoad)
     return result;
   const ItemRangeSummary repaired = sanitizeLoadedInventory();
-  if (repaired.salvaged || repaired.cleared || repaired.clampedLimits) {
+  if (repaired.salvaged || repaired.cleared || repaired.clampedLimits ||
+      repaired.clampedQuality) {
     log("ITEMSANITIZE repaired loaded inventory: salvaged_items=",
         repaired.salvaged, " cleared_items=", repaired.cleared,
+        " clamped_quality=", repaired.clampedQuality,
         " clamped_limits=", repaired.clampedLimits,
         "; save normally to persist");
   }
