@@ -169,38 +169,41 @@ def parse_matrix():
         r'\s*(?:"(\w+)"|nullptr),\s*(true|false)\s*\}',
         text,
     )
-    grid_text = re.search(r"kMatrix\[3\]\[[^\]]*\]\s*=\s*\{(.*?)\n\};", text,
-                          re.S)
-    if not grid_text or not rows:
+    # Descriptor rows carry their Feature's name and support rows name their
+    # Feature outright, so the two tables are paired BY NAME. They used to be
+    # paired by position across two separate tables, which is the coupling the
+    # support table was reshaped to remove.
+    support = re.findall(
+        r"\{\s*Feature::(\w+),\s*Rorona\(([XOU])\),\s*Totori\(([XOU])\),"
+        r"\s*Meruru\(([XOU])\)\s*\}",
+        text,
+    )
+    if not support or not rows or len(support) != len(rows):
         return None
-    grids = [
-        [c.strip() for c in row.split(",") if c.strip()]
-        for row in re.findall(r"\{([^}]*)\}", grid_text.group(1))
-    ]
-    grids = [g for g in grids if g and all(c in ("X", "O", "U") for c in g)]
-    if len(grids) != len(GAMES) or len({len(g) for g in grids}) != 1:
+    cells = {name: (r, t, m) for name, r, t, m in support}
+    if len(cells) != len(support):
         return None
 
     per_game = [{} for _ in GAMES]
     columns = {}
     inverted = set()
-    for index, (feature, _env, section, key, invert) in enumerate(rows):
-        if index >= len(grids[0]):
-            continue
-        columns[feature] = index
+    for feature, _env, section, key, invert in rows:
+        if feature not in cells:
+            return None
+        columns[feature] = cells[feature]
         if not section or not key:
             continue
         if invert == "true":
             inverted.add((section, key))
-        for game, grid in enumerate(grids):
-            per_game[game][(section, key)] = grid[index]
+        for game in range(len(GAMES)):
+            per_game[game][(section, key)] = cells[feature][game]
 
     for entry, feature in KEYLESS_ROWS.items():
-        index = columns.get(feature)
-        if index is None:
+        cell = columns.get(feature)
+        if cell is None:
             return None
-        for game, grid in enumerate(grids):
-            per_game[game][entry] = grid[index]
+        for game in range(len(GAMES)):
+            per_game[game][entry] = cell[game]
     return per_game, inverted
 
 

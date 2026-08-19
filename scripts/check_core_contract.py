@@ -78,26 +78,44 @@ def main():
 
         matrix = block(
             GAME_CPP,
-            r"constexpr Support kMatrix\[3\]\[static_cast<int>\(Feature::Count\)\] = \{(.*?)\n\s*\};",
+            r"constexpr SupportRow kSupport\[\] = \{(.*?)\n\};",
             "capability matrix",
         )
-        rows = re.findall(
-            r"/\*\s*(Rorona|Totori|Meruru)\s*\*/\s*\{([^}]*)\}", matrix
+        # Pinned per feature rather than as three positional tuples, so a
+        # failure names the row that moved instead of printing three lists to
+        # be diffed by eye.
+        actual_matrix = tuple(
+            re.findall(
+                r"\{\s*Feature::(\w+),\s*Rorona\(([XOU])\),"
+                r"\s*Totori\(([XOU])\),\s*Meruru\(([XOU])\)\s*\}",
+                matrix,
+            )
         )
         expected_matrix = (
-            ("Rorona", ("X", "X", "X", "X", "X", "X", "X", "O", "O", "O", "O", "X", "X", "X", "X", "X", "X", "X")),
-            ("Totori", ("X", "X", "X", "X", "X", "X", "U", "O", "O", "O", "O", "X", "X", "X", "X", "X", "U", "X")),
-            ("Meruru", ("X", "X", "X", "O", "X", "X", "U", "O", "O", "O", "O", "X", "X", "X", "X", "X", "X", "X")),
-        )
-        actual_matrix = tuple(
-            (name, tuple(re.findall(r"\b([UXO])\b", values)))
-            for name, values in rows
+            ("SyncFix",                "X", "X", "X"),
+            ("MenuHitchFix",           "X", "X", "X"),
+            ("AtlasCache",             "X", "X", "X"),
+            ("FrameAtlasCache",        "X", "X", "O"),
+            ("ResolutionOverride",     "X", "X", "X"),
+            ("ShadowMultiplier",       "X", "X", "X"),
+            ("BattleShadows",          "X", "U", "U"),
+            ("CutInShadows",           "O", "O", "O"),
+            ("CutInDimHold",           "O", "O", "O"),
+            ("SkipStartupLogos",       "O", "O", "O"),
+            ("SkipIntroMovie",         "O", "O", "O"),
+            ("SynthesisAnimationRate", "X", "X", "X"),
+            ("FieldMonsterSnap",       "X", "X", "X"),
+            ("FieldCharacterPull",     "X", "X", "X"),
+            ("FastSaveMenu",           "X", "X", "X"),
+            ("PadRescanBackoff",       "X", "X", "X"),
+            ("TalkAnchorHold",         "X", "U", "X"),
+            ("WorkerIdleSleep",        "X", "X", "X"),
         )
         if actual_matrix != expected_matrix:
-            raise ValueError(
-                f"capability matrix changed: expected {expected_matrix!r}, "
-                f"got {actual_matrix!r}"
-            )
+            changed = tuple(
+                a for a, e in zip(actual_matrix, expected_matrix) if a != e
+            ) or actual_matrix
+            raise ValueError(f"capability matrix changed: {changed!r}")
 
         for installer in (
             "installBattleShadowRestore",

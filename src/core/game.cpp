@@ -2,8 +2,10 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 
+#include <cstddef>
 #include <cstdlib>
 #include <cstring>
+#include <iterator>
 
 #include "game.h"
 
@@ -125,21 +127,67 @@ constexpr Support X = Support::OnByDefault;
 // holding it would undo movement the game meant. Turn this row on if a Totori
 // conversation is ever seen shimmering; the address is ready.
 
-constexpr Support kMatrix[3][static_cast<int>(Feature::Count)] = {
-  //           Sync Menu Atls Frme Res  ShMl Bat  CutS CutD Logo Movi Card Snap Pull Save Pad  Talk Idle
-  /* Rorona */ { X,   X,   X,   X,   X,   X,   X,   O,   O,   O,   O,   X,   X,   X,   X,   X,   X,   X },
-  /* Totori */ { X,   X,   X,   X,   X,   X,   U,   O,   O,   O,   O,   X,   X,   X,   X,   X,   U,   X },
-  /* Meruru */ { X,   X,   X,   O,   X,   X,   U,   O,   O,   O,   O,   X,   X,   X,   X,   X,   X,   X },
+// One row per Feature. Each row names its Feature, and each cell names the game
+// it answers for -- and the three games are DISTINCT TYPES, so putting Totori's
+// answer in Meruru's column does not compile.
+//
+// The previous form was a [3][Count] block under a hand-maintained list of
+// abbreviated column names, with the game named once at the start of each row.
+// Nothing checked that list against the columns, and with the width declared a
+// row that had lost a cell was not an error either: the missing entries were
+// value-initialized, and Unsupported is the zero value, so a truncated row read
+// as a deliberate "this game does not get it".
+struct RoronaCell { Support value; };
+struct TotoriCell { Support value; };
+struct MeruruCell { Support value; };
+
+constexpr RoronaCell Rorona(Support s) { return { s }; }
+constexpr TotoriCell Totori(Support s) { return { s }; }
+constexpr MeruruCell Meruru(Support s) { return { s }; }
+
+struct SupportRow {
+  Feature feature;
+  RoronaCell rorona;
+  TotoriCell totori;
+  MeruruCell meruru;
 };
 
-int titleRow(Title t) {
-  switch (t) {
-    case Title::Rorona: return 0;
-    case Title::Totori: return 1;
-    case Title::Meruru: return 2;
-    default: return -1;
+constexpr SupportRow kSupport[] = {
+  { Feature::SyncFix,                Rorona(X), Totori(X), Meruru(X) },
+  { Feature::MenuHitchFix,           Rorona(X), Totori(X), Meruru(X) },
+  { Feature::AtlasCache,             Rorona(X), Totori(X), Meruru(X) },
+  { Feature::FrameAtlasCache,        Rorona(X), Totori(X), Meruru(O) },
+  { Feature::ResolutionOverride,     Rorona(X), Totori(X), Meruru(X) },
+  { Feature::ShadowMultiplier,       Rorona(X), Totori(X), Meruru(X) },
+  { Feature::BattleShadows,          Rorona(X), Totori(U), Meruru(U) },
+  { Feature::CutInShadows,           Rorona(O), Totori(O), Meruru(O) },
+  { Feature::CutInDimHold,           Rorona(O), Totori(O), Meruru(O) },
+  { Feature::SkipStartupLogos,       Rorona(O), Totori(O), Meruru(O) },
+  { Feature::SkipIntroMovie,         Rorona(O), Totori(O), Meruru(O) },
+  { Feature::SynthesisAnimationRate, Rorona(X), Totori(X), Meruru(X) },
+  { Feature::FieldMonsterSnap,       Rorona(X), Totori(X), Meruru(X) },
+  { Feature::FieldCharacterPull,     Rorona(X), Totori(X), Meruru(X) },
+  { Feature::FastSaveMenu,           Rorona(X), Totori(X), Meruru(X) },
+  { Feature::PadRescanBackoff,       Rorona(X), Totori(X), Meruru(X) },
+  { Feature::TalkAnchorHold,         Rorona(X), Totori(U), Meruru(X) },
+  { Feature::WorkerIdleSleep,        Rorona(X), Totori(X), Meruru(X) },
+};
+
+static_assert(std::size(kSupport) == static_cast<std::size_t>(Feature::Count),
+              "the support table is not one row per Feature");
+
+// Every row must sit at its own Feature's index. That is what lets the lookup
+// index directly, and what catches a row inserted or moved without its
+// neighbours -- the failure the old positional form could not see.
+constexpr bool supportRowsInEnumOrder() {
+  for (std::size_t i = 0; i < std::size(kSupport); ++i) {
+    if (static_cast<std::size_t>(kSupport[i].feature) != i)
+      return false;
   }
+  return true;
 }
+static_assert(supportRowsInEnumOrder(),
+              "a support row is not at its own Feature's index");
 
 }  // namespace
 
@@ -158,10 +206,13 @@ const char* titleName(Title t) {
 }
 
 Support featureSupport(Feature f) {
-  const int row = titleRow(currentTitle());
-  if (row < 0)
-    return Support::Unsupported;
-  return kMatrix[row][static_cast<int>(f)];
+  const SupportRow& row = kSupport[static_cast<std::size_t>(f)];
+  switch (currentTitle()) {
+    case Title::Rorona: return row.rorona.value;
+    case Title::Totori: return row.totori.value;
+    case Title::Meruru: return row.meruru.value;
+    default:            return Support::Unsupported;
+  }
 }
 
 bool featureEnabled(Feature f) {
