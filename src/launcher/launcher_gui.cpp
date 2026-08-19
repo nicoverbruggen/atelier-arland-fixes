@@ -62,6 +62,7 @@ enum : int {
   IDC_VERBOSE,
   IDC_DEBUGVIEW,     // [Debug] the one developer view that is active
   IDC_FIELDGROUNDRAY,// [Debug] the field ground ray, on unless turned off here
+  IDC_FASTBATTLE,    // [Debug] the shortened worker idle sleep, on unless ticked
   IDC_START,
   IDC_OPENENV,       // Koei Tecmo's own settings editor
   IDC_OPENLAUNCHER,  // Koei Tecmo's own launcher
@@ -109,6 +110,7 @@ HWND g_pageCtrls[4][40] = {};   // which controls belong to which tab page
 int  g_pageCount[4] = {};
 HWND g_hDebugView = nullptr;
 HWND g_hFieldGroundRay = nullptr;
+HWND g_hFastBattle = nullptr;
 HWND g_hStart = nullptr;   // focused at startup; see createControls
 
 // Adds or removes the Debug entry on the tab strip. Defined with the rest of
@@ -1062,6 +1064,8 @@ void loadFromIni() {
     iniBool("Diagnostics", "VerboseLogging", false) ? BST_CHECKED : BST_UNCHECKED, 0);
   SendMessageW(g_hFieldGroundRay, BM_SETCHECK,
     iniBool("Debug", "FieldJitterFix", true) ? BST_UNCHECKED : BST_CHECKED, 0);
+  SendMessageW(g_hFastBattle, BM_SETCHECK,
+    iniBool("Debug", "FastBattleTransition", true) ? BST_UNCHECKED : BST_CHECKED, 0);
 
 
   // Last, once every quality control holds its loaded value.
@@ -1101,6 +1105,7 @@ void resetToDefaults() {
   SendMessageW(g_hVerbose, BM_SETCHECK, BST_UNCHECKED, 0);
   SendMessageW(g_hDebugView, CB_SETCURSEL, 0, 0);
   SendMessageW(g_hFieldGroundRay, BM_SETCHECK, BST_UNCHECKED, 0);
+  SendMessageW(g_hFastBattle, BM_SETCHECK, BST_UNCHECKED, 0);
   syncDebugTab(false);
   updateRenderResolution();
 }
@@ -1198,6 +1203,11 @@ SaveOutcome saveToIni() {
   // fieldJitterFix()'s own default, on, is the one that applies.
   iniWrite("Debug", "FieldJitterFix",
     isChecked(g_hFieldGroundRay) ? "0" : nullptr, g_iniPath);
+  // Same sense as the box above: it disables, so a tick writes the key and an
+  // empty box removes it. A normal install carries no [Debug] key for this and
+  // the feature's own default, on, is the one that applies.
+  iniWrite("Debug", "FastBattleTransition",
+    isChecked(g_hFastBattle) ? "0" : nullptr, g_iniPath);
 
   // Flush the cache so each file is on disk before we report success.
   iniWrite(nullptr, nullptr, nullptr, g_iniPath);
@@ -1263,7 +1273,7 @@ void reportSaveFailure(HWND owner, SaveOutcome outcome) {
 struct UiState {
   int font, base, ss, shadow, winMode, lang;
   int smaa, sharpen, outline, cutIn, skipLauncher, verbose;
-  int skipLogos, skipMovie, debugView, fieldGroundRay;
+  int skipLogos, skipMovie, debugView, fieldGroundRay, fastBattle;
 };
 UiState g_savedState;
 
@@ -1289,6 +1299,7 @@ UiState currentState() {
   // the same either way.
   s.debugView = (int)SendMessageW(g_hDebugView, CB_GETCURSEL, 0, 0);
   s.fieldGroundRay = isChecked(g_hFieldGroundRay);
+  s.fastBattle = isChecked(g_hFastBattle);
   return s;
 }
 
@@ -2349,9 +2360,22 @@ void createControls(HWND w) {
       L"ground. Tick this to get the original behaviour back, which a bug "
       L"report about field movement may need.");
 
+    page.heading(L"Battle");
+    g_hFastBattle = mkCheck(w,
+      L"Disable the faster battle transition", 0, 0, 10, IDC_FASTBATTLE);
+    page.checkRow(g_hFastBattle,
+      L"On in a normal install. A worker thread waits half a second in its idle "
+      L"poll and the game sits on that wait every time a battle starts. "
+      L"Shortening it takes about 425 milliseconds off battle entry, and takes "
+      L"the same 425 milliseconds off the transition animation, which is held "
+      L"open for as long as the load behind it lasts. It is a trade rather than "
+      L"a saving, and it still wants testing. Tick this to get the original "
+      L"timing back.");
+
     page.fullNote(
-      L"These are diagnostics rather than settings. Turn verbose logging off "
-      L"to hide this tab.");
+      L"Most of this page is diagnostics rather than settings. The rest is "
+      L"changes that are not ready to be on by default yet. Turn verbose "
+      L"logging off to hide this tab.");
   }
 
   // ---------------- page 3: About ----------------

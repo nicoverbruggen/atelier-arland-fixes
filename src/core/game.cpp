@@ -79,7 +79,24 @@ const Descriptor& descriptor(Feature f) {
     // Keyless, and valued rather than boolean: the switch also carries the
     // millisecond count, so worker_idle_sleep.cpp reads it directly and this
     // cell only says which games have the worker at all.
-    /* WorkerIdleSleep    */ { "ARLAND_WORKER_IDLE_SLEEP", nullptr, nullptr, false },
+    // Keyed, and on the Debug page rather than among the settings, because it
+    // changes engine timing rather than presentation and is worth standing
+    // down for a bug report. On by default and opted OUT, the same sense as
+    // FieldJitterFix beside it, so a normal install carries no key.
+    //
+    // It is a trade rather than a saving, and both halves are measured on
+    // Meruru: battle entry loses about 425 ms of waiting, and the transition
+    // animation loses the same 425 ms of screen time, because the animation is
+    // held open for as long as the load behind it takes. Judged better with it
+    // on than without.
+    //
+    // The Dusk project withdrew the same change from Ayesha after it stuttered
+    // there; that is a different engine module and does not bear on these
+    // three. The environment switch still carries the millisecond count, so
+    // ARLAND_WORKER_IDLE_SLEEP=25 sets the value and =0 turns it off whatever
+    // the ini says.
+    /* WorkerIdleSleep    */ { "ARLAND_WORKER_IDLE_SLEEP", "Debug",
+                               "FastBattleTransition", false },
   };
   return table[static_cast<int>(f)];
 }

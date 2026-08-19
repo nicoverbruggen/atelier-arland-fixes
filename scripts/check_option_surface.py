@@ -60,6 +60,10 @@ NOT_WRITTEN_AT_DEFAULT: dict[tuple[str, str], str] = {
         "exposed on the same tab, and inverted: the box is ticked to turn the"
         " correction off, so a default run deletes the key rather than writing"
         " one",
+    ("Debug", "FastBattleTransition"):
+        "exposed on the same tab, and inverted like the box above it: ticked to"
+        " turn the change off, so a default run deletes the key rather than"
+        " writing one",
 }
 
 # Keys where the launcher and the code differ on purpose, because they are not
