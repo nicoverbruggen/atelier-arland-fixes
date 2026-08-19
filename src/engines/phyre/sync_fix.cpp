@@ -3855,6 +3855,17 @@ void hookContext(ID3D11DeviceContext* pContext) {
 }
 
 void traceTransitionD3DFrame(uint64_t intervalMicros) {
+  // Before anything is collected. The Present hook calls this every frame, and
+  // the collection below is not free: 49 acquire-release exchanges, a mutex,
+  // and two map swaps. Nothing fills any of it when the trace is off --
+  // TransitionTimer holds a null counter and recordTransitionMapDetail returns
+  // early -- so there is nothing to drain and no reason to look.
+  //
+  // The interval test stays where it is, below the collection. It is not an
+  // enable test: with the trace on, every frame has to reset the counters or a
+  // short frame's work would be reported against the next long one.
+  if (!transitionTraceEnabled())
+    return;
   const auto take = [](TransitionCounter& counter) {
     return std::array<uint64_t, 2> {
       counter.calls.exchange(0, std::memory_order_acq_rel),
