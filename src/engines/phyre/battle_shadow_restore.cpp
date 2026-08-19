@@ -217,7 +217,13 @@ struct BattleBuildAddrs {
   uintptr_t fieldReentryRet;   // ShadowHelperInit return address, field re-entry
   uintptr_t helperSlotOffset;  // active-helper offset inside the scene manager
   uintptr_t helperEmbedOffset; // ShadowHelper embed offset inside the game mode
-  uintptr_t partyVectorOffset; // party std::vector<BtlChara*> offset in gameMode
+  // The battlers std::vector<BtlChara*> in the game mode. BOTH SIDES:
+  // BtlCharaParty and BtlCharaMonster in one vector, filled in stages with
+  // the party first and the monsters a few hundred ms later. It was called
+  // partyVectorOffset until 2026-08-19, and that name is why a fix read its
+  // three early elements as "the party" and concluded monsters were never
+  // registered anywhere. See atelier-re-tools systems/phyre-combat.md.
+  uintptr_t battlersVectorOffset;
   uintptr_t initFlagOffset;    // BtlChara one-time actor-init flag byte offset
   uintptr_t hideAllRva;        // tactical-scene hideAll(charaMgr, fade)
   uintptr_t showAllRva;        // tactical-scene showAll(charaMgr)
@@ -285,7 +291,7 @@ constexpr BattleBuildAddrs kRoronaAddrsMulti = {
 // ML 0x394030 -> 0x1040410). battlePublishRet/fieldReentryRet are the two (and
 // only) static ShadowHelperInit call sites; the battle one is preceded by
 // lea rcx,[r14+0x68] exactly like Rorona's, the field one is followed by the
-// group-build call. partyVectorOffset from the BtlCharaMgr embed (gameMode+0x638
+// group-build call. battlersVectorOffset from the BtlCharaMgr embed (gameMode+0x638
 // + vector at +0x10; Rorona control run reproduced the known 0x658).
 constexpr BattleBuildAddrs kMeruruAddrsEn = {
   kBtlCharaVtableRvasMeruruEn, std::size(kBtlCharaVtableRvasMeruruEn),
@@ -625,7 +631,7 @@ size_t scanForBattleCharaVectors(uintptr_t obj, size_t window, int depth,
 //
 // The offset inside the game mode is known per build and already trusted
 // elsewhere -- battleGameModeLive reads the same vector through
-// partyVectorOffset to decide whether a battle is still running -- so take it
+// battlersVectorOffset to decide whether a battle is still running -- so take it
 // directly and do not go looking. Guessing was never needed on a recognised
 // build, and a guess that can pick a different vector on an early pass than on
 // a late one is a timing dependency for nothing.
@@ -636,13 +642,13 @@ size_t scanForBattleCharaVectors(uintptr_t obj, size_t window, int depth,
 size_t locateBattleCharaContainer(uintptr_t gameMode, uintptr_t scene,
                                   const char* phase) {
   if (gameMode && g_battleAddrs && battleGameModeLive(gameMode)) {
-    const uintptr_t vec = gameMode + g_battleAddrs->partyVectorOffset;
+    const uintptr_t vec = gameMode + g_battleAddrs->battlersVectorOffset;
     g_battleCharaVectorAddr.store(vec, std::memory_order_release);
     if (sceneTraceEnabled())
       atfix::log("BATTLE_CONTAINER_SCAN phase=", phase, " source=known_offset",
         " gamemode=", reinterpret_cast<void*>(gameMode),
         " vec=", reinterpret_cast<void*>(vec),
-        " offset=0x", std::hex, g_battleAddrs->partyVectorOffset, std::dec);
+        " offset=0x", std::hex, g_battleAddrs->battlersVectorOffset, std::dec);
     return 1;
   }
 
@@ -1960,14 +1966,14 @@ void arlandCutinShadowMapCleared() {
 
 // ==== G: frame tick + battleFrameTick ====
 
-// Is the battle game-mode still a live battle (party vector -- gameMode +
-// partyVectorOffset, 0x658 Rorona / 0x648 Meruru -- still holds BtlChara
+// Is the battle game-mode still a live battle (the battlers vector -- gameMode +
+// battlersVectorOffset, 0x658 Rorona / 0x648 Meruru -- still holds BtlChara
 // objects)? Used to detect battle exit so we can un-publish the battle helper
 // before the field renders through a freed pointer.
 bool battleGameModeLive(uintptr_t gameMode) {
   if (!gameMode || !g_battleAddrs)
     return false;
-  const uintptr_t vec = gameMode + g_battleAddrs->partyVectorOffset;
+  const uintptr_t vec = gameMode + g_battleAddrs->battlersVectorOffset;
   if (!readableRange(vec, 0x10))
     return false;
   const uintptr_t begin = *reinterpret_cast<const uintptr_t*>(vec);
@@ -2003,10 +2009,12 @@ void restorePublishedHelper(const char* reason) {
   }
 }
 
-// Per-battle-frame work: locate the party vector and register once (actors may
-// spawn after helper-init); self-heal the publish when the battle ends so the
-// field never renders through a freed battle helper (returning to the field does
-// not go through the field-scene-setup path our helper-init hook watches).
+// Per-battle-frame work: locate the battlers vector once, then register out of it
+// repeatedly for the length of the battle (the engine fills it in stages, so one
+// pass only ever sees the stage it landed in); self-heal the publish when the
+// battle ends so the field never renders through a freed battle helper
+// (returning to the field does not go through the field-scene-setup path our
+// helper-init hook watches).
 void battleShadowFrameTick() {
   if (!battleShadowRestoreEnabled())
     return;
