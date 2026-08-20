@@ -173,8 +173,6 @@ uintptr_t ripTarget(const BYTE* instruction, size_t displacementOffset,
 
 bool enabled() {
   const char* value = std::getenv("ARLAND_STREAM_LIFETIME_FIX");
-  if (!value)
-    value = std::getenv("ARLAND_INDEX_STREAM_FIX");
   return !value || value[0] != '0';
 }
 

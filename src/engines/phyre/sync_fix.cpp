@@ -2332,10 +2332,15 @@ void STDMETHODCALLTYPE ID3D11DeviceContext_RSSetState(
         ID3D11DeviceContext*   pContext,
         ID3D11RasterizerState* pRasterizerState) {
   auto procs = getContextProcs(pContext);
-  WireframeTracking* wf = wireframeTracking(pContext);
-  wf->requested.store(pRasterizerState, std::memory_order_relaxed);
+  // Behind the gate: the only reader of `requested` is applyWireframeForDraw,
+  // which returns early on the same test, and debugView() caches so the answer
+  // cannot change mid-session.
+  WireframeTracking* wf = debugWireframe() ? wireframeTracking(pContext)
+                                           : nullptr;
+  if (wf)
+    wf->requested.store(pRasterizerState, std::memory_order_relaxed);
   // Mid-3D-pass state changes keep the outline; anything else passes through.
-  if (debugWireframe() && wf->active.load(std::memory_order_relaxed)) {
+  if (wf && wf->active.load(std::memory_order_relaxed)) {
     procs->RSSetState(pContext, wireframeTwinFor(pContext, pRasterizerState));
     return;
   }
