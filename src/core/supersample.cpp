@@ -92,7 +92,7 @@ float4 PSMain(VSOut i) : SV_TARGET {
 }
 )HLSL";
 
-// The downscale's constants. The size is load-bearing outside this file: the
+// The downscale's constants. The size matters outside this file: the
 // pass maps through the hooked context, so sync_fix.cpp's constant-buffer
 // capture sees this buffer, and battle_shadows.cpp's Totori dim-hold table
 // matches a buffer by size alone. 32 is a live row in that table. What keeps the
@@ -128,7 +128,7 @@ template <typename T> void release(T*& p) { if (p) { p->Release(); p = nullptr; 
 //
 // So the reference is held on "not observed", not on "cannot happen". A
 // stand-down path would be new code releasing COM references during a teardown
-// nobody has seen, and it may also be load-bearing in the other direction: if
+// nobody has seen, and it may also matter in the other direction: if
 // the game does resize at startup, this reference failing it is what keeps the
 // mod's own chosen size rather than the game's.
 //

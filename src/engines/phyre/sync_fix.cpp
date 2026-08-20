@@ -135,7 +135,7 @@ std::atomic<uint64_t> g_transitionShadowFlushBytes = 0;
 //              diffuse.xyz is pinned to ~0.7 -> gate closed -> the ground
 //              never samples the shadow map at all. Holding diffuse at 1.0
 //              during cinematic states reopens the gate. Patched on every cb
-//              write path AND (load-bearing) via a 16-byte boxed
+//              write path AND, and this part matters, via a 16-byte boxed
 //              UpdateSubresource right before each cinematic shadow-receiving
 //              880 draw (gateHoldAtDraw).
 // ShadowMultiplier (arland-fix.ini [Rendering], default 4): scales
@@ -3211,7 +3211,7 @@ void STDMETHODCALLTYPE ID3D11DeviceContext_UpdateSubresource(
       }
       // Shadow-map upscale: rescale the receiver's PCF tap size to the
       // enlarged map's texel size. The 880 receiver material is written via
-      // UpdateSubresource (not Map), so this is its load-bearing patch point.
+      // UpdateSubresource (not Map), so this is the patch point it needs.
       if (shadowMapResolution() > 1024 && desc.ByteWidth == 880) {
         if (effectiveData != gateHoldCopy)
           std::memcpy(gateHoldCopy, effectiveData, 880);

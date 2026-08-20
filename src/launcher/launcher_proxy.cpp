@@ -63,8 +63,8 @@ bool hostExeName(std::array<wchar_t, 32768>& path, const wchar_t** name) {
 // is what keeps the Steam session, the overlay and Steam Input attached either
 // way.
 //
-// Two things about *when* and *for how long* this happens are load-bearing, and
-// both were learned the hard way:
+// Two things decide whether this works, *when* it happens and *for how long*,
+// and both were learned the hard way:
 //
 //  - It must not happen in DllMain. This DLL is a static import of the
 //    launcher, so its process attach runs before the executable's entry point

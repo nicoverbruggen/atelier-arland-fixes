@@ -381,7 +381,7 @@ bool isShadowSrvLocked(ID3D11ShaderResourceView* srv) {
   return shadow;
 }
 
-// Draw-time gate-hold -- the load-bearing piece of the cut-in shadow fix,
+// Draw-time gate-hold -- the piece the cut-in shadow fix rests on,
 // independent of the (engine-internal) write path. At every draw during a
 // cinematic battle state whose VS cb0 is an 880-byte receiver material with
 // the shadow SRV bound, record a 16-byte BOX UpdateSubresource over bytes
