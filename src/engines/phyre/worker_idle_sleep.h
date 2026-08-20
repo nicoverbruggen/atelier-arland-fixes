@@ -40,6 +40,32 @@
 // established; what is established is that the path being shortened is the one
 // where the worker looked, found nothing, and let go of its lock.
 //
+// MEASURED ON ALL THREE, battle entry, English builds, stock against shipped:
+// Rorona 553 to 172 ms, Meruru 528 to 105, and Totori 160 shipped with no stock
+// figure taken. Meruru gains the most, about 420 ms or eighty per cent, and its
+// entry is then mostly real work: 60 ms of CPU inside a 105 ms drain. Totori is
+// 140 ms of CPU inside 160, so neither has headroom left from this angle.
+//
+// WHAT IT COSTS, and it is a trade rather than a saving. Rorona and Meruru play
+// a battle-entry animation that is held open for as long as the load behind it
+// lasts, so the time this fix removes from the wait comes off the animation as
+// well: on Meruru, 425 ms saved and 425 ms of animation lost, the same 425 ms
+// seen twice. Judged better on than off, and better still with the animation
+// visible. The launcher carries it as an opt-out on the Debug page rather than
+// as a choice between two flavours: the change is a plain win and this is the
+// one thing it costs.
+//
+// IT CHANGES WHEN THINGS HAPPEN, AND THAT HAS ALREADY BROKEN SOMETHING. Rorona's
+// battle shadow registration scanned the battlers vector once shortly after
+// battle start and latched. The engine fills that vector in stages, party first
+// and monsters about half a second later, so the scan only ever worked because
+// the transition was slow enough to land after everyone was in. At 172 ms it
+// landed at 47 ms and battles registered three casters instead of six. Nothing
+// in the shadow code had changed. Proved by switching only this fix: 549 ms and
+// six casters, or 47 ms and three. That registration no longer latches, but the
+// general exposure stands. Anything written against the old timing now runs
+// against a third of it, and a violated timing assumption fails silently.
+//
 // 10 ms is where the measurements settled. Lower keeps paying, at about a
 // microsecond per microsecond, against a proportional rise in how often each
 // worker reacquires its lock. `ARLAND_WORKER_IDLE_SLEEP=0` restores the game's
