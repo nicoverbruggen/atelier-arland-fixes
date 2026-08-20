@@ -82,7 +82,10 @@ const Descriptor& descriptor(Feature f) {
     // Keyed, and on the Debug page rather than among the settings, because it
     // changes engine timing rather than presentation and is worth standing
     // down for a bug report. On by default and opted OUT, the same sense as
-    // FieldJitterFix beside it, so a normal install carries no key.
+    // FieldJitterFix beside it, so a normal install carries no key. It is an
+    // opt-out rather than a choice: the change is a plain win and the one thing
+    // it costs is measured and stated in the fix's own header. A dropdown
+    // offering it as two flavours was tried and withdrawn for saying otherwise.
     //
     // It is a trade rather than a saving, and both halves are measured on
     // Meruru: battle entry loses about 425 ms of waiting, and the transition

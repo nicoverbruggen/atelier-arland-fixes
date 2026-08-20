@@ -419,6 +419,7 @@ const CutInMode kCutInModes[] = {
 };
 const int kCutInCount = 2;
 
+
 // Which entry an ini pair corresponds to. A combination the list cannot express
 // opens on Enhanced: both of them ask for one half of the restoration, so the
 // file was edited by someone who wanted more than the shipped close-up, and
@@ -2350,27 +2351,24 @@ void createControls(HWND w) {
       L"\u2022  Highlight scene target tints the surface the antialiasing pass "
       L"picked, at the moment it picks it. Green over the world but not the "
       L"HUD means it found the right surface at the right time.");
+    // The two opt-outs below carry no description. Their paragraphs ran long
+    // enough to push the window past a comfortable height, and this page is
+    // developer tooling that only appears with verbose logging on, so the
+    // reader already knows what these fixes are. Keep the labels doing the
+    // work; do not put the paragraphs back without shortening them first.
+    //
+    // A dropdown on the Graphics page was tried and rejected: it presented the
+    // faster transition as a choice between two flavours, when it is a fix that
+    // is a plain win with one measured cost. An opt-out states that correctly.
     page.heading(L"Field movement");
     g_hFieldGroundRay = mkCheck(w,
       L"Disable the field jitter fix", 0, 0, 10, IDC_FIELDGROUNDRAY);
-    page.checkRow(g_hFieldGroundRay,
-      L"The fix is on in a normal install. It places a character on the ground "
-      L"each frame instead of letting it fall and catching it, which is what "
-      L"the game does on its own and what makes monsters vibrate on uneven "
-      L"ground. Tick this to get the original behaviour back, which a bug "
-      L"report about field movement may need.");
+    page.checkRow(g_hFieldGroundRay, nullptr);
 
     page.heading(L"Battle");
     g_hFastBattle = mkCheck(w,
       L"Disable the faster battle transition", 0, 0, 10, IDC_FASTBATTLE);
-    page.checkRow(g_hFastBattle,
-      L"On in a normal install. A worker thread waits half a second in its idle "
-      L"poll and the game sits on that wait every time a battle starts. "
-      L"Shortening it takes about 425 milliseconds off battle entry, and takes "
-      L"the same 425 milliseconds off the transition animation, which is held "
-      L"open for as long as the load behind it lasts. It is a trade rather than "
-      L"a saving, and it still wants testing. Tick this to get the original "
-      L"timing back.");
+    page.checkRow(g_hFastBattle, nullptr);
 
     page.fullNote(
       L"Most of this page is diagnostics rather than settings. The rest is "
