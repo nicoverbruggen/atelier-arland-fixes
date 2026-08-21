@@ -1533,6 +1533,11 @@ ID3D11Resource* createShadowResourceLocked(
   ID3D11Device* device = nullptr;
   pContext->GetDevice(&device);
 
+  // Through the captured originals. MinHook patches the target prologue rather
+  // than a vtable slot, so calling the raw interface re-enters the mod's own
+  // device hooks with a staging descriptor.
+  auto deviceProcs = getDeviceProcs(device);
+
   ATFIX_RESOURCE_INFO resourceInfo = { };
   getResourceInfo(pBaseResource, &resourceInfo);
 
@@ -1561,7 +1566,7 @@ ID3D11Resource* createShadowResourceLocked(
       desc.StructureByteStride = 0;
 
       ID3D11Buffer* shadowBuffer = nullptr;
-      hr = device->CreateBuffer(&desc, nullptr, &shadowBuffer);
+      hr = deviceProcs->CreateBuffer(device, &desc, nullptr, &shadowBuffer);
 
       shadowResource = shadowBuffer;
     } break;
@@ -1584,7 +1589,7 @@ ID3D11Resource* createShadowResourceLocked(
       desc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE | D3D11_CPU_ACCESS_READ;
 
       ID3D11Texture1D* shadowBuffer = nullptr;
-      hr = device->CreateTexture1D(&desc, nullptr, &shadowBuffer);
+      hr = deviceProcs->CreateTexture1D(device, &desc, nullptr, &shadowBuffer);
 
       shadowResource = shadowBuffer;
     } break;
@@ -1607,7 +1612,7 @@ ID3D11Resource* createShadowResourceLocked(
       desc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE | D3D11_CPU_ACCESS_READ;
 
       ID3D11Texture2D* shadowBuffer = nullptr;
-      hr = device->CreateTexture2D(&desc, nullptr, &shadowBuffer);
+      hr = deviceProcs->CreateTexture2D(device, &desc, nullptr, &shadowBuffer);
 
       shadowResource = shadowBuffer;
     } break;
@@ -1630,7 +1635,7 @@ ID3D11Resource* createShadowResourceLocked(
       desc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE | D3D11_CPU_ACCESS_READ;
 
       ID3D11Texture3D* shadowBuffer = nullptr;
-      hr = device->CreateTexture3D(&desc, nullptr, &shadowBuffer);
+      hr = deviceProcs->CreateTexture3D(device, &desc, nullptr, &shadowBuffer);
 
       shadowResource = shadowBuffer;
     } break;
