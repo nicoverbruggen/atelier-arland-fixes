@@ -96,7 +96,6 @@ else
     'src/core/module_lifetime.cpp',
     'src/core/sharpen.cpp',
     'src/core/pad_rescan.cpp',
-    'src/core/pad_notify_trace.cpp',
     'src/core/smaa.cpp',
     'src/engines/phyre/field_physics.cpp',
     'src/engines/phyre/worker_idle_sleep.cpp',

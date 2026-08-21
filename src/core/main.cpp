@@ -5,7 +5,6 @@
 #include "crash_log.h"
 #include "hook_util.h"
 #include "../engines/phyre/menu_fix.h"
-#include "pad_notify_trace.h"
 #include "path_util.h"
 #include "sharpen.h"
 #include "smaa.h"
