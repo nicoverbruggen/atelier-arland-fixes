@@ -95,7 +95,11 @@ const PadRescanTarget* addressesFor(const Game& game) {
 }
 
 bool fixEnabled() {
-  return featureEnabled(Feature::PadRescanBackoff);
+  // Resolved once. tracedPadCreate runs on the engine's controller poll, and
+  // hooks on that thread must not touch the ini or the environment; the rule is
+  // stated in mix_card.cpp. featureEnabled() reaches both.
+  static const bool enabled = featureEnabled(Feature::PadRescanBackoff);
+  return enabled;
 }
 
 void* STDMETHODCALLTYPE tracedPadCreate(uintptr_t self) {
