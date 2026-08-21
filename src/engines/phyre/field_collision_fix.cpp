@@ -357,9 +357,16 @@ bool installDepthClamp(BYTE* base, uintptr_t rva) {
   const int32_t toTramp = static_cast<int32_t>(tramp - (site + 5));
   std::memcpy(site + 1, &toTramp, 4);
   std::memset(site + 5, 0x90, kDepthClampExpected.size() - 5);
-  DWORD ignored = 0;
-  VirtualProtect(site, kDepthClampExpected.size(), previous, &ignored);
+  // The patch is already in, so a failed restore is reported rather than treated
+  // as a failed install.
+  DWORD restored = 0;
+  const bool protectionRestored = VirtualProtect(
+    site, kDepthClampExpected.size(), previous, &restored) != FALSE;
   FlushInstructionCache(GetCurrentProcess(), site, kDepthClampExpected.size());
+  if (!protectionRestored) {
+    log("FIXES field_character_pull=protection_not_restored"
+      " (installed, but the patched page stays writable and executable)");
+  }
   return true;
 }
 
