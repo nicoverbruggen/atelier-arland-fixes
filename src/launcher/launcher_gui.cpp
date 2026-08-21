@@ -222,16 +222,11 @@ const int kBaseHeight = 440;
 // come back at that scale. Only the coordinates in this file, which are written
 // at 100%, still need it applied.
 //
-// g_userScale is our own enlargement, for a controller at TV distance. Nothing
-// else knows about it, so it applies to the layout AND to the font.
-//
-// Multiplying the font by both is the mistake this split exists to prevent: it
-// would scale the DPI contribution twice and give giant text in a window sized
-// for normal text.
+// Do not multiply the font by this as well. That would scale the DPI
+// contribution twice and give giant text in a window sized for normal text.
 int g_dpiScale = 100;    // percent, from the display
-int g_userScale = 100;   // percent, ours
 
-int S(int value) { return value * g_dpiScale / 100 * g_userScale / 100; }
+int S(int value) { return value * g_dpiScale / 100; }
 
 // The dropdown entries. The first column is the label shown to the user, the
 // second is the exact string written to the ini.
@@ -1713,9 +1708,6 @@ HFONT createUiFont() {
   if (SystemParametersInfoW(SPI_GETNONCLIENTMETRICS, sizeof(metrics),
       &metrics, 0)) {
     LOGFONTW font = metrics.lfMessageFont;
-    // g_userScale only: this height already carries the display's DPI, since
-    // the process is DPI aware. See the note on the two scale factors.
-    font.lfHeight = font.lfHeight * g_userScale / 100;
     // ClearType explicitly rather than DEFAULT_QUALITY, which under Wine can
     // resolve to unsmoothed rendering and is what makes small text look ragged
     // there even with a good face.
@@ -1772,38 +1764,18 @@ bool cursorWorkArea(RECT* area) {
   return true;
 }
 
-// Decide both scale factors, then reduce the enlargement until the window fits
-// the screen it is opening on. The base layout is sized for 720p, so this can
-// always fall back to no enlargement at all and still fit.
+// The display's DPI, floored at 100% because the layout is written at 100% and
+// shrinking it below that helps nobody.
 //
-// ARLAND_UI_SCALE sets the enlargement directly, as a percentage. It is how the
-// large layout gets tested without a TV, and how someone on a TV that Steam has
-// not told us about can ask for it.
-void chooseScale(DWORD windowStyle) {
+// There used to be a second, user-chosen enlargement here for reading the window
+// across a room, set only by an environment variable. It came out because a
+// handheld or TV user cannot discover an environment variable, which made it a
+// capability with no route to the people it was for. If it comes back it should
+// detect the case and size itself.
+void chooseScale() {
   g_dpiScale = systemDpi() * 100 / 96;
   if (g_dpiScale < 100)
     g_dpiScale = 100;
-
-  g_userScale = 100;
-  if (const char* requested = std::getenv("ARLAND_UI_SCALE")) {
-    const int value = std::atoi(requested);
-    if (value >= 100 && value <= 200)
-      g_userScale = value;
-  }
-
-  RECT area = {};
-  if (!cursorWorkArea(&area))
-    return;
-  const int availableWidth = area.right - area.left;
-  const int availableHeight = area.bottom - area.top;
-  while (g_userScale > 100) {
-    RECT window = { 0, 0, S(kBaseWidth), S(kBaseHeight) };
-    AdjustWindowRect(&window, windowStyle, FALSE);
-    if (window.right - window.left <= availableWidth &&
-        window.bottom - window.top <= availableHeight)
-      break;
-    g_userScale -= 5;
-  }
 }
 
 // Whether this is running under Wine, which on the Steam Deck and on Linux
@@ -2814,7 +2786,7 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int) {
   // because the scale has to know the frame it will be measured with.
   const DWORD windowStyle =
     (WS_OVERLAPPEDWINDOW & ~(WS_MAXIMIZEBOX | WS_THICKFRAME)) | WS_VISIBLE;
-  chooseScale(windowStyle);
+  chooseScale();
   // Before the font and the brushes: both are chosen by the regime it picks.
   initStyling();
   g_uiFont = createUiFont();
