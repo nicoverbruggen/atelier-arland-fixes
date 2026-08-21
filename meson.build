@@ -105,7 +105,6 @@ else
     'src/engines/phyre/shop_fix.cpp',
     'src/engines/phyre/field_collision_fix.cpp',
     'src/engines/phyre/fast_save_menu.cpp',
-    'src/engines/phyre/battle_transition_fix.cpp',
     'src/engines/phyre/logo_skip.cpp',
     'src/engines/phyre/movie_skip.cpp',
     'src/core/mix_card.cpp',
