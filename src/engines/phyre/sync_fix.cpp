@@ -257,8 +257,8 @@ ID3D11ShaderResourceView* getShadowResTwinSrv(
     static std::atomic<uint32_t> reported{0};
     if (logFirstOrVerbose(reported))
       log("SHADOWRES twin SRV creation FAILED hr=0x", std::hex, hr);
-    std::lock_guard lock(g_twinSrvNegMutex);
-    g_twinSrvNegative.insert(reinterpret_cast<uintptr_t>(hostSrv));
+    // A twin exists; failure to create its view is not a negative classification.
+    // Retry on a later bind, as the depth-view path does.
     return nullptr;
   }
   hostSrv->SetPrivateDataInterface(IID_ShadowResTwinView, twinSrv);

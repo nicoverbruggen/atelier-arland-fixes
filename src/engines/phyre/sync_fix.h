@@ -1,6 +1,12 @@
 // Derived from Philip Rebohle's atelier-sync-fix; see LICENSE (zlib).
 #pragma once
 
+// Shadow receiver views cache only confirmed absence of an enlarged twin.
+// A failed view allocation remains retryable. A D3D11 regression injects one
+// allocation failure and verifies that the next bind creates and reuses the
+// twin view. While creation keeps failing, the receiver uses the original map;
+// recovery does not make that temporary producer/consumer mismatch disappear.
+
 #include <d3d11.h>
 
 #include "../../core/log.h"
