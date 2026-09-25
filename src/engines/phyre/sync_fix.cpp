@@ -2385,6 +2385,9 @@ void STDMETHODCALLTYPE ID3D11DeviceContext_RSSetScissorRects(
 }
 
 void updateViewportScissor(ID3D11DeviceContext* pContext) {
+  // Downstream Present overlays draw in display pixels. See supersample.h.
+  if (ssaaInPresent())
+    return;
   RasterState* state = getRasterState(pContext);
   if (!state->dirty.exchange(false, std::memory_order_acq_rel))
     return;

@@ -135,6 +135,7 @@ template <typename T> void release(T*& p) { if (p) { p->Release(); p = nullptr; 
 // If a change ever introduces a resize, or a device-loss path, this is the
 // assumption it breaks and the first place that has to be handled.
 std::atomic<bool> g_active{false};
+thread_local unsigned g_presentDepth = 0;
 
 // Identity only, never dereferenced: g_backRTV holds a reference to this same
 // texture for the process lifetime, so the address cannot be recycled under the
@@ -329,9 +330,22 @@ bool ssaaActive() {
   return g_active.load(std::memory_order_relaxed);
 }
 
+bool ssaaInPresent() {
+  return g_presentDepth != 0;
+}
+
+HRESULT ssaaForwardPresent(IDXGISwapChain* swapChain, UINT interval, UINT flags,
+    HRESULT (STDMETHODCALLTYPE* next)(IDXGISwapChain*, UINT, UINT)) {
+  struct Scope {
+    Scope() { ++g_presentDepth; }
+    ~Scope() { --g_presentDepth; }
+  } scope;
+  return next(swapChain, interval, flags);
+}
+
 ID3D11Texture2D* ssaaRedirectRenderTargetView(
     ID3D11Resource* resource, const D3D11_RENDER_TARGET_VIEW_DESC* desc) {
-  if (!resource || !g_backbuffer || !ssaaActive())
+  if (ssaaInPresent() || !resource || !g_backbuffer || !ssaaActive())
     return nullptr;
   ID3D11Texture2D* texture = nullptr;
   if (FAILED(resource->QueryInterface(IID_PPV_ARGS(&texture))) || !texture)

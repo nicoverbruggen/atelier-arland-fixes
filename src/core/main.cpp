@@ -392,8 +392,8 @@ HRESULT STDMETHODCALLTYPE tracedPresent(
   atfix::smaaPreload();
   atfix::smaaApply(swapChain);        // Present-time path (only if pre-UI off)
   atfix::ssaaDownscale(swapChain);    // supersampling: render res -> backbuffer
-  const HRESULT result = originalPresent(
-    swapChain, presentInterval(syncInterval), flags);
+  const HRESULT result = atfix::ssaaForwardPresent(
+    swapChain, presentInterval(syncInterval), flags, originalPresent);
   // Record a lost device once -- the post-mortem a present-time hang/TDR leaves.
   // Kept as a passive diagnostic: it names the fault when a transition-teardown
   // race removes the device.

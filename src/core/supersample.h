@@ -18,8 +18,16 @@ namespace atfix {
 // over a mod-owned render-resolution texture instead. Because the redirect
 // happens when the view is created, everything downstream (binds, clears, the
 // pre-UI SMAA injection) follows without further interception, and the real
-// backbuffer is touched only by the downscale below.
-
+// game backbuffer is written by the downscale below.
+//
+// Overlays reached through the downstream Present call run AFTER downscale.
+// Redirecting their new backbuffer views writes into a frame already consumed.
+// A paired overlay probe with SSAA on/off captured that order in the Present
+// stack and a redirected 3840x2160 target only with SSAA on. Forwarding Present
+// therefore disables view redirection and raster resizing on the calling thread.
+// The scope ends when Present returns, including failure and nested calls.
+// Views created before this boundary are not retargeted by this correction.
+//
 // Whether the machinery may be needed: a render resolution larger than the
 // display. Off in a default install, so this is normally false and the
 // machinery stays out of the way; ssaaActive() is what says the pass really
@@ -41,6 +49,12 @@ void ssaaNoteSwapChain(IDXGISwapChain* swapChain);
 
 // Whether supersampling is live for this session (set by ssaaNoteSwapChain).
 bool ssaaActive();
+
+// Call the next Present after downscale, preserving display-space overlay draws.
+// The query is thread-local so concurrent game rendering retains its correction.
+HRESULT ssaaForwardPresent(IDXGISwapChain* swapChain, UINT interval, UINT flags,
+  HRESULT (STDMETHODCALLTYPE* next)(IDXGISwapChain*, UINT, UINT));
+bool ssaaInPresent();
 
 // If this render-target-view creation targets the swap-chain backbuffer, the
 // render-resolution target to create the view over instead (AddRef'd, caller
