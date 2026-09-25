@@ -64,6 +64,21 @@ constexpr uint32_t HOOK_DEF_CTX = (1u << 2);
 
 uint32_t      g_installedHooks = 0u;
 
+// Published only after the immediate context's complete dependency set is live.
+// Until then Map must not create an obligation that a missing Unmap cannot meet.
+std::atomic<bool> g_shadowMapHooksReady{false};
+
+struct D3DHookRecord {
+  const void* replacement = nullptr;
+  void* original = nullptr;
+  bool installed = false;
+};
+// g_hookMutex covers both installation and these records. Failed targets are
+// retained too: another context must not patch a target whose first table still
+// contains the direct function address.
+std::map<void*, D3DHookRecord> g_d3dHookRecords;
+
+
 // Hot D3D paths can encounter the same failure every frame. Keep the first
 // occurrence in a normal log, then sample repeats only when verbose logging was
 // explicitly requested. Even a diagnostic log should not grow by one line per
@@ -3486,6 +3501,12 @@ HRESULT STDMETHODCALLTYPE ID3D11DeviceContext_Map(
       isMutableFontAtlas(pResource))
     g_atlasWriteMaps.fetch_add(1, std::memory_order_relaxed);
   auto procs = getContextProcs(pContext);
+  if (!g_shadowMapHooksReady.load(std::memory_order_acquire)) {
+    mapKindTimer.setBranch(0);
+    // Capture also needs Unmap to consume and retire its saved mapping.
+    return procs->Map(pContext, pResource, Subresource, MapType, MapFlags,
+      pMappedResource);
+  }
   if (!pResource || !isImmediatecontext(pContext)) {
     mapKindTimer.setBranch(0);
     const HRESULT hr = procs->Map(
@@ -3801,6 +3822,17 @@ template<typename T>
 bool hookProc(void* pObject, const char* pName, T** ppOrig, T* pHook,
               uint32_t index) {
   void** vtbl = *reinterpret_cast<void***>(pObject);
+  const void* replacement = reinterpret_cast<const void*>(pHook);
+  const auto previous = g_d3dHookRecords.find(vtbl[index]);
+  if (previous != g_d3dHookRecords.end()) {
+    *ppOrig = reinterpret_cast<T*>(previous->second.original);
+    return previous->second.replacement == replacement &&
+      previous->second.installed;
+  }
+  auto& record = g_d3dHookRecords[vtbl[index]];
+  record.replacement = replacement;
+  record.original = vtbl[index];
+  *ppOrig = reinterpret_cast<T*>(record.original);
 
   // A vtable entry normally points into the module the vtable itself lives in
   // (the D3D11 runtime, or DXVK). When it does not, another injector has
@@ -3831,26 +3863,23 @@ bool hookProc(void* pObject, const char* pName, T** ppOrig, T* pHook,
     reinterpret_cast<void*>(pHook),
     reinterpret_cast<void**>(ppOrig));
 
-  if (mh) {
-    if (mh != MH_ERROR_ALREADY_CREATED) {
-      log("Failed to create hook for ", pName, ": ", MH_StatusToString(mh));
-      // Target is left unpatched on this failure, so the vtable entry is still
-      // the real function: point the table at it rather than leaving a null.
-      // Hooks call through the table for other methods (Draw ->
-      // flushDirtyShadows -> procs->Map), so one failed slot would crash a hook
-      // that installed fine. Excludes ALREADY_CREATED, where a detour of ours
-      // is on the target and this entry would recurse into our own hook.
-      *ppOrig = reinterpret_cast<T*>(vtbl[index]);
-    }
-    return mh == MH_ERROR_ALREADY_CREATED;
+  if (mh != MH_OK) {
+    // ALREADY_CREATED is not proof that this feature owns the detour. Our own
+    // targets were resolved through the record above, with their originals.
+    log("Failed to create hook for ", pName, ": ", MH_StatusToString(mh));
+    *ppOrig = reinterpret_cast<T*>(record.original);
+    return false;
   }
 
+  // Keep the trampoline even if enable fails. Other installed detours call
+  // through this table, and the created hook owns it for the process lifetime.
+  record.original = reinterpret_cast<void*>(*ppOrig);
   mh = MH_EnableHook(vtbl[index]);
-
-  if (mh) {
+  if (mh != MH_OK) {
     log("Failed to enable hook for ", pName, ": ", MH_StatusToString(mh));
     return false;
   }
+  record.installed = true;
 
   if (verboseLogging())
     log("Created hook for ", pName, " @ ", reinterpret_cast<void*>(pHook));
@@ -3943,20 +3972,17 @@ void hookContext(ID3D11DeviceContext* pContext) {
     HOOK_PROC(ID3D11DeviceContext, pContext, procs, 36, OMSetDepthStencilState);
   HOOK_PROC(ID3D11DeviceContext, pContext, procs, 48, UpdateSubresource);
 
+  if (flag == HOOK_IMM_CTX)
+    g_shadowMapHooksReady.store(allInstalled, std::memory_order_release);
   g_installedHooks |= flag;
   log("FIXES d3d11_",
       flag == HOOK_IMM_CTX ? "immediate_context_hooks="
                            : "deferred_context_hooks=",
       allInstalled ? "active" : "partial_failure");
 
-  /* Immediate and deferred contexts share one vtable, so the second context to
-     reach hookProc gets MH_ERROR_ALREADY_CREATED and its originals are NOT
-     repopulated. The immediate context is created at device creation and hooked
-     first, so we copy its captured originals to the deferred table here. Guard on
-     the immediate table actually being populated: if a deferred context were ever
-     hooked first, this pass's hooks would all no-op (already created) and copying
-     an empty g_immContextProcs would clobber the good deferred originals with
-     nulls. In the normal (immediate-first) order the guard is always true. */
+  // Seed deferred forwarding before it can be used. hookProc replaces each
+  // slot when a deferred implementation differs, or supplies the retained
+  // original when both contexts share the target.
   if ((flag & HOOK_IMM_CTX) && g_immContextProcs.Draw)
     g_defContextProcs = g_immContextProcs;
 }

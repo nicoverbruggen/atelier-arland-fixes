@@ -1,6 +1,14 @@
 // Derived from Philip Rebohle's atelier-sync-fix; see LICENSE (zlib).
 #pragma once
 
+// Shadow Map redirection activates only after all immediate-context hooks
+// install. A failed Unmap hook must leave Map forwarding the original resource
+// without creating shadow or constant-buffer capture state.
+// Failure-injection tests cover create and enable failures, normal redirection,
+// and shared hook targets. Per-target records retain both successful and failed
+// installations so a second context cannot reinterpret an abandoned hook as
+// success or invalidate another table's direct forwarding pointer.
+//
 // Shadow receiver views cache only confirmed absence of an enlarged twin.
 // A failed view allocation remains retryable. A D3D11 regression injects one
 // allocation failure and verifies that the next bind creates and reuses the
