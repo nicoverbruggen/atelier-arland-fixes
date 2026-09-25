@@ -2,6 +2,8 @@
 // work by TellowKrinkle; substantially altered for Arland. See LICENSE.
 #include <array>
 #include <atomic>
+#include <cmath>
+#include <limits>
 #include <cstdlib>
 #include <cstring>
 #include <algorithm>
@@ -449,6 +451,16 @@ static std::atomic<UINT> g_originalSwapHeight = { 0 };
 // state for the immediate and deferred context paths; atomics keep the hooks
 // safe if the engine records or submits state from another thread.
 struct RasterState {
+  // Retain caller coordinates: draw-time corrections must not become the input
+  // to the next correction when only a clip rectangle or target changes.
+  std::atomic<UINT> viewportCount = { 0 };
+  std::atomic<float> viewportX = { 0.0f };
+  std::atomic<float> viewportY = { 0.0f };
+  std::atomic<UINT> scissorCount = { 0 };
+  std::atomic<LONG> scissorLeft = { 0 };
+  std::atomic<LONG> scissorTop = { 0 };
+  std::atomic<LONG> scissorRight = { 0 };
+  std::atomic<LONG> scissorBottom = { 0 };
   std::atomic<UINT> viewportWidth  = { 0 };
   std::atomic<UINT> viewportHeight = { 0 };
   std::atomic<UINT> scissorWidth   = { 0 };
@@ -2359,7 +2371,10 @@ void STDMETHODCALLTYPE ID3D11DeviceContext_RSSetViewports(
   auto procs = getContextProcs(pContext);
   RasterState* state = getRasterState(pContext);
   state->dirty.store(true, std::memory_order_release);
+  state->viewportCount.store(pViewports ? NumViewports : 0, std::memory_order_relaxed);
   if (NumViewports && pViewports) {
+    state->viewportX.store(pViewports[0].TopLeftX, std::memory_order_relaxed);
+    state->viewportY.store(pViewports[0].TopLeftY, std::memory_order_relaxed);
     state->viewportWidth.store(static_cast<UINT>(pViewports[0].Width), std::memory_order_relaxed);
     state->viewportHeight.store(static_cast<UINT>(pViewports[0].Height), std::memory_order_relaxed);
     // Deliberately NOT recorded for the supersampling report here: this is the
@@ -2377,7 +2392,12 @@ void STDMETHODCALLTYPE ID3D11DeviceContext_RSSetScissorRects(
   auto procs = getContextProcs(pContext);
   RasterState* state = getRasterState(pContext);
   state->dirty.store(true, std::memory_order_release);
+  state->scissorCount.store(pRects ? NumRects : 0, std::memory_order_relaxed);
   if (NumRects && pRects) {
+    state->scissorLeft.store(pRects[0].left, std::memory_order_relaxed);
+    state->scissorTop.store(pRects[0].top, std::memory_order_relaxed);
+    state->scissorRight.store(pRects[0].right, std::memory_order_relaxed);
+    state->scissorBottom.store(pRects[0].bottom, std::memory_order_relaxed);
     state->scissorWidth.store(static_cast<UINT>(pRects[0].right - pRects[0].left), std::memory_order_relaxed);
     state->scissorHeight.store(static_cast<UINT>(pRects[0].bottom - pRects[0].top), std::memory_order_relaxed);
   }
@@ -2439,9 +2459,18 @@ void updateViewportScissor(ID3D11DeviceContext* pContext) {
   const bool shadowSizeScissor = shadowRes > 1024 && scissorCount == 1 &&
     scissor.left == 0 && scissor.top == 0 &&
     scissor.right == 1024 && scissor.bottom == 1024;
+  const UINT requestedWidth = state->viewportWidth.load(std::memory_order_relaxed);
+  const UINT requestedHeight = state->viewportHeight.load(std::memory_order_relaxed);
+  const bool scaledClip = ssaaActive() && viewportCount == 1 && scissorCount == 1 &&
+    state->viewportCount.load(std::memory_order_relaxed) == 1 &&
+    state->scissorCount.load(std::memory_order_relaxed) == 1 &&
+    state->viewportX.load(std::memory_order_relaxed) == 0.0f &&
+    state->viewportY.load(std::memory_order_relaxed) == 0.0f &&
+    ((requestedWidth == 1920 && requestedHeight == 1080) ||
+     (splitRender && requestedWidth == gameWidth && requestedHeight == gameHeight));
   if (!fullSizeViewport && !halfSizeViewport &&
       !fullSizeScissor && !halfSizeScissor &&
-      !shadowSizeViewport && !shadowSizeScissor)
+      !shadowSizeViewport && !shadowSizeScissor && !scaledClip)
     return;
 
   ID3D11RenderTargetView* rtv = nullptr;
@@ -2473,6 +2502,12 @@ void updateViewportScissor(ID3D11DeviceContext* pContext) {
         desc.Format == DXGI_FORMAT_R24G8_TYPELESS &&
         isShadowResResized(texture);
       const UINT role = resolutionRole(texture);
+      bool supersampledColor = false;
+      if (scaledClip) {
+        ID3D11Texture2D* color = ssaaAcquireColor();
+        supersampledColor = color && color == texture;
+        if (color) color->Release();
+      }
       texture->Release();
       const UINT mainWidth = g_mainRtWidth.load(std::memory_order_relaxed);
       const UINT mainHeight = g_mainRtHeight.load(std::memory_order_relaxed);
@@ -2511,6 +2546,34 @@ void updateViewportScissor(ID3D11DeviceContext* pContext) {
       if (resizeScissor) {
         scissor.right = static_cast<LONG>(desc.Width);
         scissor.bottom = static_cast<LONG>(desc.Height);
+      }
+      if (supersampledColor && viewport.TopLeftX == 0.0f &&
+          viewport.TopLeftY == 0.0f && viewport.Width == float(desc.Width) &&
+          viewport.Height == float(desc.Height)) {
+        // The viewport is now in render pixels, so every clip must be too.
+        // Read the last caller rectangle even on a second draw with the same
+        // expanded viewport, or a target bind that merely marks state dirty.
+        const double sx = double(desc.Width) / requestedWidth;
+        const double sy = double(desc.Height) / requestedHeight;
+        const auto edge = [](LONG value, double scale, bool upper) {
+          const double scaled = upper ? std::ceil(double(value) * scale)
+                                      : std::floor(double(value) * scale);
+          return static_cast<LONG>(std::clamp(scaled,
+            double(std::numeric_limits<LONG>::min()),
+            double(std::numeric_limits<LONG>::max())));
+        };
+        scissor.left = edge(state->scissorLeft.load(std::memory_order_relaxed), sx, false);
+        scissor.top = edge(state->scissorTop.load(std::memory_order_relaxed), sy, false);
+        scissor.right = edge(state->scissorRight.load(std::memory_order_relaxed), sx, true);
+        scissor.bottom = edge(state->scissorBottom.load(std::memory_order_relaxed), sy, true);
+        // Outward rounding must not turn an empty caller clip into pixels.
+        if (state->scissorRight.load(std::memory_order_relaxed) <=
+            state->scissorLeft.load(std::memory_order_relaxed))
+          scissor.right = scissor.left;
+        if (state->scissorBottom.load(std::memory_order_relaxed) <=
+            state->scissorTop.load(std::memory_order_relaxed))
+          scissor.bottom = scissor.top;
+        resizeScissor = true;
       }
       if (shadowTarget && (resizeViewport || resizeScissor)) {
         static std::atomic<uint32_t> vpLogs{0};

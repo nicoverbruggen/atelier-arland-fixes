@@ -28,6 +28,12 @@ namespace atfix {
 // The scope ends when Present returns, including failure and nested calls.
 // Views created before this boundary are not retargeted by this correction.
 //
+// Overlays drawing before downscale still need matching viewport and clip
+// scales. A D3D11 pixel-readback regression reproduced a clipped top-right badge
+// at 2560x1440 -> 3840x2160. The raster correction retains caller clip coordinates
+// and scales all four edges on the identified SSAA colour target without
+// compounding the scale on subsequent draws or state restoration.
+
 // Whether the machinery may be needed: a render resolution larger than the
 // display. Off in a default install, so this is normally false and the
 // machinery stays out of the way; ssaaActive() is what says the pass really
